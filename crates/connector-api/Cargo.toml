@@ -1,0 +1,22 @@
+[package]
+name = "connector-api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "C API implementation and connector assembly"
+
+[features]
+default = []
+mysql = ["dep:connector-mysql"]
+postgresql = ["dep:connector-postgresql"]
+
+[dependencies]
+connector-sdk.workspace = true
+connector-mysql = { workspace = true, optional = true }
+connector-postgresql = { workspace = true, optional = true }
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]

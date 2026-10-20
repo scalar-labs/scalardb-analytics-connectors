@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "artifacts": [
+    {"kind": "c-header", "path": "connector_api.h"},
+    {"kind": "arrow-schema", "path": "requests/metadata-request.arrow.json"},
+    {"kind": "arrow-schema", "path": "requests/metadata-response.arrow.json"},
+    {"kind": "json-schema", "path": "declarations/capability.schema.json"},
+    {"kind": "json-schema", "path": "declarations/static-information.schema.json"},
+    {"kind": "substrait-contract", "path": "substrait/contract.json"},
+    {"kind": "logical-types", "path": "logical-types/logical-types.json"},
+    {"kind": "type-mapping", "path": "type-mappings/postgresql.json"},
+    {"kind": "type-mapping", "path": "type-mappings/mysql.json"}
+  ]
+}

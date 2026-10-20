@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/analytics-types",
+    "crates/connector-sdk",
+    "crates/connector-adbc",
+    "crates/connector-sql",
+    "crates/connectors/postgresql",
+    "crates/connectors/mysql",
+    "crates/connector-api",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/scalar-labs/scalardb-analytics-connector"
+
+[workspace.dependencies]
+analytics-types = { path = "crates/analytics-types", version = "0.1.0" }
+connector-sdk = { path = "crates/connector-sdk", version = "0.1.0" }
+connector-adbc = { path = "crates/connector-adbc", version = "0.1.0" }
+connector-sql = { path = "crates/connector-sql", version = "0.1.0" }
+connector-postgresql = { path = "crates/connectors/postgresql", version = "0.1.0" }
+connector-mysql = { path = "crates/connectors/mysql", version = "0.1.0" }

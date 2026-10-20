@@ -1,0 +1,6 @@
+{
+  "accepted_version": null,
+  "status": "not-yet-pinned",
+  "plan_relations": ["ReadRel", "FetchRel"],
+  "logical_type_extension": "logical"
+}
