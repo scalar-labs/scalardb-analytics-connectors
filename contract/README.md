@@ -12,11 +12,12 @@ The initial skeleton reserves these stable locations:
 - `declarations/`: JSON Schemas for capability and static-information documents.
 - `substrait/`: the accepted version, plan shape, type correspondence, and the
   logical-type extension.
-- `logical-types/`: the registered logical-type inventory.
+- `analytics-types/`: language-neutral Arrow encodings for Analytics types.
 - `type-mappings/`: source-specific mapping tables.
 
-`manifest.json` is the inventory used by `scripts/validate_contracts.py`. Empty
-logical-type and type-mapping lists are explicit implementation placeholders;
-their authoritative contents remain in the product design until later contract
-implementation work projects them here. The accepted Substrait version is not
-yet pinned.
+`manifest.json` is the inventory used by `scripts/validate_contracts.py`. The
+Analytics type artifacts define stable extension names, parameters, value
+representations, and Arrow storage encodings. The
+[developer documentation](../docs/analytics-types.md) owns the type-system
+mental model. Empty type-mapping lists remain explicit implementation
+placeholders. The accepted Substrait version is not yet pinned.

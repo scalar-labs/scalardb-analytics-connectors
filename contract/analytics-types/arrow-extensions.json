@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "extension_name_prefix": "scalardb.analytics.",
+  "arrow_extensions": [
+    {
+      "name": "uuid",
+      "parameters": [],
+      "storage_type": "utf8",
+      "value_representation": {
+        "form": "36-character canonical UUID",
+        "equality": "canonical string equality preserves UUID equality"
+      }
+    },
+    {
+      "name": "json",
+      "parameters": [],
+      "storage_type": "utf8",
+      "value_representation": {
+        "form": "JSON text emitted by the source",
+        "equality": "string equality preserves JSON equality only when the source emits canonical JSON"
+      }
+    },
+    {
+      "name": "enum",
+      "parameters": [
+        {
+          "name": "members",
+          "type": "string-array"
+        }
+      ],
+      "storage_type": "utf8",
+      "value_representation": {
+        "form": "member label; the members parameter preserves declaration order",
+        "equality": "member-label equality preserves enum equality"
+      }
+    },
+    {
+      "name": "year",
+      "parameters": [],
+      "storage_type": "int16",
+      "value_representation": {
+        "form": "numeric year",
+        "equality": "integer equality preserves year equality"
+      }
+    },
+    {
+      "name": "timetz",
+      "parameters": [],
+      "storage_type": "utf8",
+      "value_representation": {
+        "form": "time and zone text such as 10:00:00+09",
+        "equality": "strings are equal only when both time and zone are equal"
+      }
+    }
+  ]
+}

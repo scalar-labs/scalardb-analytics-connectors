@@ -9,3 +9,8 @@ description = "Analytics types and their Arrow representation"
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+arrow-schema.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

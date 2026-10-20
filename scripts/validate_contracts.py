@@ -16,7 +16,7 @@ REQUIRED_ARTIFACTS = {
     ("json-schema", "declarations/capability.schema.json"),
     ("json-schema", "declarations/static-information.schema.json"),
     ("substrait-contract", "substrait/contract.json"),
-    ("logical-types", "logical-types/logical-types.json"),
+    ("arrow-extensions", "analytics-types/arrow-extensions.json"),
     ("type-mapping", "type-mappings/postgresql.json"),
     ("type-mapping", "type-mappings/mysql.json"),
 }
@@ -31,6 +31,64 @@ def require_mapping(value: object, path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object")
     return value
+
+
+def validate_arrow_extensions(document: dict[str, object], path: Path) -> None:
+    if document.get("extension_name_prefix") != "scalardb.analytics.":
+        raise ValueError(f"{path}: invalid extension_name_prefix")
+
+    arrow_extensions = document.get("arrow_extensions")
+    if not isinstance(arrow_extensions, list):
+        raise ValueError(f"{path}: arrow_extensions must be an array")
+
+    observed: dict[str, str] = {}
+    for arrow_extension in arrow_extensions:
+        if not isinstance(arrow_extension, dict):
+            raise ValueError(f"{path}: each Arrow extension must be an object")
+        name = arrow_extension.get("name")
+        parameters = arrow_extension.get("parameters")
+        storage_type = arrow_extension.get("storage_type")
+        value_representation = arrow_extension.get("value_representation")
+        if not isinstance(name, str) or not isinstance(storage_type, str):
+            raise ValueError(f"{path}: extension name and storage type are required")
+        if name in observed:
+            raise ValueError(f"{path}: duplicate Arrow extension {name}")
+        if not isinstance(parameters, list) or not isinstance(value_representation, dict):
+            raise ValueError(f"{path}: {name} requires parameters and value_representation")
+        if not isinstance(value_representation.get("form"), str) or not isinstance(
+            value_representation.get("equality"), str
+        ):
+            raise ValueError(f"{path}: {name} requires value form and equality rules")
+        observed[name] = storage_type
+
+    expected = {
+        "uuid": "utf8",
+        "json": "utf8",
+        "enum": "utf8",
+        "year": "int16",
+        "timetz": "utf8",
+    }
+    if observed != expected:
+        raise ValueError(
+            f"{path}: Analytics Arrow extensions must be {expected}, found {observed}"
+        )
+
+    enum_entry = next(
+        entry for entry in arrow_extensions
+        if isinstance(entry, dict) and entry["name"] == "enum"
+    )
+    expected_enum_parameters = [
+        {
+            "name": "members",
+            "type": "string-array",
+        }
+    ]
+    if enum_entry["parameters"] != expected_enum_parameters:
+        raise ValueError(f"{path}: enum parameter definition is invalid")
+
+    for arrow_extension in arrow_extensions:
+        if arrow_extension["name"] != "enum" and arrow_extension["parameters"]:
+            raise ValueError(f"{path}: {arrow_extension['name']} must not have parameters")
 
 
 def main() -> None:
@@ -67,10 +125,8 @@ def main() -> None:
                 raise ValueError(f"{relative_path}: fields must be an array")
             if kind == "json-schema" and "$schema" not in document:
                 raise ValueError(f"{relative_path}: missing $schema")
-            if kind == "logical-types" and not isinstance(
-                document.get("logical_types"), list
-            ):
-                raise ValueError(f"{relative_path}: logical_types must be an array")
+            if kind == "arrow-extensions":
+                validate_arrow_extensions(document, artifact_path)
             if kind == "type-mapping" and not isinstance(document.get("rules"), list):
                 raise ValueError(f"{relative_path}: rules must be an array")
             if kind == "substrait-contract" and "accepted_version" not in document:

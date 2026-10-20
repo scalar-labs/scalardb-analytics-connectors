@@ -7,7 +7,7 @@
     {"kind": "json-schema", "path": "declarations/capability.schema.json"},
     {"kind": "json-schema", "path": "declarations/static-information.schema.json"},
     {"kind": "substrait-contract", "path": "substrait/contract.json"},
-    {"kind": "logical-types", "path": "logical-types/logical-types.json"},
+    {"kind": "arrow-extensions", "path": "analytics-types/arrow-extensions.json"},
     {"kind": "type-mapping", "path": "type-mappings/postgresql.json"},
     {"kind": "type-mapping", "path": "type-mappings/mysql.json"}
   ]

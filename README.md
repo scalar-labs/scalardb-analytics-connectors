@@ -2,8 +2,9 @@
 
 This repository contains the language-neutral connector contract, the Rust
 connector SDK, source-specific connectors, and the C API library that assembles
-them. It currently provides the repository foundation only; connector behavior
-and PostgreSQL-specific processing are intentionally out of scope.
+them. The shared Analytics type model and its Arrow schema conversion are
+implemented; connector behavior and PostgreSQL-specific processing remain out
+of scope.
 
 ## Workspace layout
 
@@ -28,6 +29,10 @@ connector-api -> connector-postgresql -> connector-sql -> connector-adbc -> conn
 
 Connector crates do not depend on one another. Native dependencies belong in
 ADBC driver artifacts, not in `connector-sdk` or a connector crate.
+
+Developer documentation starts at [docs/architecture.md](docs/architecture.md).
+It explains the repository boundaries and links to the canonical mental model
+for the shared Analytics type system.
 
 ## Development
 
