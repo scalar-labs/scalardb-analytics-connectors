@@ -11,6 +11,15 @@ Start with [architecture.md](architecture.md) for the repository-wide
 vocabulary, boundaries, ownership, and representative data flow. Follow its
 links to the relevant top-level document before changing an architectural unit.
 
+Read [query-engine-pushdown.md](query-engine-pushdown.md) before changing the
+Substrait request contract, connector planning boundary, or a Query Engine
+adapter. It compares the pushdown contracts of Spark, Trino, DataFusion, and
+DuckDB and derives the constraints on their shared model.
+
+Read
+[plan-pushdown-with-query-engine-planners.md](plan-pushdown-with-query-engine-planners.md)
+for the accepted ownership model, planning API, and pushdown outcomes.
+
 Use the documentation layers for distinct purposes:
 
 | Location | Owns |

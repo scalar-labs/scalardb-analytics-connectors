@@ -64,10 +64,28 @@ source. Connector crates do not depend on one another.
 
 ## Connector flow
 
-A request enters through the assembled connector API and is delegated to the
-selected source connector. The connector uses shared SQL, ADBC, and SDK
-capabilities where applicable, while retaining ownership of source catalog
-interpretation and source-specific mappings.
+A Query Engine adapter first recognizes a native planner pattern and offers the
+connector a Substrait candidate. The SDK validates the common contract, and the
+source connector decides whether the candidate is supported under the concrete
+source and session semantics. The adapter owns the native plan rewrite and any
+residual operator. The resulting `PlannedSubplan` crosses the assembled
+connector API and is delegated to the selected source connector for execution.
+
+~~~text
+Query Engine native plan
+  -> adapter builds a Substrait candidate
+  -> connector-sdk validates and dispatches an operator-specific rule
+  -> source connector makes a plan-aware decision
+  -> adapter rewrites its native plan
+  -> source connector executes the accepted PlannedSubplan
+  -> connector-sdk validates Arrow schema, lifecycle, and resource bounds
+~~~
+
+Substrait remains the shared relational and expression AST. The SDK does not
+translate predicates into a second connector-specific expression tree or
+evaluate residual predicates over returned Arrow batches. The detailed
+planning decision is recorded in
+[Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
 
 Schema information crosses the source boundary as an Analytics schema and is
 serialized through Arrow for interchange:
@@ -130,3 +148,10 @@ inside the Analytics type system.
   boundary.
 - Unsupported source or Arrow representations fail explicitly rather than
   silently changing the Analytics type.
+- Static capability declarations are pruning hints; only a plan-aware connector
+  rule can authorize a native planner rewrite.
+- Serializable planned state contains no credential, open connection, or
+  process-local pointer.
+- Connector execution returns the schema recorded by `PlannedSubplan`; the SDK
+  rejects mismatched batches and enforces cancellation, deadlines, and batch
+  resource limits without adding an unbounded buffer.

@@ -20,4 +20,9 @@ Analytics type artifacts define stable extension names, parameters, value
 representations, and Arrow storage encodings. The
 [developer documentation](../docs/analytics-types.md) owns the type-system
 mental model. Empty type-mapping lists remain explicit implementation
-placeholders. The accepted Substrait version is not yet pinned.
+placeholders. The accepted Substrait version is pinned to 0.69.0. The
+machine-readable contract also pins the Rust binding and validator versions,
+the initial planner rules and outcomes, the accepted read-plan shape, persisted
+planned-subplan state, planning context, and logical-type encoding. Substrait
+remains the shared relation and expression AST; Query Engine adapters own native
+residual operators.

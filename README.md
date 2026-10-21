@@ -3,8 +3,8 @@
 This repository contains the language-neutral connector contract, the Rust
 connector SDK, source-specific connectors, and the C API library that assembles
 them. The shared Analytics type model and its Arrow schema conversion are
-implemented; connector behavior and PostgreSQL-specific processing remain out
-of scope.
+implemented. The shared connector planning and execution boundaries are also
+implemented; source-specific connector behavior remains out of scope.
 
 ## Workspace layout
 
@@ -31,8 +31,8 @@ Connector crates do not depend on one another. Native dependencies belong in
 ADBC driver artifacts, not in `connector-sdk` or a connector crate.
 
 Developer documentation starts at [docs/architecture.md](docs/architecture.md).
-It explains the repository boundaries and links to the canonical mental model
-for the shared Analytics type system.
+It explains the repository boundaries and links to the canonical mental models
+for the shared Analytics type system and plan pushdown.
 
 ## Development
 
@@ -60,10 +60,10 @@ nix develop .#msrv --command cargo build --workspace --all-targets
 nix develop .#msrv --command cargo test --workspace
 ```
 
-The contract validator checks the artifact inventory, JSON syntax and basic
-shape, and the C header's version declarations. It deliberately does not assign
-an accepted Substrait version or define connector behavior; those decisions
-belong to later contract implementation work.
+The contract validator checks the artifact inventory, JSON syntax and shape,
+the C header's version declarations, and cross-artifact Substrait invariants.
+Those invariants include the accepted Substrait version, Rust dependency pins,
+extension URIs, planning state, and resource limits.
 
 ## License and dependency policy
 

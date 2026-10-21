@@ -1,6 +1,71 @@
 {
-  "accepted_version": null,
-  "status": "not-yet-pinned",
-  "plan_relations": ["ReadRel", "FetchRel"],
-  "logical_type_extension": "logical"
+  "format_version": 1,
+  "accepted_version": "0.69.0",
+  "rust_binding": {
+    "crate": "substrait",
+    "version": "0.55.0"
+  },
+  "validator": {
+    "crate": "substrait-validator",
+    "version": "0.1.4",
+    "mode": "loose",
+    "local_subset_validation": true
+  },
+  "planning": {
+    "candidate_ast": "Substrait Plan",
+    "initial_rules": ["read", "projection", "filter"],
+    "reserved_rules": ["limit", "aggregation", "sort", "top_n", "join"],
+    "outcomes": ["exact", "retained", "unsupported"],
+    "residual_owner": "query-engine-adapter",
+    "expression_normal_form": "adapter-defined",
+    "static_capabilities": "pruning-hints-only"
+  },
+  "plan": {
+    "root": "RelRoot",
+    "relations": ["ReadRel"],
+    "read": {
+      "table": "namedTable",
+      "requires_base_schema": true,
+      "projection": "top-level struct mask",
+      "filter": "exact",
+      "best_effort_filter": "requires-retained-operator"
+    }
+  },
+  "planned_subplan": {
+    "state": [
+      "substrait_plan",
+      "analytics_output_schema",
+      "source_bindings",
+      "validation_fingerprint"
+    ],
+    "serializable": true,
+    "forbidden_state": ["credentials", "open_connections", "process_local_pointers"]
+  },
+  "planning_context": [
+    "source_product",
+    "source_version",
+    "execution_domain",
+    "collation",
+    "time_zone",
+    "decimal_semantics",
+    "null_ordering",
+    "snapshot_fingerprint",
+    "security_fingerprint"
+  ],
+  "function_extensions": {
+    "comparison": "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_comparison.yaml",
+    "boolean": "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_boolean.yaml"
+  },
+  "resource_limits": {
+    "serialized_plan_bytes": 1048576,
+    "schema_complexity": 4096,
+    "output_columns": 1024,
+    "output_complexity": 16384
+  },
+  "logical_type_extension": {
+    "name": "logical",
+    "uri": "urn:scalardb:analytics:substrait:logical",
+    "type_parameters": ["logical name", "parameter JSON", "required carrier type"],
+    "literal": "user-defined literal containing one carrier literal in a struct"
+  }
 }

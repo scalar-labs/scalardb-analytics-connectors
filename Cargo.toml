@@ -14,10 +14,11 @@ resolver = "3"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/scalar-labs/scalardb-analytics-connector"
+repository = "https://github.com/scalar-labs/scalardb-analytics-connectors"
 
 [workspace.dependencies]
 arrow-schema = "59.3.1"
+arrow-array = "59.3.1"
 analytics-types = { path = "crates/analytics-types", version = "0.1.0" }
 connector-sdk = { path = "crates/connector-sdk", version = "0.1.0" }
 connector-adbc = { path = "crates/connector-adbc", version = "0.1.0" }
@@ -25,4 +26,10 @@ connector-sql = { path = "crates/connector-sql", version = "0.1.0" }
 connector-postgresql = { path = "crates/connectors/postgresql", version = "0.1.0" }
 connector-mysql = { path = "crates/connectors/mysql", version = "0.1.0" }
 serde_json = "1.0"
+sha2 = "0.10"
+futures-core = "0.3"
+prost = "0.13.5"
+regress = "=0.10.4"
+substrait = "=0.55.0"
+substrait-validator = "=0.1.4"
 thiserror = "2.0"

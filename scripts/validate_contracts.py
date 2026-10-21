@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 
@@ -91,6 +92,120 @@ def validate_arrow_extensions(document: dict[str, object], path: Path) -> None:
             raise ValueError(f"{path}: {arrow_extension['name']} must not have parameters")
 
 
+def validate_substrait_contract(document: dict[str, object], path: Path) -> None:
+    if document.get("accepted_version") != "0.69.0":
+        raise ValueError(f"{path}: accepted_version must be 0.69.0")
+
+    rust_binding = document.get("rust_binding")
+    if rust_binding != {"crate": "substrait", "version": "0.55.0"}:
+        raise ValueError(f"{path}: unexpected Rust binding")
+
+    validator = document.get("validator")
+    if validator != {
+        "crate": "substrait-validator",
+        "version": "0.1.4",
+        "mode": "loose",
+        "local_subset_validation": True,
+    }:
+        raise ValueError(f"{path}: unexpected validator configuration")
+
+    expected_planning = {
+        "candidate_ast": "Substrait Plan",
+        "initial_rules": ["read", "projection", "filter"],
+        "reserved_rules": ["limit", "aggregation", "sort", "top_n", "join"],
+        "outcomes": ["exact", "retained", "unsupported"],
+        "residual_owner": "query-engine-adapter",
+        "expression_normal_form": "adapter-defined",
+        "static_capabilities": "pruning-hints-only",
+    }
+    if document.get("planning") != expected_planning:
+        raise ValueError(f"{path}: invalid planning contract")
+
+    plan = document.get("plan")
+    if not isinstance(plan, dict) or plan.get("relations") != ["ReadRel"]:
+        raise ValueError(f"{path}: invalid accepted relation list")
+
+    planned_subplan = document.get("planned_subplan")
+    expected_state = [
+        "substrait_plan",
+        "analytics_output_schema",
+        "source_bindings",
+        "validation_fingerprint",
+    ]
+    if (
+        not isinstance(planned_subplan, dict)
+        or planned_subplan.get("state") != expected_state
+        or planned_subplan.get("serializable") is not True
+        or planned_subplan.get("forbidden_state")
+        != ["credentials", "open_connections", "process_local_pointers"]
+    ):
+        raise ValueError(f"{path}: invalid planned subplan state")
+
+    expected_context = [
+        "source_product",
+        "source_version",
+        "execution_domain",
+        "collation",
+        "time_zone",
+        "decimal_semantics",
+        "null_ordering",
+        "snapshot_fingerprint",
+        "security_fingerprint",
+    ]
+    if document.get("planning_context") != expected_context:
+        raise ValueError(f"{path}: invalid planning context")
+
+    logical_type = document.get("logical_type_extension")
+    if not isinstance(logical_type, dict) or logical_type.get("name") != "logical":
+        raise ValueError(f"{path}: invalid logical type extension")
+
+    expected_function_extensions = {
+        "comparison": "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_comparison.yaml",
+        "boolean": "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_boolean.yaml",
+    }
+    if document.get("function_extensions") != expected_function_extensions:
+        raise ValueError(f"{path}: unexpected function extension URIs")
+
+    expected_limits = {
+        "serialized_plan_bytes": 1048576,
+        "schema_complexity": 4096,
+        "output_columns": 1024,
+        "output_complexity": 16384,
+    }
+    if document.get("resource_limits") != expected_limits:
+        raise ValueError(f"{path}: unexpected resource limits")
+
+    workspace_manifest = tomllib.loads(
+        (REPOSITORY_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    )
+    workspace_dependencies = workspace_manifest["workspace"]["dependencies"]
+    if workspace_dependencies.get("substrait") != "=0.55.0":
+        raise ValueError("Cargo.toml: substrait must be pinned to =0.55.0")
+    if workspace_dependencies.get("substrait-validator") != "=0.1.4":
+        raise ValueError("Cargo.toml: substrait-validator must be pinned to =0.1.4")
+    if workspace_dependencies.get("regress") != "=0.10.4":
+        raise ValueError("Cargo.toml: regress must be pinned to =0.10.4 for MSRV")
+
+    implementation = (
+        REPOSITORY_ROOT / "crates/connector-sdk/src/substrait.rs"
+    ).read_text(encoding="utf-8")
+    required_constants = (
+        "const SUBSTRAIT_VERSION: (u32, u32, u32) = (0, 69, 0);",
+        expected_function_extensions["comparison"],
+        expected_function_extensions["boolean"],
+        'const LOGICAL_URI: &str = "urn:scalardb:analytics:substrait:logical";',
+        "const MAX_PLAN_BYTES: usize = 1024 * 1024;",
+        "const MAX_SCHEMA_COMPLEXITY: usize = 4096;",
+        "const MAX_OUTPUT_COLUMNS: usize = 1024;",
+        "const MAX_OUTPUT_COMPLEXITY: usize = 16384;",
+    )
+    for required_constant in required_constants:
+        if required_constant not in implementation:
+            raise ValueError(
+                f"crates/connector-sdk/src/substrait.rs: missing {required_constant}"
+            )
+
+
 def main() -> None:
     manifest_path = CONTRACT_ROOT / "manifest.json"
     manifest = require_mapping(load_json(manifest_path), manifest_path)
@@ -129,8 +244,8 @@ def main() -> None:
                 validate_arrow_extensions(document, artifact_path)
             if kind == "type-mapping" and not isinstance(document.get("rules"), list):
                 raise ValueError(f"{relative_path}: rules must be an array")
-            if kind == "substrait-contract" and "accepted_version" not in document:
-                raise ValueError(f"{relative_path}: missing accepted_version")
+            if kind == "substrait-contract":
+                validate_substrait_contract(document, artifact_path)
 
     missing_artifacts = REQUIRED_ARTIFACTS - observed_artifacts
     if missing_artifacts:

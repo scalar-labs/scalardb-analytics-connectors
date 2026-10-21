@@ -68,16 +68,29 @@
 
           devShells.default = pkgs.devshell.mkShell {
             imports = [ (pkgs.devshell.importTOML ./devshell.toml) ];
+            env = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              {
+                name = "LIBRARY_PATH";
+                value = pkgs.lib.makeLibraryPath [ pkgs.libiconv ];
+              }
+            ];
             packages = [
               rustToolchain
               pkgs.clang
               pkgs.python3
-            ];
+              pkgs.protobuf
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
 
           devShells.msrv = pkgs.mkShellNoCC {
-            name = "scalardb-analytics-connector-msrv";
-            packages = [ msrvToolchain ];
+            name = "scalardb-analytics-connectors-msrv";
+            shellHook = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              export LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.libiconv ]}"
+            '';
+            packages = [
+              msrvToolchain
+              pkgs.protobuf
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
         };
     };
