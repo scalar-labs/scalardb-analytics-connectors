@@ -1,9 +1,9 @@
 # Connector contract representation
 
 This directory is the language-neutral representation of the connector
-contract. Product architecture documents define the contract's meaning; files
-here define the C ABI and machine-readable projections consumed by connector
-implementations and callers.
+contract. The [connector contract](../docs/connector-contract.md) defines the
+contract's meaning; files here define the C ABI and machine-readable
+projections consumed by connector implementations and callers.
 
 The initial skeleton reserves these stable locations:
 

@@ -44,17 +44,73 @@ pushdown decision + planned remote subplan
 native residual plan over a connector scan
 ~~~
 
-Two plan transformations are involved:
+Two plan transformations are coordinated:
 
-1. The connector extends or combines the remote Substrait subplan that it can
-   execute.
+1. The adapter constructs a complete next Substrait plan from the native
+   pattern and the remote plan already stored in the connector scan. The
+   connector accepts or rejects that candidate for the concrete source and
+   session; it does not return a patch for the adapter to apply.
 2. The Query Engine or its adapter replaces native operators and retains any
    residual operators required for correctness.
+
+During optimization, adapter-native planning state contains the accepted
+`PlannedSubplan`, its complete candidate adapter context, the session-local
+planning-snapshot identity, and engine-specific callback bookkeeping. Assigning
+an accepted `planned` result commits that planning state; the short examples do
+not show every field repeatedly.
+
+When the engine freezes a scan for distributed execution, the adapter derives a
+separate serializable execution payload containing only `PlannedSubplan` and its
+complete adapter context. Snapshot identities and callback bookkeeping never
+cross to executors or workers. The coordinator or driver retains the planning
+state while further callbacks are possible, then releases its snapshot when
+that state is discarded. Every execution-side connector session performs its
+own first-pull preflight from the serializable payload.
 
 The connector cannot safely rewrite Spark, Trino, DataFusion, or DuckDB native
 plan nodes. Conversely, the Query Engine cannot determine source-specific
 support from an operator name alone. Data type, collation, source version,
 session settings, and the already-pushed child plan can all change the answer.
+The common planning interface and native rewrite algorithm are defined in
+[Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
+
+## Base scan initialization
+
+Every adapter first completes planning-snapshot preparation for the connector
+source binding and expected Analytics schema resolved for the registered table.
+It then establishes the first `PlannedSubplan` before applying projection or
+filter callbacks by building a `ReadRel` and making an exact-only read attempt.
+The binding is the opaque value persisted in the Physical Catalog at
+registration; adapters copy it into `namedTable` and do not reinterpret source
+identifiers.
+
+~~~text
+initialize_connector_scan(registered_table, adapter_context):
+    snapshot = prepare_planning_snapshot(
+        registered_table.connector_source_binding,
+        registered_table.analytics_schema)
+    candidate = ReadRel(
+        named_table = registered_table.connector_source_binding,
+        base_schema = registered_table.analytics_schema)
+    result = plan_pushdown(
+        snapshot, current=None, Read, candidate, ExactOnly, adapter_context)
+
+    Exact(planned):
+        return adapter-native scan state(snapshot, planned, adapter_context)
+    Unsupported or PlanningError:
+        fail creation of the connector scan
+~~~
+
+There is no residual below a base read and no alternate source-specific reader
+inside this contract. An adapter may choose another product path before creating
+the connector scan, but it cannot construct one without an exact base read.
+
+| Query Engine | Base-read lifecycle point | Native state created |
+| --- | --- | --- |
+| Spark | Creating the connector `ScanBuilder`, before pushdown mix-ins mutate it | Builder state later copied into the resulting scan |
+| Trino | Creating the initial connector table handle for the registered table | Table handle containing the planned subplan and adapter context |
+| DataFusion | Creating request-local state at the start of `TableProvider::scan` | Planned base read local to that scan future |
+| DuckDB | The table-function bind callback for the registered table | Bind state used by projection/filter callbacks and execution |
 
 ## Operator comparison
 
@@ -64,7 +120,7 @@ does not provide.
 
 | Operator or pattern | Spark 4.2 | Trino 484 | DataFusion 55.2 | DuckDB 1.5.6 |
 | --- | --- | --- | --- | --- |
-| Projection | Required-column pruning; nested pruning may be partial | Expression projection with returned replacement expressions and assignments | Column-index projection passed to `TableProvider::scan` | Table-function column pruning |
+| Projection | Required-column pruning; nested pruning may be partial | Expression projection hook; the initial adapter uses only identity column selection | Column-index projection passed to `TableProvider::scan` | Table-function column pruning |
 | Filter | Per-predicate pushed and post-scan sets; predicates supplied to one call are conjunctive | Accepted constraint plus remaining domain and expression | Per-expression `Exact`, `Inexact`, or `Unsupported`; scan filters are conjunctive | Simple table filters and a C++ complex-filter callback; expressions left in the callback vector remain above the scan |
 | Limit | Supported; the source reports whether it is partial | Supported; the result reports whether the limit is guaranteed | Passed to `TableProvider::scan` as a lower-bound hint on rows produced; not pushed with inexact filters | No table-function limit hook; requires a logical optimizer extension |
 | Aggregation | Complete or partial; Spark performs final grouping for partial pushdown | Full replacement through `applyAggregation`; the aggregate set is accepted as a unit | No standard `TableProvider` aggregation callback | No table-function aggregation hook; requires a logical optimizer extension |
@@ -112,6 +168,45 @@ Join pushdown is available from Spark 4.1. Both scan builders must report that
 they can execute in one underlying source domain. The callback receives join
 type, required columns and aliases for both sides, and the join condition.
 
+The Spark adapter maps a filter callback to the shared interface as follows.
+The actual adapter may group predicates only when it can map the result back to
+Spark's post-scan predicate set without ambiguity.
+
+~~~text
+pushPredicates(predicates, scanBuilder):
+    original = scanBuilder.planned
+    working = original
+    remaining = []
+    for predicate in predicates:
+        result = plan_filter(predicate, working, can_retain=true)
+
+        Exact(planned):
+            working = planned
+        Retained(planned):
+            working = planned
+            remaining += predicate
+        Unsupported:
+            remaining += predicate
+        PlanningError(error):
+            scanBuilder.planned = original
+            fail Spark planning with error
+
+    scanBuilder.planned = working
+    return remaining
+~~~
+
+The callback is one transaction boundary. It commits the accumulated planned
+state only after every predicate has a result. A planning error aborts the
+callback and leaves the builder unchanged; it is never converted into a partly
+updated scan plus a residual. This is distinct from `Unsupported`, which is a
+normal per-predicate outcome.
+
+Required-column pruning constructs a projection candidate from the current
+builder state. The adapter updates the builder only after acceptance, and the
+schema reported by the resulting scan describes the accepted remote output.
+Partial limit, TopN, and aggregation results follow the same retained-operator
+rule rather than inventing another connector outcome.
+
 References:
 
 - [Spark `ScanBuilder` and pushdown order](https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/connector/read/ScanBuilder.html)
@@ -136,9 +231,12 @@ operator, or the optimizer can loop indefinitely.
 
 Filter pushdown returns the domain and expression that Trino must still
 evaluate. Projection pushdown returns replacement expressions and new column
-assignments, so a connector can push some projection expressions while leaving
-others in Trino. Limit and TopN return guarantee flags; when the connector uses
-the information only as a hint, Trino retains the native operator.
+assignments. The initial shared Substrait subset represents only identity
+column selection, so the initial Trino adapter offers that subset and leaves
+computed expressions in Trino. Expression projection requires a future shared
+relation shape and validation rule. Limit and TopN return guarantee flags; when
+the connector uses the information only as a hint, Trino retains the native
+operator.
 
 Aggregation does not have a generic partial-result flag comparable to Spark's.
 The documented callback accepts the aggregate list as a unit; if one requested
@@ -148,6 +246,53 @@ column exposed by both inputs. The join API is explicitly experimental.
 
 Trino has no standalone `applySort` callback. Ordering pushdown at this
 boundary is represented by TopN.
+
+The connector table handle carries `PlannedSubplan`, the normalized constraints
+already offered remotely, and the subset that must remain in Trino. A Trino
+callback maps to the shared interface like this:
+
+~~~text
+applyFilter(tableHandle, constraint):
+    new_constraint = subtract_trino_constraints(
+        constraint, tableHandle.already_offered_constraints)
+    offered, not_offered = convert_domain_and_expression(new_constraint)
+    if offered is empty:
+        return no change
+    result = plan_filter(offered, tableHandle.planned, can_retain=true)
+
+    Exact(planned):
+        return new table handle(
+            planned,
+            already_offered_constraints += offered,
+            retained_constraints unchanged),
+            remaining = union(
+                tableHandle.retained_constraints, not_offered)
+    Retained(planned):
+        return new table handle(
+            planned,
+            already_offered_constraints += offered,
+            retained_constraints += offered),
+            remaining = union(
+                tableHandle.retained_constraints, offered, not_offered)
+    Unsupported:
+        return no change
+~~~
+
+`convert_domain_and_expression` offers only the domain and expression parts it
+can represent together in the Substrait candidate. Anything not offered remains
+in Trino even after an exact result. The sets use the adapter's normalized
+native-constraint identity, not serialized Substrait byte equality.
+`already_offered_constraints` prevents the same remote predicate from being
+appended again; `retained_constraints` preserves every earlier obligation that
+Trino must still evaluate. An exact result for a newly offered constraint never
+removes an older retained one. An empty difference and `Unsupported` both map
+to Trino's empty result.
+
+`applyProjection` additionally returns Trino replacement expressions and
+assignments that refer to the output of the new handle. Aggregation and join
+callbacks offer their native atomic pattern as one complete candidate; the
+adapter does not report a partially accepted aggregate or join through the
+shared interface.
 
 Reference:
 
@@ -185,6 +330,62 @@ documentation explicitly states that Substrait does not cover every
 DataFusion plan and expression. The adapter must therefore still reject or
 retain unsupported native expressions.
 
+DataFusion asks about filters individually and later supplies accepted filters
+to `scan`, but the standard `TableProvider` interface carries no request-local
+planning token between those calls. The initial standard-provider adapter
+therefore reports every remotely useful filter as `Inexact`, even when the
+connector could execute it exactly. DataFusion keeps every native residual, so
+the later `scan` call can safely re-evaluate support without remembering a
+prior exact decision:
+
+~~~text
+supports_filters_pushdown(expressions, provider):
+    for expression in expressions:
+        if expression can be represented by the shared Substrait subset
+           and is not rejected by a certainly-unsupported hint:
+            report Inexact
+        else:
+            report Unsupported
+
+scan(session, projection, pushed_filters, limit):
+    planned = initialize_base_read(session, provider.registered_table)
+    remote_columns = union(projection, columns_referenced_by(pushed_filters))
+    projection_result = plan_exact_projection(planned, remote_columns)
+    Exact(next):
+        planned = next
+        local_projection = projection if remote_columns differs from projection
+    Unsupported:
+        local_projection = DataFusion projection over the full remote schema
+    PlanningError(error):
+        fail scan construction with error
+    for expression in pushed_filters:
+        result = plan_filter(expression, planned, can_retain=true)
+        Exact(next) or Retained(next):
+            planned = next
+        Unsupported:
+            leave planned unchanged
+        PlanningError(error):
+            fail scan construction with error
+    return local_projection over execution plan for planned;
+           DataFusion retains every filter
+~~~
+
+Projection is exact-only at the connector boundary. Its remote column set also
+contains every column needed by DataFusion's retained filters. An adapter-owned
+physical projection removes those extra residual columns. When remote
+projection is unsupported, the remote plan remains the base read and the same
+local projection restores the schema `scan` must return; no columns are silently
+omitted. The
+support callback has no connector session or request-local state, so it uses
+only common representability and conservative static pruning hints; it does not
+claim an exact connector decision. The `PlannedSubplan` is created inside and
+remains local to the `scan` future, so concurrent scans do not share mutable
+planning state. A custom optimizer rule may remove an exact native filter only
+when its own replacement node carries the accepted planned state; that stateful
+path is outside the initial standard-provider integration. Until the common
+limit rule is implemented, `limit` remains a DataFusion concern and is not
+included in the remote candidate.
+
 References:
 
 - [DataFusion `TableProvider`](https://docs.rs/datafusion/latest/datafusion/catalog/trait.TableProvider.html)
@@ -221,6 +422,44 @@ The Substrait community extension can produce and consume broad DuckDB
 Substrait plans. It is useful conversion infrastructure, but it does not by
 itself provide the planner callback or residual-plan decision required for
 connector pushdown.
+
+The DuckDB adapter stores the planned subplan in table-function bind state.
+The C++ complex-filter callback maps its mutable expression vector to the
+shared outcomes as follows:
+
+~~~text
+pushdown_complex_filter(bindState, expressions):
+    original_plan = bindState.planned
+    original_expressions = copy(expressions)
+    working_plan = original_plan
+    working_expressions = copy(expressions)
+    for expression in original_expressions:
+        result = plan_filter(expression, working_plan, can_retain=true)
+
+        Exact(planned):
+            working_plan = planned
+            remove expression from working_expressions
+        Retained(planned):
+            working_plan = planned
+        Unsupported:
+            leave working states unchanged
+        PlanningError(error):
+            bindState.planned = original_plan
+            expressions = original_expressions
+            fail DuckDB planning with error
+
+    bindState.planned = working_plan
+    expressions = working_expressions
+~~~
+
+As in Spark, one multi-expression callback is a transaction boundary. State and
+the residual vector are committed together only after every expression has a
+normal outcome.
+
+The stable C table-function projection hook updates the same bind state after
+an accepted projection candidate. Operators implemented through
+`OptimizerExtension` follow the general native rewrite algorithm and replace a
+matched DuckDB logical subtree with connector execution only after acceptance.
 
 References:
 
@@ -260,7 +499,9 @@ the inspected boundaries.
 
 A static capability declaration can help a planner avoid obviously impossible
 attempts, but it cannot authorize a rewrite. The authoritative decision needs
-the candidate plan and planning context, including at least:
+the candidate plan and an effective planning context. The adapter contributes
+engine-owned requirements, while the connector session obtains current source
+facts. Together they include at least:
 
 - Analytics and source types;
 - collation and string comparison semantics;
@@ -306,10 +547,10 @@ References:
 
 ## Delivery scope
 
-The first connector planning delivery supports projection and filter rules.
-It must establish the plan and result model needed by later limit,
-aggregation, sort, TopN, and join rules without claiming those rules are
-implemented.
+The first connector planning delivery establishes a base read and supports
+column-selection projection and filter rules. It must establish the plan and
+result model needed by later limit, aggregation, sort, TopN, and join rules
+without claiming those rules are implemented.
 
 Future Query Engine adapters can expose only the rules their pinned planner API
 can apply safely:

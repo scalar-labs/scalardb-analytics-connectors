@@ -31,8 +31,9 @@ Connector crates do not depend on one another. Native dependencies belong in
 ADBC driver artifacts, not in `connector-sdk` or a connector crate.
 
 Developer documentation starts at [docs/architecture.md](docs/architecture.md).
-It explains the repository boundaries and links to the canonical mental models
-for the shared Analytics type system and plan pushdown.
+It explains the repository boundaries and links to the connector contract, the
+shared Analytics type model, plan-pushdown model, type mappings, connector
+internals, and implementation conventions.
 
 ## Development
 

@@ -8,9 +8,49 @@ repository separates the stable external contract, source-independent
 processing, shared access mechanisms, source-specific behavior, and final C API
 assembly.
 
+A connector is the only component of ScalarDB Analytics that interprets a data
+source. For one source kind, it retrieves metadata and decides each column's
+Analytics type, and it reads rows as Arrow typed by those Analytics types. Query
+Engines and the Physical Catalog use connectors through the connector API and
+never touch data sources themselves.
+
 The central structural rule is inward dependency: source-specific and
 externally exposed crates depend on shared inner crates, while the shared
 layers do not depend on a particular source or assembled connector.
+
+## Product context
+
+Connectors serve the other ScalarDB Analytics components, which live outside
+this repository:
+
+| Component | Unit | Responsibility | Does not hold |
+| --- | --- | --- | --- |
+| Connector | One per source kind; generic ODBC and Query Engine-backed connectors each handle several source kinds | Metadata retrieval, deciding Analytics types, obtaining current source facts, deciding whether a complete Substrait candidate is safe, translating accepted plans, and producing values typed by Analytics types | Query Engine native-plan knowledge |
+| Adapter | One per Query Engine | Recognizing native planner patterns, constructing complete Substrait candidates from the current connector scan, applying planning outcomes to the native tree, retaining residual operators, and binding connector output into the Query Engine. Holds the mapping from Analytics types to Query Engine types, with its losses, as a table. | Data source semantics |
+| Type conversion library | One | Converting between Analytics types and the schema carried by connector output; shared by the Physical Catalog and adapters | Decisions other than conversion |
+| Physical Catalog | One | Persisting the Analytics types and source types connectors returned at registration, and serving them for browsing and planning | Type conversion |
+| Query Engine | — | Mapping connector output to its own types and executing queries | Direct access to data sources |
+
+Adding a data source adds no adapter, and adding a Query Engine adds no
+connector.
+
+Every column registered in the Physical Catalog carries an Analytics type, or is
+an unsupported column, together with its source type. Logical plan construction,
+catalog browsing, and cross-node references use those Analytics types without
+contacting the source. Before connector pushdown callbacks begin, a separate
+preparation operation hydrates current source facts used only to decide remote
+execution safety. A Query Engine maps Analytics types to its own types through
+its adapter. The reasons for this arrangement, including the properties it
+guarantees and the alternatives it rejects, are recorded in
+[Make one connector interpret each data source](design/make-one-connector-interpret-each-source.md).
+
+A schema appears at three points, each with a distinct role:
+
+| Point | Origin of the schema | Role |
+| --- | --- | --- |
+| Planning | The Physical Catalog's Analytics types, returned by the connector at registration | Plan without contacting the source |
+| Read start | The Analytics types the connector derives now | Compared with the Physical Catalog's types by the [schema check](connector-contract.md#schema-check) |
+| Read | The values the connector returns with the schema | Consistent, because one component decided the schema and produced the values |
 
 ## System shape
 
@@ -60,23 +100,29 @@ crate graph and do not become a source-specific implementation layer.
 
 An outer component may select and compose capabilities from inner components.
 An inner component must not inspect or branch on the identity of an outer
-source. Connector crates do not depend on one another.
+source. Connector crates do not depend on one another. The detailed
+responsibilities and dependency rules are in
+[Connector internals](connector-internals.md#structure-and-dependency-direction).
 
 ## Connector flow
 
-A Query Engine adapter first recognizes a native planner pattern and offers the
-connector a Substrait candidate. The SDK validates the common contract, and the
-source connector decides whether the candidate is supported under the concrete
-source and session semantics. The adapter owns the native plan rewrite and any
-residual operator. The resulting `PlannedSubplan` crosses the assembled
-connector API and is delegated to the selected source connector for execution.
+A Query Engine adapter first prepares an immutable connector fact snapshot for
+the registered source bindings. It then recognizes a native planner pattern and
+uses the current connector scan to construct the complete next Substrait plan.
+The SDK validates that candidate and binds adapter-owned requirements to facts
+from the prepared snapshot. The connector decides whether the complete
+candidate is supported. The adapter alone applies that outcome to the native
+tree and owns any residual operator. The resulting `PlannedSubplan` crosses the
+assembled connector API and is delegated to the selected source connector for
+execution.
 
 ~~~text
-Query Engine native plan
-  -> adapter builds a Substrait candidate
-  -> connector-sdk validates and dispatches an operator-specific rule
-  -> source connector makes a plan-aware decision
-  -> adapter rewrites its native plan
+native pattern + current connector scan
+  -> adapter completes source-fact preparation before optimizer callbacks
+  -> adapter builds the complete next Substrait candidate
+  -> connector-sdk validates it and dispatches an operator-specific rule
+  -> source connector uses prepared facts and makes a plan-aware decision
+  -> adapter removes, retains, or leaves the native pattern
   -> source connector executes the accepted PlannedSubplan
   -> connector-sdk validates Arrow schema, lifecycle, and resource bounds
 ~~~
@@ -103,8 +149,9 @@ data source schema
   -> Arrow schema at the connector boundary
 ~~~
 
-The precise request and response shapes are owned by contract. The shared type
-vocabulary and Arrow conversion rules are owned by the
+The precise request and response shapes are owned by the
+[connector contract](connector-contract.md) and its machine-readable form in
+contract. The shared type vocabulary and Arrow conversion rules are owned by the
 [Analytics type model](analytics-types.md).
 
 ## Type-system boundary
@@ -136,6 +183,8 @@ inside the Analytics type system.
 
 - The contract is language-neutral and does not derive its meaning from Rust
   implementation details.
+- One connector decides a data source's types and produces its values; no other
+  component reinterprets or casts them.
 - Dependencies point from assembly and source-specific crates toward shared
   crates, never in the reverse direction.
 - Source-specific catalog notation and behavior remain outside analytics-types
@@ -155,3 +204,22 @@ inside the Analytics type system.
 - Connector execution returns the schema recorded by `PlannedSubplan`; the SDK
   rejects mismatched batches and enforces cancellation, deadlines, and batch
   resource limits without adding an unbounded buffer.
+- A column the source declares is never dropped: a column that cannot be mapped
+  is returned as an unsupported column with its source type.
+
+## Documentation map
+
+| Document | Read it to |
+| --- | --- |
+| [Connector contract](connector-contract.md) | Call a connector, or check what a connector must guarantee |
+| [Analytics type model](analytics-types.md) | Understand the shared type vocabulary and its Arrow encoding |
+| [Type mappings](type-mappings.md) | Look up how a source kind's types map to Analytics types |
+| [Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md) | Trace responsibility, state, planning, native rewrite, and execution across an adapter, the SDK, and a connector |
+| [Query-engine pushdown integration](query-engine-pushdown.md) | Map Spark, Trino, DataFusion, or DuckDB planner hooks onto the shared pushdown model |
+| [Connector internals](connector-internals.md) | Change the connector SDK, the connector API implementation, or crate structure |
+| [Connector implementation conventions](connector-implementation.md) | Implement or change one source kind's connector |
+
+Callers of connectors (adapters, the Physical Catalog, and the application)
+need the contract and the type model. Connector implementers continue with the
+type mappings, the internals, and the implementation conventions, in that
+order.

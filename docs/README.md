@@ -11,14 +11,30 @@ Start with [architecture.md](architecture.md) for the repository-wide
 vocabulary, boundaries, ownership, and representative data flow. Follow its
 links to the relevant top-level document before changing an architectural unit.
 
-Read [query-engine-pushdown.md](query-engine-pushdown.md) before changing the
-Substrait request contract, connector planning boundary, or a Query Engine
-adapter. It compares the pushdown contracts of Spark, Trino, DataFusion, and
-DuckDB and derives the constraints on their shared model.
+Use the remaining top-level documents by responsibility:
 
-Read
-[plan-pushdown-with-query-engine-planners.md](plan-pushdown-with-query-engine-planners.md)
-for the accepted ownership model, planning API, and pushdown outcomes.
+- [connector-contract.md](connector-contract.md) defines what callers and
+  connector implementations may rely on across the connector boundary.
+- [analytics-types.md](analytics-types.md) defines the shared type-system mental
+  model; [type-mappings.md](type-mappings.md) applies it to source kinds.
+- [plan-pushdown-with-query-engine-planners.md](plan-pushdown-with-query-engine-planners.md)
+  defines who owns each plan, the planning and execution interfaces, the
+  operator rules, and the native rewrite algorithm.
+- [query-engine-pushdown.md](query-engine-pushdown.md) maps the planner
+  contracts of Spark, Trino, DataFusion, and DuckDB onto that shared model.
+- [connector-internals.md](connector-internals.md) explains SDK, source-access,
+  lifecycle, and assembly ownership.
+- [connector-implementation.md](connector-implementation.md) gives the
+  conventions for implementing and testing one source connector.
+
+Read the shared pushdown model before changing the Substrait request contract,
+connector planning boundary, or a Query Engine adapter. Then use the
+engine-specific comparison to check the native hook, candidate granularity,
+residual guarantee, and rewrite behavior.
+
+The focused decisions under [design](design/) explain why the type model is
+flat, why one connector interprets each source, why the boundary is a typed C
+ABI rather than ADBC, and why Substrait remains the shared pushdown AST.
 
 Use the documentation layers for distinct purposes:
 
