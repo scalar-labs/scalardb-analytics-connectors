@@ -8,9 +8,8 @@ document holds the current mappings. How a connector declares coverage over
 them, and how columns outside its coverage are returned, follow
 [Type mappings and coverage](connector-contract.md#type-mappings-and-coverage)
 and [Unsupported columns](connector-contract.md#unsupported-columns). Analytics
-type names follow the [Analytics type model](analytics-types.md). The
-machine-readable form of each table belongs in
-[contract/type-mappings](../contract/type-mappings).
+type names follow the [Analytics type model](analytics-types.md). These tables
+are the canonical source mappings.
 
 ## Common rules
 

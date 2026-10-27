@@ -68,14 +68,14 @@ connector-api
                                                    analytics-types
 ~~~
 
-The language-neutral files under contract define the interface artifacts used
-across implementation languages. They are validated independently from the Rust
-crate graph and do not become a source-specific implementation layer.
+The [connector contract](connector-contract.md) defines the language-neutral
+semantics used across implementation languages. Public bindings and runtime
+formats implement that contract without becoming a source-specific layer.
 
 ## Design priorities
 
 1. **Language-neutral boundaries.** Connector requests, responses, declarations,
-   and extension encodings have contract artifacts outside the Rust API.
+   and extension encodings have semantics independent of the Rust API.
 2. **Source isolation.** PostgreSQL, MySQL, and future source behavior remains in
    its connector or an explicitly shared access layer.
 3. **Inward dependencies.** Shared schema and SDK crates do not depend on
@@ -90,8 +90,8 @@ crate graph and do not become a source-specific implementation layer.
 
 | Component | Owns |
 | --- | --- |
-| contract | Connector interface artifacts and language-neutral Arrow extension encodings |
-| analytics-types | The source-independent Analytics schema model, validation, and Arrow conversion |
+| connector contract documentation | Language-neutral connector-boundary semantics |
+| analytics-types | The source-independent Analytics schema model, validation, Arrow conversion, and extension encodings |
 | connector-sdk | Source-independent connector behavior and the interface used by connector implementations |
 | connector-adbc | Shared ADBC-based access behavior |
 | connector-sql | Behavior shared by SQL-family connectors |
@@ -150,9 +150,9 @@ data source schema
 ~~~
 
 The precise request and response shapes are owned by the
-[connector contract](connector-contract.md) and its machine-readable form in
-contract. The shared type vocabulary and Arrow conversion rules are owned by the
-[Analytics type model](analytics-types.md).
+[connector contract](connector-contract.md). The shared type vocabulary and
+Arrow conversion rules are owned by the
+[Analytics type model](analytics-types.md) and enforced by `analytics-types`.
 
 ## Type-system boundary
 

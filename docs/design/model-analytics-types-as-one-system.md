@@ -31,6 +31,6 @@ Arrow compatibility mechanics from defining the public schema model.
 ## Consequences
 
 Consumers match one AnalyticsType enum. Types whose Arrow representation needs
-extension metadata have stable names and parameter encodings in the
-machine-readable Arrow contract. Code that needs those details asks the Arrow
-conversion boundary rather than traversing a physical/logical split.
+extension metadata have stable names and parameter encodings in the Analytics
+type model and conversion implementation. Code that needs those details asks
+the Arrow conversion boundary rather than traversing a physical/logical split.

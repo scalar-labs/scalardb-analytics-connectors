@@ -162,45 +162,6 @@ fn extension_metadata_spelling_does_not_change_analytics_equality() {
 }
 
 #[test]
-fn arrow_extension_contract_matches_public_conversion_behavior() {
-    let contract: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../contract/analytics-types/arrow-extensions.json"
-    ))
-    .unwrap();
-    let contract_encodings = contract["arrow_extensions"].as_array().unwrap();
-    let samples = [
-        AnalyticsType::Uuid,
-        AnalyticsType::Json,
-        AnalyticsType::Enum(EnumType::new(Vec::new())),
-        AnalyticsType::Year,
-        AnalyticsType::TimeWithTimeZone,
-    ];
-    assert_eq!(contract_encodings.len(), samples.len());
-
-    for (contract_encoding, data_type) in contract_encodings.iter().zip(samples) {
-        let arrow = AnalyticsField::new("value", data_type, false).to_arrow();
-        let expected_name = format!(
-            "{}{}",
-            contract["extension_name_prefix"].as_str().unwrap(),
-            contract_encoding["name"].as_str().unwrap()
-        );
-        assert_eq!(
-            arrow.metadata().get(EXTENSION_TYPE_NAME_KEY),
-            Some(&expected_name)
-        );
-        let expected_storage = match arrow.data_type() {
-            DataType::Utf8 => "utf8",
-            DataType::Int16 => "int16",
-            other => panic!("unexpected extension storage type {other:?}"),
-        };
-        assert_eq!(
-            contract_encoding["storage_type"].as_str(),
-            Some(expected_storage)
-        );
-    }
-}
-
-#[test]
 fn unsupported_arrow_parameters_are_typed_errors() {
     let non_utc = Schema::new(vec![Field::new(
         "created_at",

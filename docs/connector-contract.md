@@ -10,11 +10,10 @@ It does not define how a connector is built; that belongs to
 [Connector internals](connector-internals.md) and
 [Connector implementation conventions](connector-implementation.md).
 
-The C header, JSON Schemas, and Arrow schema descriptions under
-[contract](../contract/README.md) are the machine-readable form of this
-document. Analytics types are defined by the
-[Analytics type model](analytics-types.md), and per-source mappings by
-[Type mappings](type-mappings.md).
+This document is the semantic source of truth for the connector boundary.
+Analytics types are defined by the [Analytics type model](analytics-types.md),
+and per-source mappings by [Type mappings](type-mappings.md). Runtime formats
+and generated bindings must preserve the behavior defined here.
 
 ## Capabilities
 
@@ -618,8 +617,8 @@ are compared with the same normalization:
 - Columns are ordered by ordinal; constraints by kind, name, and columns.
 - Names and source types are used as the source spelled them, without case
   folding.
-- Field names used in serialization are the output column names of the
-  machine-readable contract ([Functions](#functions)).
+- Field names used in serialization are the output column names defined by the
+  corresponding API function ([Functions](#functions)).
 - The normalized record is serialized with RFC 8785 JSON canonicalization and
   hashed with SHA-256.
 
@@ -1126,7 +1125,7 @@ follows:
 
 `logical` takes as type parameters the type name, its parameters, and the
 Substrait type that carries the value (the type corresponding to the storage
-type, called the carrier type in the machine-readable contract). The extension
+type, called the carrier type here). The extension
 declares `logical` as a structure with exactly one field of the carrier type. A
 literal is a `Literal.UserDefined` in its `struct` form with the value in that
 field. Adding an extension-encoded type does not change the extension.
@@ -1180,8 +1179,8 @@ model is in
 
 This section maps the requests, capability declarations, errors, and
 provenance above onto connector API functions and the shape of exchanged data.
-The exact C function names and structures are defined by the C header in
-[contract](../contract/README.md) and versioned with the library.
+The exact C function names and structures are published in the C header with
+the first API implementation and versioned with the library.
 
 ### Format
 
@@ -1191,8 +1190,8 @@ The exact C function names and structures are defined by the C header in
 - Result streams and tabular inputs, such as a set of tables, use the Arrow C
   data interface (`ArrowArrayStream`, `ArrowArray`, `ArrowSchema`).
 - Read requests are serialized Substrait plans (protobuf bytes).
-- Capability declarations and static information are versioned JSON
-  documents whose shapes are JSON Schemas in the machine-readable contract.
+- Capability declarations and static information are versioned JSON documents
+  whose required content is defined in their sections below.
 - Errors use the structure in [Errors in the API](#errors-in-the-api).
 
 ### Functions
@@ -1277,8 +1276,8 @@ The complete responsibility and control flow are in
 [Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
 
 The Arrow schemas of the three metadata requests' inputs and outputs are the
-items of [Metadata retrieval](#metadata-retrieval) laid out as columns, and live
-in the machine-readable contract. Each request kind has a fixed output schema,
+items of [Metadata retrieval](#metadata-retrieval) laid out as columns. Each
+request kind has a fixed output schema,
 so its stream can return the schema before the source is queried. Table
 metadata output has one row per table, with columns and constraints as nested
 columns.

@@ -61,9 +61,9 @@ and `connector-sql`.
 | `adbc-drivers/<source>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
 | `conformance` | The runner that tests the contract through the connector API only, and per-source fixtures | Dependencies on connector internals |
 
-`contract` is the machine-readable form of the external contract. Rust crates
-and callers in other languages, such as adapters and the Physical Catalog, read
-it.
+The [connector contract](connector-contract.md) is the semantic source of truth.
+Rust crates enforce the implemented behavior, and callers in other languages,
+such as adapters and the Physical Catalog, use the typed connector API.
 
 ### Dependency rules
 
@@ -460,7 +460,8 @@ at build time. `connector-sdk` defines its format and validates it when loading.
 
 Whatever can be data is data. Dialect translation tables, semantic guards, and type correspondence are
 easier to check for errors as tables than scattered through code, and type data
-can be checked against `contract/type-mappings` and conformance expectations.
+can be checked against [Type mappings](type-mappings.md) and conformance
+expectations.
 What data cannot express, such as source type grammar, type resolution needing
 extra catalog reads, and processing for non-SQL sources, is code. Writing
 everything as data would push the definition format toward a programming
@@ -681,4 +682,4 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and `parse_source_type`, and the connector SDK's type mapping and table metadata assembly |
 | [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's fingerprint, schema, lifecycle, batch-bound, and provenance checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's common validation and operator dispatch plus the connector's plan-aware decision |
-| [Connector API](connector-contract.md#connector-api) | `connector-api` and `contract` |
+| [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header |

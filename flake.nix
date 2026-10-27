@@ -77,7 +77,6 @@
             packages = [
               rustToolchain
               pkgs.clang
-              pkgs.python3
               pkgs.protobuf
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };

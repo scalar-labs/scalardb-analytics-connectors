@@ -1,8 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://scalar-labs.com/scalardb-analytics-connectors/capability.schema.json",
-  "title": "Connector capability declaration",
-  "type": "object",
-  "properties": {},
-  "additionalProperties": false
-}

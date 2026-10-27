@@ -1,8 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://scalar-labs.com/scalardb-analytics-connectors/static-information.schema.json",
-  "title": "Connector static information",
-  "type": "object",
-  "properties": {},
-  "additionalProperties": false
-}

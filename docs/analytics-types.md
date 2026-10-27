@@ -88,11 +88,10 @@ connector that returns an unregistered extension-encoded type fails the
 | Year | scalardb.analytics.year | None | Int16 | A year |
 | TimeWithTimeZone | scalardb.analytics.timetz | None | Utf8 | A time of day with a time zone, such as `10:00:00+09`; equal only when both time and zone are equal |
 
-This table defines meaning. The machine-readable
-[Arrow extension contract](../contract/analytics-types/arrow-extensions.json)
-represents it, recording stable names, parameter shapes, value representations,
-equality conditions, and storage encodings. It describes a serialization
-boundary, not a category or hierarchy inside AnalyticsType.
+This table defines the stable names, parameter shapes, value representations,
+equality conditions, and storage encodings. The `analytics-types` conversion
+implementation enforces these encodings in both directions. They describe a
+serialization boundary, not a category or hierarchy inside AnalyticsType.
 
 ### Extension equality
 
