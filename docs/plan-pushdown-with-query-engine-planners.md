@@ -254,7 +254,7 @@ Canonical encoding materializes contract defaults, distinguishes absent from
 present-empty where the schema permits both, sorts extension entries by URI and
 name, uses the contract's numeric enum values, and length-delimits every field.
 An unknown context version, enum value, field, or extension is
-`outside declaration`, not silently ignored. The connector contract owns the
+`invalid request`, not silently ignored. The connector contract owns the
 concrete field and enum definitions.
 
 ## Validation identity

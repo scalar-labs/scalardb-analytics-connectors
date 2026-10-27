@@ -13,7 +13,7 @@ use std::{
 use arrow_array::RecordBatch;
 use futures_core::Stream;
 
-use crate::{ConnectorError, ErrorCategory, PlannedSubplan, ValidationFingerprint};
+use crate::{ConnectorError, ErrorKind, PlannedSubplan, ValidationFingerprint};
 
 /// Pull-based Arrow batch stream returned by a connector.
 pub type RecordBatchStream =
@@ -46,7 +46,8 @@ impl StreamLimits {
     pub fn new(max_batch_rows: usize, max_batch_bytes: usize) -> Result<Self, ConnectorError> {
         if max_batch_rows == 0 || max_batch_bytes == 0 {
             return Err(ConnectorError::new(
-                ErrorCategory::InvalidRequest,
+                ErrorKind::InvalidSettings,
+                false,
                 "stream limits must be non-zero",
             ));
         }
@@ -110,7 +111,8 @@ impl ExecutionContext {
     fn check_active(&self) -> Result<(), ConnectorError> {
         if self.cancellation.is_cancelled() {
             return Err(ConnectorError::new(
-                ErrorCategory::Cancelled,
+                ErrorKind::Cancellation,
+                false,
                 "connector execution was cancelled",
             ));
         }
@@ -119,7 +121,8 @@ impl ExecutionContext {
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             return Err(ConnectorError::new(
-                ErrorCategory::Timeout,
+                ErrorKind::Timeout,
+                true,
                 "connector execution deadline expired",
             ));
         }
@@ -206,7 +209,8 @@ pub fn execute_planned(
     let output = executor.execute(plan, &context)?;
     if output.provenance.validation_fingerprint() != plan.validation_fingerprint() {
         return Err(ConnectorError::new(
-            ErrorCategory::Internal,
+            ErrorKind::Internal,
+            false,
             "execution provenance does not match the planned subplan",
         ));
     }
@@ -236,19 +240,22 @@ impl ExecutionStream {
     fn validate_batch(&self, batch: &RecordBatch) -> Result<(), ConnectorError> {
         if batch.num_rows() > self.context.limits.max_batch_rows {
             return Err(ConnectorError::new(
-                ErrorCategory::ResourceExhausted,
+                ErrorKind::Resource,
+                true,
                 "connector batch exceeds the configured row limit",
             ));
         }
         if batch.get_array_memory_size() > self.context.limits.max_batch_bytes {
             return Err(ConnectorError::new(
-                ErrorCategory::ResourceExhausted,
+                ErrorKind::Resource,
+                true,
                 "connector batch exceeds the configured byte limit",
             ));
         }
         if batch.schema().as_ref() != &self.expected_schema {
             return Err(ConnectorError::new(
-                ErrorCategory::SchemaMismatch,
+                ErrorKind::Internal,
+                false,
                 "connector batch schema differs from the planned output schema",
             ));
         }

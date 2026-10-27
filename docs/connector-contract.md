@@ -210,7 +210,7 @@ Planning preparation instead calls source access from
 `finish_prepare_planning`. In both cases the caller already holds the operation
 handle and can cancel from another thread while the source is still answering.
 
-- Validation errors (`invalid request`, `outside declaration`, `invalid state`) are
+- Validation errors (`invalid request`, `invalid state`) are
   returned immediately by the function that starts the operation.
 - Errors at the source are returned as pull failures, or by
   `finish_prepare_planning` for preparation. The caller retrieves
@@ -283,8 +283,7 @@ unresolvable host name is not retryable.
 | `connection` | The data source cannot be reached, or the connection broke (retryable). |
 | `authentication` | Authentication failed (not retryable). |
 | `permission` | There is no privilege to read a particular target (not retryable). |
-| `outside declaration` | The request asks for something outside the capability declaration (not retryable). |
-| `invalid request` | The request's shape or range is invalid (not retryable). |
+| `invalid request` | The request's shape or range is invalid, including a request outside the capability declaration (not retryable). |
 | `invalid state` | The call order, session state, or invalidation of a planned subplan prevents accepting the request ([Units and concurrency](#units-and-concurrency), [Cancellation and timeouts](#cancellation-and-timeouts)). Finish the running stream, replan an invalidated subplan, or reopen an unusable session. |
 | `stale registration` | The table shape registered in the Physical Catalog no longer matches the source: the schema check found a type or nullability mismatch ([Schema check](#schema-check)), or a table or column the request references no longer exists. Re-registration is required (not retryable). |
 | `data` | A value that cannot be carried exactly was encountered ([Values](#values)) (not retryable). |
@@ -434,7 +433,7 @@ metadata and read requests.
 | Release a stream partway | The source query stops and the same session accepts the next request |
 | Break the source connection during a pull | The session becomes unusable and the next request returns `invalid state` |
 | With ADBC access, install an ADBC driver outside the supported version range and open a session | Opening the session returns `invalid settings` |
-| Send a request beyond the capability declaration | Starting the operation returns `outside declaration` |
+| Send a request beyond the capability declaration | Starting the operation returns `invalid request` |
 | Send a read request whose plan is not valid Substrait | Starting the operation returns `invalid request` |
 | Fail during a pull | Retrieving the operation's error yields its kind and retry flag |
 | All of the above | Secret values and filter literals never appear in error messages, diagnostics, or logs |
@@ -737,7 +736,7 @@ rules and the [error kinds](#errors). Errors reach as follows:
 
 | Error kinds | Reach |
 | --- | --- |
-| `authentication`, `outside declaration`, `invalid request`, `invalid state` | The whole operation fails |
+| `authentication`, `invalid request`, `invalid state` | The whole operation fails |
 | `permission` | Recorded per target as "could not be read" ([Missing information](#missing-information)); the operation does not fail |
 | `connection`, `cancellation`, `timeout`, `resource`, `source`, `internal` | Before the first result, the whole operation fails. Partway, the table metadata completed so far is returned and the whole operation is incomplete. |
 
@@ -921,7 +920,7 @@ condition results agree.
 When a read ends with an error or a cancellation partway through the stream,
 each row returned so far has correct values. Those rows are only part of the
 result, and the caller never treats them as complete. `authentication`,
-`permission`, `outside declaration`, `invalid request`, `invalid state`, and
+`permission`, `invalid request`, `invalid state`, and
 `stale registration` are returned before the first row. Other kinds can occur
 before the first row or partway.
 
@@ -1033,7 +1032,7 @@ An accepted plan must:
 
 A plan that is malformed or internally inconsistent is rejected as
 `invalid request`. A valid Substrait plan outside the shared contract subset is
-rejected as `outside declaration`. A candidate inside the shared subset can still be
+also rejected as `invalid request`. A candidate inside the shared subset can still be
 `Unsupported` by a connector for the concrete planning context; that is a
 normal planning outcome, not an invalid request. Adapters check in their own
 tests that the candidates they build pass common validation.

@@ -8,7 +8,7 @@ mod metadata;
 mod planning;
 mod substrait;
 
-pub use error::{ConnectorError, ErrorCategory, RequestError};
+pub use error::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind, RequestError};
 pub use execution::{
     CancellationToken, ConnectorExecutor, ExecutionContext, ExecutionOutput, ExecutionProvenance,
     ExecutionStream, RecordBatchStream, StreamLimits, execute_planned,

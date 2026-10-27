@@ -1,9 +1,11 @@
-//! Errors at the external request boundary.
+//! Errors at connector boundaries.
 
-use thiserror::Error;
+use std::{error::Error, fmt};
+
+use thiserror::Error as ThisError;
 
 /// Failure to validate or convert a serialized read request.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, ThisError, PartialEq, Eq)]
 pub enum RequestError {
     /// The input is not a valid Substrait request or is internally inconsistent.
     #[error("invalid request: {reason}")]
@@ -28,45 +30,169 @@ impl RequestError {
     }
 }
 
-/// Stable error categories exposed by source-independent connector processing.
+/// Stable error kinds exposed by source-independent connector processing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ErrorCategory {
-    InvalidRequest,
-    Unsupported,
+pub enum ErrorKind {
+    InvalidSettings,
+    Connection,
     Authentication,
-    Authorization,
-    NotFound,
-    Unavailable,
+    Permission,
+    InvalidRequest,
+    InvalidState,
+    StaleRegistration,
+    Data,
+    Cancellation,
     Timeout,
-    Cancelled,
-    ResourceExhausted,
-    SchemaMismatch,
+    Resource,
     Source,
     Internal,
 }
 
-/// An error safe to return across the connector boundary.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{category:?}: {message}")]
-pub struct ConnectorError {
-    category: ErrorCategory,
-    message: String,
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::InvalidSettings => "invalid settings",
+            Self::Connection => "connection",
+            Self::Authentication => "authentication",
+            Self::Permission => "permission",
+            Self::InvalidRequest => "invalid request",
+            Self::InvalidState => "invalid state",
+            Self::StaleRegistration => "stale registration",
+            Self::Data => "data",
+            Self::Cancellation => "cancellation",
+            Self::Timeout => "timeout",
+            Self::Resource => "resource",
+            Self::Source => "source",
+            Self::Internal => "internal",
+        };
+        formatter.write_str(name)
+    }
 }
 
-impl ConnectorError {
-    pub fn new(category: ErrorCategory, redacted_message: impl Into<String>) -> Self {
+/// A typed diagnostic value owned by the connector error.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum DiagnosticValue {
+    Bool(bool),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Utf8(String),
+    Bytes(Vec<u8>),
+}
+
+/// One diagnostic entry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiagnosticEntry {
+    key: String,
+    value: DiagnosticValue,
+}
+
+impl DiagnosticEntry {
+    pub fn new(key: impl Into<String>, value: DiagnosticValue) -> Self {
         Self {
-            category,
-            message: redacted_message.into(),
+            key: key.into(),
+            value,
         }
     }
 
-    pub fn category(&self) -> ErrorCategory {
-        self.category
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn value(&self) -> &DiagnosticValue {
+        &self.value
     }
 }
+
+/// An owned error that can cross connector and language boundaries.
+#[derive(Clone, PartialEq)]
+pub struct ConnectorError {
+    kind: ErrorKind,
+    retryable: bool,
+    safe_message: String,
+    source_code: Option<String>,
+    source_message: Option<String>,
+    diagnostics: Vec<DiagnosticEntry>,
+}
+
+impl ConnectorError {
+    pub fn new(kind: ErrorKind, retryable: bool, safe_message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            retryable,
+            safe_message: safe_message.into(),
+            source_code: None,
+            source_message: None,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub fn with_source_error(
+        mut self,
+        source_code: Option<String>,
+        source_message: Option<String>,
+    ) -> Self {
+        self.source_code = source_code;
+        self.source_message = source_message;
+        self
+    }
+
+    pub fn with_diagnostics(
+        mut self,
+        diagnostics: impl IntoIterator<Item = DiagnosticEntry>,
+    ) -> Self {
+        self.diagnostics = diagnostics.into_iter().collect();
+        self
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub fn safe_message(&self) -> &str {
+        &self.safe_message
+    }
+
+    pub fn source_code(&self) -> Option<&str> {
+        self.source_code.as_deref()
+    }
+
+    pub fn source_message(&self) -> Option<&str> {
+        self.source_message.as_deref()
+    }
+
+    pub fn diagnostics(&self) -> &[DiagnosticEntry] {
+        &self.diagnostics
+    }
+}
+
+impl fmt::Display for ConnectorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.kind, self.safe_message)
+    }
+}
+
+impl fmt::Debug for ConnectorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConnectorError")
+            .field("kind", &self.kind)
+            .field("retryable", &self.retryable)
+            .field("safe_message", &self.safe_message)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Error for ConnectorError {}

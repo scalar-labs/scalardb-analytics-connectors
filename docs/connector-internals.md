@@ -245,7 +245,7 @@ rejects it if a check fails:
 | Check | Error on failure |
 | --- | --- |
 | The plan is valid in the fixed Substrait version (passes the validator) | `invalid request` |
-| The plan fits the shared contract subset and resource bounds | `outside declaration` |
+| The plan fits the shared contract subset and resource bounds | `invalid request` |
 | Column references are within the expected schema | `invalid request` |
 | Expressions, literals, and declared functions are internally type-consistent | `invalid request` |
 

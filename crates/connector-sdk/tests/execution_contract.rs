@@ -2,7 +2,7 @@ mod support;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use connector_sdk::{
-    CancellationToken, ConnectorError, ConnectorExecutor, ErrorCategory, ExecutionContext,
+    CancellationToken, ConnectorError, ConnectorExecutor, ErrorKind, ExecutionContext,
     ExecutionOutput, ExecutionProvenance, PlannedSubplan, RecordBatchStream, StreamLimits,
     execute_planned,
 };
@@ -58,7 +58,8 @@ fn execution_enforces_the_planned_schema_and_cancellation() {
     )
     .err()
     .unwrap();
-    assert_eq!(error.category(), ErrorCategory::Cancelled);
+    assert_eq!(error.kind(), ErrorKind::Cancellation);
+    assert!(!error.retryable());
 }
 
 #[test]
@@ -83,8 +84,16 @@ fn execution_rejects_a_batch_with_a_different_schema() {
     let mut task_context = Context::from_waker(Waker::noop());
     assert!(matches!(
         Stream::poll_next(Pin::new(&mut stream), &mut task_context),
-        Poll::Ready(Some(Err(error))) if error.category() == ErrorCategory::SchemaMismatch
+        Poll::Ready(Some(Err(error))) if error.kind() == ErrorKind::Internal && !error.retryable()
     ));
+}
+
+#[test]
+fn stream_limits_reject_invalid_library_settings() {
+    let error = StreamLimits::new(0, 1024).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidSettings);
+    assert!(!error.retryable());
 }
 
 #[test]
@@ -116,7 +125,7 @@ fn execution_enforces_batch_resource_limits() {
     let mut task_context = Context::from_waker(Waker::noop());
     assert!(matches!(
         Stream::poll_next(Pin::new(&mut stream), &mut task_context),
-        Poll::Ready(Some(Err(error))) if error.category() == ErrorCategory::ResourceExhausted
+        Poll::Ready(Some(Err(error))) if error.kind() == ErrorKind::Resource && error.retryable()
     ));
 }
 
