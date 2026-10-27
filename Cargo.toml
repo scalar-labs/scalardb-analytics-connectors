@@ -17,6 +17,9 @@ license = "Apache-2.0"
 repository = "https://github.com/scalar-labs/scalardb-analytics-connectors"
 
 [workspace.dependencies]
+adbc_core = "=0.25.0"
+adbc_driver_manager = "=0.25.0"
+adbc_ffi = "=0.25.0"
 arrow-schema = "59.3.1"
 arrow-array = "59.3.1"
 analytics-types = { path = "crates/analytics-types", version = "0.1.0" }
