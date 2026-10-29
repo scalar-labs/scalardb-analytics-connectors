@@ -19,14 +19,14 @@ Type conversion is owned by the boundary where the two type systems meet:
 
 | Boundary | Mapping owner | Example |
 | --- | --- | --- |
-| Source to Analytics | Source connector, through its [type mapping](type-mappings.md) | PostgreSQL uuid to Analytics Uuid |
+| Data Source to Analytics | Connector, through its [type mapping](type-mappings.md) | PostgreSQL uuid to Analytics Uuid |
 | Analytics to Arrow | analytics-types | Analytics Uuid to Arrow Utf8 plus extension metadata |
 | Analytics to Query Engine | Query Engine adapter ([Execution](#execution)) | Analytics Uuid to DuckDB UUID |
 
 A PostgreSQL text column maps to Analytics Text; it does not become Uuid
 because both happen to use Arrow Utf8. Conversely, PostgreSQL uuid, Parquet UUID
 annotation, and SQL Server uniqueidentifier may all map to the same Analytics
-Uuid even though their source type systems differ.
+Uuid even though their Data Source type systems differ.
 
 Connector output crosses to adapters as Arrow for two reasons: DuckDB,
 DataFusion, and Spark all ingest Arrow, which keeps adapter mappings small, and
@@ -60,7 +60,7 @@ not reach every adapter without conversion.
 Unsigned integers and decimals with precision above 38 are not admitted, even
 though Arrow has `uint8` through `uint64` and `decimal256`, and MySQL `DECIMAL`
 reaches precision 65 while PostgreSQL `numeric` allows an unspecified
-precision. How type mappings handle such source types is defined in
+precision. How type mappings handle such Data Source types is defined in
 [Common rules](type-mappings.md#common-rules). Admitting them is an addition of
 Analytics types ([Adding Analytics types](#adding-analytics-types)).
 
@@ -95,11 +95,11 @@ serialization boundary, not a category or hierarchy inside AnalyticsType.
 
 ### Extension equality
 
-A source type can be an extension-encoded type only when comparing storage
+A Data Source type can be an extension-encoded type only when comparing storage
 values preserves value equality. Otherwise it needs a type with a direct Arrow
 encoding.
 
-| Source type | Storage type | Equality |
+| Data Source type | Storage type | Equality |
 | --- | --- | --- |
 | uuid | Utf8 (36-character canonical form) | Preserved |
 | PostgreSQL jsonb, MySQL JSON | Utf8 | Preserved only when the source emits canonical form |
@@ -220,9 +220,9 @@ when returning results, as Spark does.
 
 ## Unsupported columns
 
-A column whose source type a connector cannot map to an Analytics type is still
+A column whose Data Source type a connector cannot map to an Analytics type is still
 registered in the Physical Catalog with its name, ordinal, nullability, and
-source type, and without an Analytics type. So is a column whose Analytics type,
+Data Source type, and without an Analytics type. So is a column whose Analytics type,
 as returned by the connector, is unknown to the Physical Catalog.
 
 Unsupported is not a type. Analytics types are the set of types ScalarDB
@@ -231,7 +231,7 @@ would make "declared" and "readable" disagree. Projecting an unsupported column
 fails during planning, and unsupported columns never appear in a connector's
 stream.
 
-The source type also records what the connector's mapping did not cover, and
+The Data Source type also records what the connector's mapping did not cover, and
 decisions to add mappings are made from that record.
 
 ## Inferred types
@@ -249,7 +249,7 @@ column's Analytics type was declared or inferred.
 - An extension name and parameter shape mean the same thing for every
   connector and adapter, and connectors use only registered extension-encoded
   types.
-- Source-specific catalog details do not appear in AnalyticsType.
+- Data Source-specific catalog details do not appear in AnalyticsType.
 - Supported nested schemas round-trip without losing Analytics names, ordering,
   nullability, or type parameters.
 - Unknown extension names, malformed parameters, encoding mismatches, and

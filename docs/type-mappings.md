@@ -2,7 +2,7 @@
 
 ## Summary
 
-A type mapping defines, for one source kind, where source types are read from,
+A type mapping defines, for one Connector, where Data Source types are read from,
 in what form they are returned, and which Analytics type each maps to. This
 document holds the current mappings. How a connector declares coverage over
 them, and how columns outside its coverage are returned, follow
@@ -13,16 +13,16 @@ are the canonical source mappings.
 
 ## Common rules
 
-Mappings are defined for eight source kinds: PostgreSQL, MySQL, SQLite,
+Mappings are defined for eight Connectors: PostgreSQL, MySQL, SQLite,
 Parquet, Iceberg, Delta Lake, SQL Server, and Oracle. A type mapping is the
 mapping guaranteed by metadata retrieval and data read; it does not widen the
 set of data sources the product allows to be registered. Changing a mapping
 rule raises the version of every connector that covers it
 ([Type mappings and coverage](connector-contract.md#type-mappings-and-coverage)).
 
-Source types are read from:
+Data Source types are read from:
 
-| Source kind | Origin of the source type |
+| Connector | Origin of the Data Source type |
 | --- | --- |
 | PostgreSQL | The result of `format_type(atttypid, atttypmod)` over `pg_catalog`, such as `character varying(10)` or `timestamp with time zone` |
 | MySQL | `COLUMN_TYPE` in `information_schema.COLUMNS`, such as `int unsigned`, `decimal(10,2)`, or `enum('a','b')` |
@@ -52,7 +52,7 @@ connectors raise their versions.
 
 ## PostgreSQL
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `boolean` | `Boolean` |
 | `smallint`, `integer`, `bigint` | `SmallInt`, `Int`, `BigInt` |
@@ -69,7 +69,7 @@ connectors raise their versions.
 | `json`, `jsonb` | `Json` |
 | User-defined enum | `Enum` |
 | `time with time zone` | `TimeWithTimeZone` |
-| Domain over one of the types above | The same as its base type; the source type keeps the domain's name |
+| Domain over one of the types above | The same as its base type; the Data Source type keeps the domain's name |
 
 Arrays are not mapped. PostgreSQL's catalog does not enforce an array's number
 of dimensions, so the nesting depth of `Array(T)` cannot be determined from the
@@ -77,7 +77,7 @@ schema.
 
 ## MySQL
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `BIGINT` | `Byte`, `SmallInt`, `Int`, `Int`, `BigInt`; `TINYINT(1)` is also `Byte` |
 | `TINYINT UNSIGNED`, `SMALLINT UNSIGNED`, `MEDIUMINT UNSIGNED`, `INT UNSIGNED` | `SmallInt`, `Int`, `Int`, `BigInt`: the next wider signed integer that holds the range |
@@ -124,10 +124,10 @@ metadata.
 
 ## Parquet
 
-The source type is the pair of physical type and logical type annotation in a
+The Data Source type is the pair of physical type and logical type annotation in a
 Parquet file's footer.
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `BOOLEAN` | `Boolean` |
 | `INT32`, `INT64`, signed `INT(8)`, signed `INT(16)` | `Int`, `BigInt`, `Byte`, `SmallInt` |
@@ -150,7 +150,7 @@ so it maps to `Text` rather than `Enum`.
 
 ## Iceberg
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `boolean` | `Boolean` |
 | `int`, `long` | `Int`, `BigInt` |
@@ -170,7 +170,7 @@ so it maps to `Text` rather than `Enum`.
 
 ## Delta Lake
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `boolean` | `Boolean` |
 | `byte`, `short`, `integer`, `long` | `Byte`, `SmallInt`, `Int`, `BigInt` |
@@ -188,7 +188,7 @@ Delta Lake `timestamp` represents an instant, so it maps to `TimestampTz`.
 
 ## SQL Server
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `bit` | `Boolean` |
 | `tinyint` | `SmallInt`; `tinyint` ranges from 0 to 255 |
@@ -213,7 +213,7 @@ either.
 
 ## Oracle
 
-| Source type | Analytics type |
+| Data Source type | Analytics type |
 | --- | --- |
 | `NUMBER(p, s)` | `Decimal(p, s)` when s is between 0 and p; `NUMBER` without precision is unsupported |
 | `BINARY_FLOAT`, `BINARY_DOUBLE` | `Float`, `Double` |

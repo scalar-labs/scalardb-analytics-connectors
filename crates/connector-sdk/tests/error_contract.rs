@@ -1,13 +1,13 @@
 use connector_sdk::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind};
 
 #[test]
-fn preserves_an_adbc_like_error_without_exposing_source_details_in_formatting() {
+fn preserves_an_adbc_like_error_without_exposing_data_source_details_in_formatting() {
     let error = ConnectorError::new(
         ErrorKind::Permission,
         false,
         "the source denied access to the requested target",
     )
-    .with_source_error(
+    .with_data_source_error(
         Some("42501".to_owned()),
         Some("permission denied for relation customer_secrets".to_owned()),
     )
@@ -24,9 +24,9 @@ fn preserves_an_adbc_like_error_without_exposing_source_details_in_formatting() 
 
     assert_eq!(error.kind(), ErrorKind::Permission);
     assert!(!error.retryable());
-    assert_eq!(error.source_code(), Some("42501"));
+    assert_eq!(error.data_source_code(), Some("42501"));
     assert_eq!(
-        error.source_message(),
+        error.data_source_message(),
         Some("permission denied for relation customer_secrets")
     );
     assert_eq!(
@@ -66,7 +66,7 @@ fn preserves_a_direct_s3_like_service_error() {
         false,
         "the object store denied access to the requested object",
     )
-    .with_source_error(
+    .with_data_source_error(
         Some("AccessDenied".to_owned()),
         Some("Access Denied for s3://private/customer.csv".to_owned()),
     )
@@ -82,9 +82,9 @@ fn preserves_a_direct_s3_like_service_error() {
         ),
     ]);
 
-    assert_eq!(error.source_code(), Some("AccessDenied"));
+    assert_eq!(error.data_source_code(), Some("AccessDenied"));
     assert_eq!(
-        error.source_message(),
+        error.data_source_message(),
         Some("Access Denied for s3://private/customer.csv")
     );
     assert_eq!(
@@ -127,8 +127,10 @@ fn represents_each_diagnostic_scalar_type_without_coercion() {
         .cloned()
         .enumerate()
         .map(|(index, value)| DiagnosticEntry::new(index.to_string(), value));
-    let error = ConnectorError::new(ErrorKind::Source, true, "source request failed")
+    let error = ConnectorError::new(ErrorKind::DataSource, true, "data source request failed")
         .with_diagnostics(diagnostics);
+
+    assert_eq!(error.kind().to_string(), "data-source");
 
     assert_eq!(
         error

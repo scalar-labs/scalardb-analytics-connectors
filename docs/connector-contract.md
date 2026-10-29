@@ -17,11 +17,11 @@ and generated bindings must preserve the behavior defined here.
 
 ## Capabilities
 
-There is one connector per source kind. Only the generic ODBC connector and
-Query Engine-backed connectors handle several source kinds each
+There is one Connector per supported system. Only generic ODBC and
+Query Engine-backed Connectors handle several kinds of Data Source each
 ([Support tiers](#support-tiers)). A connector has two capabilities.
 
-**Metadata retrieval** reads namespaces, tables, columns, source types, and
+**Metadata retrieval** reads namespaces, tables, columns, Data Source types, and
 constraints from the source's catalog and decides an Analytics type for each
 column ([Metadata retrieval](#metadata-retrieval)). It consists of three
 requests:
@@ -45,19 +45,19 @@ capabilities it can serve in its
 [capability declaration](#capability-declaration). How inputs and outputs
 cross the API is defined in [Connector API](#connector-api).
 
-## Connector API and source access
+## Connector API and Data Source access
 
 Callers use a connector through the connector API: a typed C ABI exposed by the
 connector API library, which contains the connector SDK and the connectors
 built into it. Results cross it through the Arrow C data interface. A caller
-names a source kind when it opens a data source, and the connector for that
-source kind handles all later requests on it. The reason the connector API is
+names a Connector when it opens a data source, and the connector for that
+Connector handles all later requests on it. The reason the connector API is
 not ADBC is recorded in
 [Expose a typed C ABI instead of ADBC](design/expose-a-typed-c-abi-instead-of-adbc.md).
 
-Source access is the part of a connector that reads the source's catalog,
-sends queries to the source, and receives the results as Arrow. It takes one
-of two forms, and a connector uses exactly one form per source kind:
+Data Source access is the part of a Connector that reads the Data Source's catalog,
+sends queries to the Data Source, and receives the results as Arrow. It takes one
+of two forms, and a Connector uses exactly one form per supported system:
 
 - **ADBC access** goes through an ADBC (Arrow Database Connectivity) driver.
   An existing driver for the source is used when one exists, such as the
@@ -73,7 +73,7 @@ of two forms, and a connector uses exactly one form per source kind:
 adapter / Physical Catalog
    | connector API (C ABI)
    v
-connector SDK + per-source connectors (one library)
+connector SDK + Connectors (one library)
    |
    +- ADBC access ---> ADBC driver (separate artifact per source) ---> data source
    |
@@ -192,11 +192,11 @@ Credentials are handled as follows:
   sessions using it are alive and erases them once all of them are released.
   Sessions keep them alive because cancellation may open a separate connection
   to the source ([Cancellation and timeouts](#cancellation-and-timeouts)).
-- The connector passes secret values to its source access: as options to the
+- The connector passes secret values to its Data Source access: as options to the
   ADBC driver with ADBC access, which also keeps them for that period, or to
   the client it uses with direct access. In both forms it uses only drivers,
   clients, and reader crates that keep secret values out of logs and errors
-  ([Source access rules](#source-access-rules)).
+  ([Data Source access rules](#data-source-access-rules)).
 - The connector API has no function that returns a received secret value.
 - To rotate credentials, the caller opens a new data source and closes the old
   one after the operations on it finish.
@@ -206,7 +206,7 @@ Credentials are handled as follows:
 A function that starts an operation validates the request and immediately
 returns the operation handle. Metadata and read operations also return a result
 stream; their query is sent to the source when its first batch is pulled.
-Planning preparation instead calls source access from
+Planning preparation instead calls Data Source access from
 `finish_prepare_planning`. In both cases the caller already holds the operation
 handle and can cancel from another thread while the source is still answering.
 
@@ -290,7 +290,7 @@ unresolvable host name is not retryable.
 | `cancellation` | The caller cancelled (not retryable). The caller cancelled, so the caller decides whether to resend. |
 | `timeout` | The specified time was exceeded (retryable). |
 | `resource` | The source or the connector ran out of a resource such as connections or memory (retryable). |
-| `source` | The data source could not run the request for a reason not covered above, such as a serialization failure. The connector decides retryability from the source error. |
+| `data-source` | The Data Source could not run the request for a reason not covered above, such as a serialization failure. The Connector decides retryability from the Data Source error. |
 | `internal` | A defect in the connector, its ADBC driver, or a reader crate (not retryable). |
 
 Whether an error fails the whole operation or is recorded per target is
@@ -318,8 +318,8 @@ The declaration contains:
 
 - **Implementation:** the connector's name and version and, with ADBC access,
   the name and version of the ADBC driver it uses.
-- **Source:** the connected source's product name and version, and its source
-  kind.
+- **Data Source:** the connected system's product name and version, and the
+  Connector that owns its behavior.
 - **Metadata retrieval:** type mapping coverage, the constraints, identifiers,
   and schema versions it returns, and its fixed settings
   ([Cancellation, errors, and declarations for metadata](#cancellation-errors-and-declarations-for-metadata)).
@@ -370,7 +370,7 @@ The version to raise follows from which compatibility a change breaks:
 | Change an existing function's arguments or a structure's layout | Breaks | — | MAJOR |
 | Add an optional output column, or an item to the capability declaration or static information | Keeps | Keeps; callers ignore unknown items | MINOR |
 | Add an Analytics type (an extension-encoded type such as `inet`, unsigned integers, and so on) | Keeps | Keeps; callers register columns of unknown types as unsupported | MINOR |
-| Add a source kind or connector | Keeps | Keeps; callers do not open source kinds they do not use | MINOR |
+| Add a Connector or connector | Keeps | Keeps; callers do not open Connectors they do not use | MINOR |
 | Change a type mapping or a connector's coverage | Keeps | Keeps; returned Analytics types may change, but retrieval info identifies which connector version produced them ([Retrieval info and content digest](#retrieval-info-and-content-digest)) | MINOR |
 | Add an error kind | Keeps | Keeps; callers handle unknown kinds by the retry flag alone ([Errors in the API](#errors-in-the-api)) | MINOR |
 | Rename an output column or remove an item | Keeps | Breaks | MAJOR |
@@ -403,13 +403,13 @@ know the same set of Analytics types. These rules govern the library and its
 callers within one distribution. Exchanging Analytics types between
 distributions, such as between nodes of a data mesh, is outside this contract.
 
-Adding a source kind requires only a library MINOR. It is completed by adding a
-connector, the source kind's type mapping, and, with ADBC access, its ADBC
+Adding a Connector requires only a library MINOR. It is completed by adding a
+connector, the Connector's type mapping, and, with ADBC access, its ADBC
 driver, without changing the C ABI or its callers (the application, adapters,
-and the Physical Catalog). Source-specific information therefore travels only
+and the Physical Catalog). Data Source-specific information therefore travels only
 as data in the static information, the capability declaration, and connection
-options; no source-specific function or item is added to the connector API. A
-source kind that needs a new Analytics type or a new kind of request is also
+options; no Data Source-specific function or item is added to the connector API. A
+Connector that needs a new Analytics type or a new kind of request is also
 that addition, and follows that row of the table.
 
 The library records its version in the retrieval info of table metadata and in
@@ -418,8 +418,8 @@ read provenance.
 ### Calling-convention conformance tests
 
 These tests check the calling conventions and the ADBC driver version check
-([Source access rules](#source-access-rules)) for every connector, regardless
-of source kind. Cancellation, timeout, and stream release are tested with both
+([Data Source access rules](#data-source-access-rules)) for every connector, regardless
+of Connector. Cancellation, timeout, and stream release are tested with both
 metadata and read requests.
 
 | Action | Expected result |
@@ -440,7 +440,7 @@ metadata and read requests.
 
 ## Metadata retrieval
 
-A connector reads namespaces, tables, columns, source types, and constraints
+A connector reads namespaces, tables, columns, Data Source types, and constraints
 from the source's catalog and decides an Analytics type for each column.
 
 This section does not define:
@@ -505,17 +505,17 @@ Table metadata returns, per level:
 | Data source | The retrieved range and the retrieval info |
 | Catalog | Name; omitted for sources without catalogs |
 | Namespace | Name; for files and table formats, the path hierarchy under the registered location or the table-format catalog's namespace |
-| Table | Name, kind (table, view, external table, and other kinds the source distinguishes), source identifier and schema version ([Source identifiers and schema versions](#source-identifiers-and-schema-versions)), columns, and constraints |
-| Column | Name, ordinal, nullability, source type, Analytics type or unsupported ([Unsupported columns](#unsupported-columns)), and source identifier |
+| Table | Name, kind (table, view, external table, and other kinds the source distinguishes), source identifier and schema version ([Data Source identifiers and schema versions](#data-source-identifiers-and-schema-versions)), columns, and constraints |
+| Column | Name, ordinal, nullability, Data Source type, Analytics type or unsupported ([Unsupported columns](#unsupported-columns)), and Data Source identifier |
 
 Names are returned as the source spells them, without case folding. Ordinals
 are the source's column order and have no gaps.
 
 Table metadata items are limited to those that receivers use with the same
-meaning regardless of source kind. An item without a user has no basis for
+meaning regardless of Connector. An item without a user has no basis for
 deciding which meaning is correct and cannot be checked by conformance tests.
 For the same reason, an attribute many sources have does not become an item
-until a receiver needs it, and there is no key-value item for source-specific
+until a receiver needs it, and there is no key-value item for Data Source-specific
 attributes. When a receiver needs a source attribute, it is added as an
 optional, typed, source-independent item (a MINOR change).
 
@@ -541,7 +541,7 @@ generated-column expressions are not returned. For sources without constraints,
 such as Parquet and CSV, the connector declares that it does not return
 constraints, which does not mean the source has none.
 
-### Source identifiers and schema versions
+### Data Source identifiers and schema versions
 
 A source identifier is a value, separate from the name, that the source uses
 to refer to the same object: a PostgreSQL table OID, a SQL Server `object_id`,
@@ -567,7 +567,7 @@ connector, connector version, ADBC driver or driver version, or fixed
 settings. A different type mapping appears as a different connector version
 ([Type mappings and coverage](#type-mappings-and-coverage)). With direct
 access, reader crates are built into the connector and their versions are part
-of the connector's version ([Source access rules](#source-access-rules)), so
+of the connector's version ([Data Source access rules](#data-source-access-rules)), so
 the connector's name and version identify them. To trace the cause of a
 difference, table metadata carries the following. The producing connector and
 its version, the library version, the ADBC driver and its version, the fixed
@@ -576,8 +576,8 @@ settings, and the retrieval time are together called retrieval info.
 | Item | Content |
 | --- | --- |
 | Implementation | The producing connector's name and version, and the library version ([Compatibility and versions](#compatibility-and-versions)) |
-| ADBC driver | The driver's name and version ([Source access rules](#source-access-rules)); present only with ADBC access |
-| Fixed settings | An identifier of the settings that affect how types and values are produced ([Source types](#source-types)) |
+| ADBC driver | The driver's name and version ([Data Source access rules](#data-source-access-rules)); present only with ADBC access |
+| Fixed settings | An identifier of the settings that affect how types and values are produced ([Data Source types](#data-source-types)) |
 | Retrieval time | Per table, the time the connector read the source's catalog |
 | Completeness | Whether the table's metadata is complete or some information could not be obtained ([Missing information](#missing-information)) |
 | Content digest | A value computed deterministically from the content items defined below |
@@ -614,7 +614,7 @@ values across implementations and their versions. Conformance test expectations
 are compared with the same normalization:
 
 - Columns are ordered by ordinal; constraints by kind, name, and columns.
-- Names and source types are used as the source spelled them, without case
+- Names and Data Source types are used as the source spelled them, without case
   folding.
 - Field names used in serialization are the output column names defined by the
   corresponding API function ([Functions](#functions)).
@@ -651,7 +651,7 @@ recorded as dropped columns or tables.
 | --- | --- |
 | The table is known to exist but its content cannot be read for lack of privilege | The table is returned as "could not be read", with its name and reason and no columns |
 | A table named in a table metadata request does not exist | The table is returned as "does not exist", with its name and no columns, only when the connector can confirm it does not exist; otherwise as "could not be read". For example, when a catalog omits tables without privilege (such as PostgreSQL `information_schema.tables`), absence cannot distinguish nonexistence from missing privilege. |
-| Columns were read but constraints, source identifiers, the source schema version, or some source types could not be | The table metadata is returned as incomplete, naming the missing items |
+| Columns were read but constraints, source identifiers, the source schema version, or some Data Source types could not be | The table metadata is returned as incomplete, naming the missing items |
 | The catalog silently omits columns without privilege (such as PostgreSQL `information_schema.columns`) and the connector read it in a way that cannot detect missing columns | The table metadata is returned as incomplete |
 | A namespace or table list cannot be read | The unreadable range is returned and no targets in it |
 | The operation ended partway | The rules in [Cancellation, errors, and declarations for metadata](#cancellation-errors-and-declarations-for-metadata) apply |
@@ -662,10 +662,10 @@ table metadata asserts nothing about its missing items. The Physical Catalog
 never infers a drop or a change from incomplete table metadata; a dropped table
 is inferred only from "does not exist", never from "could not be read".
 
-### Source types
+### Data Source types
 
 - The connector reads the source's own catalog, such as `information_schema`
-  or `pg_catalog`, and returns as the source type exactly the value the type
+  or `pg_catalog`, and returns as the Data Source type exactly the value the type
   mapping names as its origin
   ([Type mappings and coverage](#type-mappings-and-coverage)). It does not go
   through a JDBC driver's reinterpretation.
@@ -677,13 +677,13 @@ is inferred only from "does not exist", never from "could not be read".
 
 ### Type mappings and coverage
 
-A type mapping is a table that defines, for one source kind, where source types
+A type mapping is a table that defines, for one Connector, where Data Source types
 are read from, in what form they are returned, and how they map to Analytics
 types. Each row is a mapping rule. The origin and form are fixed because the
 same type is spelled differently depending on how it is read (PostgreSQL
 `information_schema` reports `character varying` while `pg_type` reports
 `varchar`); without fixing them, rule matching and conformance comparisons
-would vary by implementation. There is one type mapping per source kind, not
+would vary by implementation. There is one type mapping per Connector, not
 one per connector. The current mappings are in [Type mappings](type-mappings.md).
 
 Type mappings have no version. The mapping is built into the connector, so the
@@ -701,15 +701,15 @@ widening an integer. Matching types through value-changing conversions would be
 the "cast the difference away" alternative rejected in
 [Make one connector interpret each data source](design/make-one-connector-interpret-each-source.md).
 Covered rules are mapped as the type mapping says, and a column that hits an
-uncovered rule is unsupported. For one source kind, a connector never returns
+uncovered rule is unsupported. For one Connector, a connector never returns
 an Analytics type different from the type mapping.
 
 ### Unsupported columns
 
-A column whose source type cannot be mapped to an Analytics type under the type
+A column whose Data Source type cannot be mapped to an Analytics type under the type
 mapping and the connector's coverage is returned as an unsupported column
 ([Unsupported columns](analytics-types.md#unsupported-columns)). It has a name,
-ordinal, nullability, and source type, and no Analytics type. The connector
+ordinal, nullability, and Data Source type, and no Analytics type. The connector
 returns one reason:
 
 | Reason | Meaning |
@@ -738,7 +738,7 @@ rules and the [error kinds](#errors). Errors reach as follows:
 | --- | --- |
 | `authentication`, `invalid request`, `invalid state` | The whole operation fails |
 | `permission` | Recorded per target as "could not be read" ([Missing information](#missing-information)); the operation does not fail |
-| `connection`, `cancellation`, `timeout`, `resource`, `source`, `internal` | Before the first result, the whole operation fails. Partway, the table metadata completed so far is returned and the whole operation is incomplete. |
+| `connection`, `cancellation`, `timeout`, `resource`, `data-source`, `internal` | Before the first result, the whole operation fails. Partway, the table metadata completed so far is returned and the whole operation is incomplete. |
 
 An incomplete operation is indicated by the stream ending with an error
 ([Requests and results](#requests-and-results)). `stale registration` and `data`
@@ -746,7 +746,7 @@ do not occur in metadata retrieval.
 
 For metadata retrieval, the capability declaration includes:
 
-- the source kinds it handles and, per source kind, its type mapping coverage;
+- the Connectors it handles and, per Connector, its type mapping coverage;
 - the kinds of constraints it returns;
 - whether it returns source identifiers and source schema versions; and
 - the fixed settings that affect how types and values are produced.
@@ -756,7 +756,7 @@ For metadata retrieval, the capability declaration includes:
 These tests check, independently of implementation, that a connector meets
 this section:
 
-- Each source kind has fixtures containing every mapping rule of its type
+- Each Connector has fixtures containing every mapping rule of its type
   mapping, unmapped types, constraints, targets without privilege, nonexistent
   tables, several namespaces, and names that differ only in case.
 - For each fixture, the expected table metadata is defined except for
@@ -764,7 +764,7 @@ this section:
 - For covered rules the connector returns the expected Analytics type, and for
   columns hitting uncovered rules it returns unsupported columns with the
   reason "not supported by the connector". Any other result fails.
-- Names, ordinals, nullability, source types, and the representation of
+- Names, ordinals, nullability, Data Source types, and the representation of
   missing information match the expectations regardless of the declaration.
 - A nonexistent table is returned as "does not exist" for sources where the
   connector can confirm nonexistence, and as "could not be read" otherwise.
@@ -819,27 +819,27 @@ A Query Engine adapter first makes a planning attempt. The attempt contains:
 | Residual policy | Whether the adapter can retain the corresponding native operator |
 | Candidate adapter context | The complete normalized Query Engine/session facts and semantic requirements for the complete candidate plan, not only the current native pattern |
 
-The SDK validates the candidate. The connector session supplies current source
-facts such as source version, type attributes, collation, time zone, snapshot,
+The SDK validates the candidate. The Data Source Session supplies current source
+facts such as Data Source version, type attributes, collation, time zone, snapshot,
 and security identity. The SDK binds both sets of facts into the effective
 planning context and dispatches the rule to the connector. An accepted
 candidate becomes a serializable `PlannedSubplan` containing the Substrait
-plan, Analytics output schema, source bindings, and a non-secret validation
+plan, Analytics output schema, table references, and a non-secret validation
 manifest containing component digests and an aggregate fingerprint.
 The adapter stores its sanitized adapter context beside that state and supplies
 it again at execution. Credentials, secret values, open connections, and
 process-local pointers are not part of either state.
 
 Before the base read attempt, the adapter completes planning preparation for
-the registered source bindings and expected schemas. This timeout-bound,
-cancellable source operation hydrates a connector-session snapshot. Subsequent
+the registered table bindings and expected schemas. This timeout-bound,
+cancellable Data Source operation hydrates a Data Source Session snapshot. Subsequent
 `plan_pushdown` calls name that snapshot and perform no source I/O inside native
 optimizer callbacks. The snapshot is immutable; a new binding or invalidation
 requires a replacement snapshot and a new base read.
 
 The manifest covers every semantic input to the decision: connector-contract
 and Substrait versions; connector implementation identity and semantic-rules
-revision; the candidate plan; output schema and source bindings; normalized
+revision; the candidate plan; output schema and table references; normalized
 adapter context; and the connector fact snapshot. Its versioned deterministic
 encoding preserves absent-versus-empty values. Its per-component digests allow
 diagnostics to name changed components without storing their values. A change
@@ -878,7 +878,7 @@ This is the schema check. On mismatch the connector returns
 `stale registration` instead of casting. A table or column referenced by the
 request that no longer exists at the source also returns
 `stale registration`. The error details list, per mismatched column, its name,
-the expected Analytics type and nullability, and the current source type and
+the expected Analytics type and nullability, and the current Data Source type and
 nullability.
 
 Output nullability follows the expected schema, and nullability is compared,
@@ -972,7 +972,7 @@ For data read, the capability declaration includes:
 These tests check that a connector meets this section and produces the types
 and values it declared in metadata retrieval:
 
-- Each source kind has fixtures with boundary values for every mapping rule
+- Each Connector has fixtures with boundary values for every mapping rule
   (minimum, maximum, precision limit, time zones, NULL) and values that cannot
   be carried exactly.
 - For covered rules, the connector returns the expected Arrow types and values.
@@ -1008,7 +1008,7 @@ rationale is in
 ### Requirement
 
 The representation has one requirement: the Query Engine does not know the
-source's dialect. A Query Engine that wrote SQL in the source's dialect would
+Connector's SQL dialect. A Query Engine that wrote SQL in the Connector's SQL dialect would
 hold data source knowledge, which the
 [component responsibilities](architecture.md#product-context) give to the
 connector alone: adapters hold no data source knowledge, and Query Engines
@@ -1043,18 +1043,18 @@ The only accepted shape is:
 Plan
  +- RelRoot (output column names)
      +- ReadRel
-         +- namedTable: the source binding
+         +- namedTable: the table reference
          +- baseSchema: the expected Analytics schema encoded as Substrait types
          +- filter or best_effort_filter: optional expression tree
          +- projection: optional column-selection mask
 ~~~
 
-The source binding is a non-secret opaque value issued by the connector SDK
-when the table is registered and persisted with the table's Analytics schema in
-the Physical Catalog. An adapter copies it into `namedTable`; it does not derive
-source identifiers from Query Engine names. The SDK validates that the binding
-belongs to the open data source and the expected registered schema, while the
-connector alone interprets it as a source object.
+The current SDK scaffold carries `namedTable` as an unresolved non-empty table
+reference. It validates the path shape and expected schema shape, but does not
+yet prove that the reference belongs to the open Data Source or registered
+schema. Binding resolution must promote it to a non-secret opaque table binding
+before this boundary fulfills the intended registration and ownership checks;
+until then callers must not treat `TableReference` as such proof.
 
 Details of the shape:
 
@@ -1087,7 +1087,7 @@ structure, declared functions, types, and resource bounds; the connector then
 decides whether that concrete expression has the required meaning for the
 source and session.
 
-For example, `Text` comparisons can depend on source type, collation, character
+For example, `Text` comparisons can depend on Data Source type, collation, character
 set, and trailing-space behavior, while floating-point comparisons can depend
 on NaN and signed-zero semantics. Those facts cannot be decided from the
 operator and Analytics type alone. A connector reports `Exact` only when it can
@@ -1144,8 +1144,8 @@ The adapter chooses candidate granularity from a native planner pattern it can
 safely replace or retain and proposes the complete next remote plan. The
 connector evaluates that whole validated candidate with the effective planning
 context; it does not rewrite the candidate or return isolated accepted
-conjuncts through the shared API. Source attributes used for that judgment come
-from the connector session and must be valid for the planned execution rather
+conjuncts through the shared API. Data Source attributes used for that judgment come
+from the Data Source Session and must be valid for the planned execution rather
 than copied from an older Physical Catalog registration.
 
 Each rule returns one of three outcomes:
@@ -1199,14 +1199,14 @@ The connector API has these functions:
 
 - **Library initialization and shutdown.** Initialization takes the maximum
   result batch size, the ADBC driver location
-  ([Source access rules](#source-access-rules)), and log level and destination.
+  ([Data Source access rules](#data-source-access-rules)), and log level and destination.
   Static information ([Static information](#static-information)) can be read
   even before initialization.
-- **Open and close a data source.** Input: source kind, connection setting and
+- **Open and close a data source.** Input: Connector, connection setting and
   credential options, and connection timeout.
 - **Open and close a session.**
 - **Fetch the capability declaration**, per session.
-- **Start, finish, and release planning preparation**, for source bindings and expected
+- **Start, finish, and release planning preparation**, for table bindings and expected
   schemas. `start_prepare_planning` validates the request, takes the session
   lease, and returns an operation handle without source I/O.
   `finish_prepare_planning` may block while it hydrates the facts and returns an
@@ -1220,7 +1220,7 @@ The connector API has these functions:
 - **Plan pushdown.** A versioned request envelope carries one rule, Substrait
   candidate, the optional current planned state with its adapter context,
   residual policy, complete candidate adapter context, and planning-snapshot
-  identity. The connector session adds facts from that immutable snapshot. The
+  identity. The Data Source Session adds facts from that immutable snapshot. The
   result is `Exact`, `Retained`, or `Unsupported`;
   accepted results carry serialized planned state. Planning is a synchronous,
   source-I/O-free call over the named immutable snapshot; a missing fact
@@ -1243,7 +1243,7 @@ The connector API has these functions:
 At the language-neutral level, planning and read execution form this boundary:
 
 ~~~text
-start_prepare_planning(session, source_bindings, expected_schemas, timeout)
+start_prepare_planning(session, table_bindings, expected_schemas, timeout)
     -> operation
 finish_prepare_planning(operation)
     -> planning_snapshot | error
@@ -1320,9 +1320,9 @@ Errors are returned as a structure with these items:
 | Kind | One of the [error kinds](#errors) |
 | Retryable | Whether the request may be retried |
 | Message | Composed by the connector; contains no credentials, literals, or messages returned by the data source |
-| Source error code and message | As returned by the data source. The message may contain user data, so callers keep it out of ordinary logs. |
+| Data Source error code and message | As returned by the data source. The message may contain user data, so callers keep it out of ordinary logs. |
 | Plan invalidation details | For `invalid state` caused by a planned-subplan mismatch: a stable reason code (`source facts changed`, `connector semantics changed`, `contract or Substrait version changed`, `adapter context changed`, or `plan/schema/bindings changed`) and the names of changed identity components; never their secret or literal values |
-| Stale registration details | Per mismatched column, its name, the expected Analytics type and nullability, and the current source type and nullability ([Schema check](#schema-check)); for missing tables or columns, their names |
+| Stale registration details | Per mismatched column, its name, the expected Analytics type and nullability, and the current Data Source type and nullability ([Schema check](#schema-check)); for missing tables or columns, their names |
 
 A failing function returns this structure. When a pull of a result stream fails,
 including when the first pull fails because of a source error, the Arrow stream
@@ -1337,24 +1337,24 @@ even before initialization:
 
 - the library version ([Compatibility and versions](#compatibility-and-versions));
 - for each built-in connector:
-  - its name, version, and the source kinds it handles;
+  - its name, version, and the Connectors it handles;
   - for each accepted connection option: its key, whether it holds a secret
     ([Connection settings and credentials](#connection-settings-and-credentials)),
     whether it is required, its value type, its default, and its description;
-  - its form of source access ([Connector API and source access](#connector-api-and-source-access));
+  - its form of Data Source access ([Connector API and Data Source access](#connector-api-and-data-source-access));
     and
   - with ADBC access, the ADBC driver name and the supported driver version
-    range ([Source access rules](#source-access-rules)).
+    range ([Data Source access rules](#data-source-access-rules)).
 
 The application uses this information to build registration settings and to
 decide which values to hide from display and logs. It holds no per-source
-settings of its own, so adding a source kind does not change the application
+settings of its own, so adding a Connector does not change the application
 ([Compatibility and versions](#compatibility-and-versions)).
 
-### Source access rules
+### Data Source access rules
 
-Each connector chooses one form of source access by the rules in
-[Connector API and source access](#connector-api-and-source-access) and states
+Each connector chooses one form of Data Source access by the rules in
+[Connector API and Data Source access](#connector-api-and-data-source-access) and states
 it in its static information.
 
 With ADBC access:
@@ -1399,19 +1399,19 @@ With direct access:
 Three tiers of connector support are recognized. In every tier one connector
 handles all access to a data source, and results do not change with the Query
 Engine. The tiers differ in how much of the type rules in
-[Source types](#source-types), [Type mappings and coverage](#type-mappings-and-coverage),
+[Data Source types](#data-source-types), [Type mappings and coverage](#type-mappings-and-coverage),
 and [Unsupported columns](#unsupported-columns) they satisfy.
 
 | Tier | What it is | Rules not met | Recurring problem |
 | --- | --- | --- | --- |
-| Source-specific | Reads the source's own catalog (for table formats and files, their own metadata) through an ADBC driver dedicated to the source or through direct access | None | None |
-| Generic ODBC | Reaches the source through an ADBC driver that uses ODBC, adding per-source dialect tables and type mappings on top of the processing shared by SQL sources | For sources whose own catalog cannot be read through ODBC, source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
-| Query Engine-backed | Connects to an external Query Engine such as Trino, Spark, or Databricks through its ADBC driver, and obtains in one connector the sources that engine supports | Source types are that engine's types, and the sources' own catalogs cannot be read | The same, with a single mapping from that engine's types to Analytics types |
+| Data Source-specific | Reads the source's own catalog (for table formats and files, their own metadata) through an ADBC driver dedicated to the source or through direct access | None | None |
+| Generic ODBC | Reaches the source through an ADBC driver that uses ODBC, adding per-source dialect tables and type mappings on top of the processing shared by SQL sources | For sources whose own catalog cannot be read through ODBC, Data Source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
+| Query Engine-backed | Connects to an external Query Engine such as Trino, Spark, or Databricks through its ADBC driver, and obtains in one connector the sources that engine supports | Data Source types are that engine's types, and the sources' own catalogs cannot be read | The same, with a single mapping from that engine's types to Analytics types |
 
-When source types come from an ODBC driver's report or an external Query
+When Data Source types come from an ODBC driver's report or an external Query
 Engine's types, their origin differs from the origin in the existing source
-kind's type mapping. Because there is one type mapping per source kind, these
-cases define a type mapping as a separate source kind that includes the path,
+kind's type mapping. Because there is one type mapping per Connector, these
+cases define a type mapping as a separate Connector that includes the path,
 such as SQL Server through ODBC or Trino.
 
 The breadth of sources reached through ADBC access depends on the ADBC driver
@@ -1434,7 +1434,7 @@ From those cases, the contract does not presuppose that:
   points; each can be declared as not offered;
 - namespaces have a particular depth; they are returned as name sequences;
 - a source has PostgreSQL or MySQL type or comparison semantics; type mappings
-  are per source kind, and comparison differences are absorbed inside the
+  are per Connector, and comparison differences are absorbed inside the
   connector; or
 - an ADBC driver exists for the source, or the source fits ADBC; a missing
   driver can be written, and sources that do not fit use direct access.

@@ -4,7 +4,7 @@ use analytics_types::AnalyticsSchema;
 use prost::Message;
 use substrait::proto::Plan;
 
-use super::{PlanningContext, SourceBinding, ValidationFingerprint};
+use super::{PlanningContext, TableReference, ValidationFingerprint};
 use crate::{RequestError, substrait::validate_candidate};
 
 /// A validated Substrait plan offered to one connector rule.
@@ -12,7 +12,7 @@ use crate::{RequestError, substrait::validate_candidate};
 pub struct ValidatedCandidate {
     plan: Plan,
     output_schema: AnalyticsSchema,
-    source_bindings: Vec<SourceBinding>,
+    table_references: Vec<TableReference>,
     requires_retained_operator: bool,
 }
 
@@ -20,13 +20,13 @@ impl ValidatedCandidate {
     pub(crate) fn new(
         plan: Plan,
         output_schema: AnalyticsSchema,
-        source_bindings: Vec<SourceBinding>,
+        table_references: Vec<TableReference>,
         requires_retained_operator: bool,
     ) -> Self {
         Self {
             plan,
             output_schema,
-            source_bindings,
+            table_references,
             requires_retained_operator,
         }
     }
@@ -37,8 +37,8 @@ impl ValidatedCandidate {
     pub fn output_schema(&self) -> &AnalyticsSchema {
         &self.output_schema
     }
-    pub fn source_bindings(&self) -> &[SourceBinding] {
-        &self.source_bindings
+    pub fn table_references(&self) -> &[TableReference] {
+        &self.table_references
     }
     pub fn requires_retained_operator(&self) -> bool {
         self.requires_retained_operator
@@ -50,7 +50,7 @@ impl ValidatedCandidate {
 pub struct PlannedSubplan {
     plan: Plan,
     output_schema: AnalyticsSchema,
-    source_bindings: Vec<SourceBinding>,
+    table_references: Vec<TableReference>,
     validation_fingerprint: ValidationFingerprint,
 }
 
@@ -62,7 +62,7 @@ impl PlannedSubplan {
         Self {
             plan: candidate.plan,
             output_schema: candidate.output_schema,
-            source_bindings: candidate.source_bindings,
+            table_references: candidate.table_references,
             validation_fingerprint,
         }
     }
@@ -76,8 +76,8 @@ impl PlannedSubplan {
     pub fn output_schema(&self) -> &AnalyticsSchema {
         &self.output_schema
     }
-    pub fn source_bindings(&self) -> &[SourceBinding] {
-        &self.source_bindings
+    pub fn table_references(&self) -> &[TableReference] {
+        &self.table_references
     }
     pub fn validation_fingerprint(&self) -> ValidationFingerprint {
         self.validation_fingerprint

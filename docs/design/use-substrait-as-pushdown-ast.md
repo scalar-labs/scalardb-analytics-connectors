@@ -25,7 +25,7 @@ system would constrain future pushdown shapes without removing the need for
 connector-specific validation.
 
 Support is not a fixed property of an expression or operator. It can vary with
-the complete candidate, data type, collation, source version, session settings,
+the complete candidate, data type, collation, Data Source version, session settings,
 security context, and execution domain. A static capability description can
 avoid obviously futile attempts, but only plan-aware validation can authorize
 a rewrite.

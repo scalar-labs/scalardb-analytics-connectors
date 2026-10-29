@@ -1,9 +1,9 @@
-//! Source-independent metadata and connector lifecycle contracts.
+//! Data Source-independent metadata and connector lifecycle contracts.
 
 use analytics_types::{AnalyticsSchema, AnalyticsType};
 use sha2::{Digest, Sha256};
 
-use crate::{ConnectorError, ConnectorExecutor, ConnectorPlanner, SourceBinding};
+use crate::{ConnectorError, ConnectorExecutor, ConnectorPlanner, TableReference};
 
 /// Completeness of a metadata lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub enum MetadataState<T> {
     Unavailable { reason: String },
 }
 
-/// A part of table metadata that the source could not supply.
+/// A part of table metadata that the Data Source could not supply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetadataGap {
     field: String,
@@ -55,30 +55,30 @@ impl MetadataDigest {
 /// Provenance attached to one table metadata result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetadataProvenance {
-    source_product: String,
-    source_version: String,
+    data_source_product: String,
+    data_source_version: String,
     catalog_snapshot: Option<String>,
 }
 
 impl MetadataProvenance {
     pub fn new(
-        source_product: impl Into<String>,
-        source_version: impl Into<String>,
+        data_source_product: impl Into<String>,
+        data_source_version: impl Into<String>,
         catalog_snapshot: Option<String>,
     ) -> Self {
         Self {
-            source_product: source_product.into(),
-            source_version: source_version.into(),
+            data_source_product: data_source_product.into(),
+            data_source_version: data_source_version.into(),
             catalog_snapshot,
         }
     }
 
-    pub fn source_product(&self) -> &str {
-        &self.source_product
+    pub fn data_source_product(&self) -> &str {
+        &self.data_source_product
     }
 
-    pub fn source_version(&self) -> &str {
-        &self.source_version
+    pub fn data_source_version(&self) -> &str {
+        &self.data_source_version
     }
 
     pub fn catalog_snapshot(&self) -> Option<&str> {
@@ -86,10 +86,10 @@ impl MetadataProvenance {
     }
 }
 
-/// Source-independent table metadata.
+/// Data Source-independent table metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TableMetadata {
-    binding: SourceBinding,
+    table_reference: TableReference,
     schema: AnalyticsSchema,
     digest: MetadataDigest,
     provenance: MetadataProvenance,
@@ -97,21 +97,21 @@ pub struct TableMetadata {
 
 impl TableMetadata {
     pub fn new(
-        binding: SourceBinding,
+        table_reference: TableReference,
         schema: AnalyticsSchema,
         digest: MetadataDigest,
         provenance: MetadataProvenance,
     ) -> Self {
         Self {
-            binding,
+            table_reference,
             schema,
             digest,
             provenance,
         }
     }
 
-    pub fn binding(&self) -> &SourceBinding {
-        &self.binding
+    pub fn table_reference(&self) -> &TableReference {
+        &self.table_reference
     }
 
     pub fn schema(&self) -> &AnalyticsSchema {
@@ -131,33 +131,34 @@ impl TableMetadata {
 pub trait CatalogReader: Send + Sync {
     fn table_metadata(
         &self,
-        binding: &SourceBinding,
+        table_reference: &TableReference,
     ) -> Result<MetadataState<TableMetadata>, ConnectorError>;
 }
 
-/// Maps one source-native type into the Analytics type system.
-pub trait TypeMapper<SourceType> {
-    fn map_type(&self, source_type: &SourceType) -> Result<AnalyticsType, UnsupportedType>;
+/// Maps one Data Source-native type into the Analytics type system.
+pub trait TypeMapper<DataSourceType> {
+    fn map_type(&self, data_source_type: &DataSourceType)
+    -> Result<AnalyticsType, UnsupportedType>;
 }
 
-/// A source type that cannot be represented without changing its meaning.
+/// A Data Source type that cannot be represented without changing its meaning.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("unsupported source type {source_type}: {reason}")]
+#[error("unsupported Data Source type {data_source_type}: {reason}")]
 pub struct UnsupportedType {
-    source_type: String,
+    data_source_type: String,
     reason: String,
 }
 
 impl UnsupportedType {
-    pub fn new(source_type: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn new(data_source_type: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
-            source_type: source_type.into(),
+            data_source_type: data_source_type.into(),
             reason: reason.into(),
         }
     }
 
-    pub fn source_type(&self) -> &str {
-        &self.source_type
+    pub fn data_source_type(&self) -> &str {
+        &self.data_source_type
     }
 
     pub fn reason(&self) -> &str {
@@ -167,22 +168,25 @@ impl UnsupportedType {
 
 /// Process-level connector factory.
 pub trait ConnectorLibrary: Send + Sync {
-    type SourceConfig;
-    type Source: ConnectorSource;
+    type DataSourceConfig;
+    type DataSource: DataSource;
 
-    fn open_source(&self, config: Self::SourceConfig) -> Result<Self::Source, ConnectorError>;
+    fn open_data_source(
+        &self,
+        config: Self::DataSourceConfig,
+    ) -> Result<Self::DataSource, ConnectorError>;
 }
 
-/// Long-lived source handle that can create isolated sessions.
-pub trait ConnectorSource: Send + Sync {
+/// Long-lived Data Source handle that can create isolated sessions.
+pub trait DataSource: Send + Sync {
     type SessionConfig;
-    type Session: ConnectorSession;
+    type Session: DataSourceSession;
 
     fn open_session(&self, config: Self::SessionConfig) -> Result<Self::Session, ConnectorError>;
 }
 
 /// Session-scoped catalog, planning, and execution capabilities.
-pub trait ConnectorSession: Send + Sync {
+pub trait DataSourceSession: Send + Sync {
     type Catalog: CatalogReader;
     type Planner: ConnectorPlanner;
     type Executor: ConnectorExecutor;

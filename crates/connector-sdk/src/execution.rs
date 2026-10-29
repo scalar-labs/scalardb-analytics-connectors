@@ -134,8 +134,8 @@ impl ExecutionContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionProvenance {
     connector: String,
-    source_product: String,
-    source_version: String,
+    data_source_product: String,
+    data_source_version: String,
     snapshot_fingerprint: Option<String>,
     validation_fingerprint: ValidationFingerprint,
 }
@@ -143,15 +143,15 @@ pub struct ExecutionProvenance {
 impl ExecutionProvenance {
     pub fn new(
         connector: impl Into<String>,
-        source_product: impl Into<String>,
-        source_version: impl Into<String>,
+        data_source_product: impl Into<String>,
+        data_source_version: impl Into<String>,
         snapshot_fingerprint: Option<String>,
         validation_fingerprint: ValidationFingerprint,
     ) -> Self {
         Self {
             connector: connector.into(),
-            source_product: source_product.into(),
-            source_version: source_version.into(),
+            data_source_product: data_source_product.into(),
+            data_source_version: data_source_version.into(),
             snapshot_fingerprint,
             validation_fingerprint,
         }
@@ -161,12 +161,12 @@ impl ExecutionProvenance {
         &self.connector
     }
 
-    pub fn source_product(&self) -> &str {
-        &self.source_product
+    pub fn data_source_product(&self) -> &str {
+        &self.data_source_product
     }
 
-    pub fn source_version(&self) -> &str {
-        &self.source_version
+    pub fn data_source_version(&self) -> &str {
+        &self.data_source_version
     }
 
     pub fn snapshot_fingerprint(&self) -> Option<&str> {

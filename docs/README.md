@@ -16,7 +16,7 @@ Use the remaining top-level documents by responsibility:
 - [connector-contract.md](connector-contract.md) defines what callers and
   connector implementations may rely on across the connector boundary.
 - [analytics-types.md](analytics-types.md) defines the shared type-system mental
-  model; [type-mappings.md](type-mappings.md) applies it to source kinds.
+  model; [type-mappings.md](type-mappings.md) applies it to Connectors.
 - [plan-pushdown-with-query-engine-planners.md](plan-pushdown-with-query-engine-planners.md)
   defines who owns each plan, the planning and execution interfaces, the
   operator rules, and the native rewrite algorithm.
@@ -25,7 +25,7 @@ Use the remaining top-level documents by responsibility:
 - [connector-internals.md](connector-internals.md) explains SDK, source-access,
   lifecycle, and assembly ownership.
 - [connector-implementation.md](connector-implementation.md) gives the
-  conventions for implementing and testing one source connector.
+  conventions for implementing and testing one Connector.
 
 Read the shared pushdown model before changing the Substrait request contract,
 connector planning boundary, or a Query Engine adapter. Then use the

@@ -14,7 +14,7 @@ types. Query Engines never touch the data source; each one maps connector
 output into its own types through an adapter.
 
 The Physical Catalog persists the Analytics types the connector returned at
-registration, together with the source types. A column whose source type
+registration, together with the Data Source types. A column whose Data Source type
 cannot be mapped is still registered, as an unsupported column. At read start
 the connector compares the registered types with the types the source reports
 now and fails with a stale-registration error instead of casting the
@@ -68,12 +68,12 @@ The decision follows from four properties the design must have:
 - **D: The source's declaration is neither dropped nor silently changed.** A
   declared column remains registered even when its type cannot be mapped.
   Type correspondence comes from the source's own catalog, not from a driver's
-  reinterpretation, and the declaration itself is kept as the source type.
+  reinterpretation, and the declaration itself is kept as the Data Source type.
 
 The connector satisfies A because it both retrieves metadata and produces
 values. Every Query Engine reads through the same connector, which satisfies B.
 Persisting Analytics types in the Physical Catalog satisfies C. Returning
-unmappable columns with their source types, read from the source's own
+unmappable columns with their Data Source types, read from the source's own
 catalog, satisfies D.
 
 The schema check runs in the connector because it is closest to the source's
@@ -85,9 +85,9 @@ and would leave the Physical Catalog advertising types that no longer hold.
 
 | Alternative | Why it is not taken |
 | --- | --- |
-| Let each Query Engine read through its own path and cast to the registered types in the adapter | Two components interpret the same source type and the cast hides the difference, violating A. Agreement depends on each cast being correct, and every new Query Engine needs its own casts, violating B. |
+| Let each Query Engine read through its own path and cast to the registered types in the adapter | Two components interpret the same Data Source type and the cast hides the difference, violating A. Agreement depends on each cast being correct, and every new Query Engine needs its own casts, violating B. |
 | Let the Query Engine decide the schema and keep only names in the Physical Catalog | Planning without contacting the source becomes impossible, violating C, and types vary by Query Engine, violating B. |
-| Store only source types and let each Query Engine map them dynamically | Server deployments and data mesh still need a common type (C), so one would be defined somewhere anyway. Defined outside the Physical Catalog, it would be invisible to catalog browsing. |
+| Store only Data Source types and let each Query Engine map them dynamically | Server deployments and data mesh still need a common type (C), so one would be defined somewhere anyway. Defined outside the Physical Catalog, it would be invisible to catalog browsing. |
 
 ## Consequences
 

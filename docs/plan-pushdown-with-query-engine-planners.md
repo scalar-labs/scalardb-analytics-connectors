@@ -32,7 +32,7 @@ native operator over connector scan
 Substrait candidate + adapter planning context
         |
         | SDK validates the common contract
-        | connector evaluates source-specific semantics
+        | connector evaluates Data Source-specific semantics
         v
 Exact(planned) | Retained(planned) | Unsupported
         |
@@ -43,7 +43,7 @@ native residual tree over connector scan
 ~~~
 
 The connector never edits a Spark, Trino, DataFusion, or DuckDB plan. The
-adapter never decides source-specific semantics from an operator name alone.
+adapter never decides Data Source-specific semantics from an operator name alone.
 The SDK never converts Substrait expressions into a second SDK-owned
 `ColumnRef`, `Condition`, or operator tree.
 
@@ -51,11 +51,11 @@ The SDK never converts Substrait expressions into a second SDK-owned
 
 | Participant | Owns | Does not own |
 | --- | --- | --- |
-| Query Engine planner | Native logical-plan validity, optimizer scheduling, and engine semantics | Source-specific support or the remote plan |
-| Query Engine adapter | Native pattern recognition, construction of the complete Substrait candidate, residual operators, and native plan replacement | Source-specific semantic guarantees |
-| Connector SDK | Common Substrait validation, operator dispatch, outcome rules, serializable planned state, and execution-time contract checks | Native plan nodes, source dialects, or residual evaluation |
-| Connector | Current source/session facts, source-specific semantic checks, translation of an accepted plan, and its execution | Native plan rewriting or Query Engine expressions |
-| Source | Execution of the query or request produced by the connector | The pushdown protocol |
+| Query Engine planner | Native logical-plan validity, optimizer scheduling, and engine semantics | Data Source-specific support or the remote plan |
+| Query Engine adapter | Native pattern recognition, construction of the complete Substrait candidate, residual operators, and native plan replacement | Data Source-specific semantic guarantees |
+| Connector SDK | Common Substrait validation, operator dispatch, outcome rules, serializable planned state, and execution-time contract checks | Native plan nodes, SQL dialects, or residual evaluation |
+| Connector | Current Data Source/session facts, Data Source-specific semantic checks, translation of an accepted plan, and its execution | Native plan rewriting or Query Engine expressions |
+| Data Source | Execution of the query or request produced by the Connector | The pushdown protocol |
 
 These responsibilities create two interfaces:
 
@@ -83,31 +83,31 @@ conceptual; language bindings may represent them differently.
 | State | Created by | Meaning |
 | --- | --- | --- |
 | Native pattern | Query Engine planner or adapter | The operator or composite pattern the engine can remove or retain safely |
-| Source binding | Connector SDK at registration | Non-secret opaque identity for the registered source object; persisted by the Physical Catalog and copied by the adapter, but interpreted only by the connector |
+| Table reference | Adapter or metadata caller | Unresolved non-empty name path. The current SDK scaffold carries it in candidates and planned subplans; it is not proof of registration or Data Source ownership. |
 | Current planned subplan | A prior successful attempt | The complete remote work already stored in the connector scan |
-| Planning snapshot | Connector session | Session-local source facts hydrated before native optimizer callbacks; retained only by coordinator/driver planning state and never serialized to execution workers |
+| Planning snapshot | Data Source Session | Session-local source facts hydrated before native optimizer callbacks; retained only by coordinator/driver planning state and never serialized to execution workers |
 | Candidate plan | Adapter | The complete Substrait plan desired after this attempt, including the current remote work |
 | Residual policy | Adapter | Whether this native pattern may remain above the scan |
 | Adapter context | Adapter | The complete engine/session facts and semantic requirements for one complete remote plan; stored with that planned state so a later attempt and execution can present it again |
-| Connector facts | Connector session | A session-local snapshot of source product, version, type attributes, collation, time zone, snapshot, security identity, and other source facts needed by the candidate |
+| Connector facts | Data Source Session | A session-local snapshot of Data Source product, version, type attributes, collation, time zone, snapshot, security identity, and other source facts needed by the candidate |
 | Validated candidate | SDK | The candidate after common structural, type, extension, schema, and resource-bound checks |
-| Planning context | SDK and connector session | The effective facts used for the decision and its validation manifest |
-| Planned subplan | SDK | Serializable accepted Substrait plan, output schema, source bindings, and non-secret validation manifest with an aggregate fingerprint |
+| Planning context | SDK and Data Source Session | The effective facts used for the decision and its validation manifest |
+| Planned subplan | SDK | Serializable accepted Substrait plan, output schema, table references, and non-secret validation manifest with an aggregate fingerprint. Binding resolution is not yet implemented. |
 | Execution context | Adapter and caller | The adapter context used at planning plus deadline and cancellation needed to verify and run the planned subplan |
 
 Credentials, connections, native plan nodes, and process-local pointers never
 become part of a candidate or planned subplan. A connector obtains connector
 facts from its live source/session boundary; an adapter does not assert facts
 such as the source's current collation on the connector's behalf.
-The SDK rejects a source binding that does not belong to the open data source or
-the registered Analytics schema; the adapter never reconstructs a source name
-from Query Engine identifiers.
+The current SDK validates that a table reference is non-empty, but does not yet
+resolve it to a registered table binding or prove its Data Source ownership.
+Callers must not treat a `TableReference` as that proof.
 
 The adapter keeps two carriers distinct. Mutable planning state contains the
 session-local snapshot identity, current planned subplan, complete adapter
 context, and native callback bookkeeping. Once a scan is final, its serializable
 execution payload contains only the planned subplan and complete adapter
-context. Execution workers create or use their own connector session and run
+context. Execution workers create or use their own Data Source Session and run
 first-pull preflight; they never receive the planning snapshot identity.
 
 ## Planning interfaces
@@ -143,8 +143,8 @@ the scan's planned state but requires that pattern to remain. `PlanningError`
 is reserved for an invalid request, a violated contract, or an operational
 failure while planning.
 
-Before creating the base connector scan, the adapter asks the connector session
-to hydrate a planning snapshot for the registered source bindings and expected
+Before creating the base connector scan, the adapter asks the Data Source Session
+to hydrate a planning snapshot for the registered table bindings and expected
 schemas. That preparation is a timeout-bound, cancellable source operation and
 finishes before native optimizer callbacks begin. The common planning call then
 performs no source I/O: it reads the named snapshot and returns synchronously to
@@ -261,7 +261,7 @@ concrete field and enum definitions.
 
 An accepted decision is valid only for the semantic inputs that produced it.
 The SDK therefore fingerprints a versioned validation identity, not merely the
-Substrait bytes or the current source version:
+Substrait bytes or the current Data Source version:
 
 ~~~text
 ValidationIdentity {
@@ -270,7 +270,7 @@ ValidationIdentity {
     connector_implementation_identity
     connector_semantic_rules_revision
     candidate_plan_digest
-    analytics_output_schema_and_source_bindings
+    analytics_output_schema_and_table_references
     normalized_adapter_context
     connector_fact_snapshot
 }
@@ -348,7 +348,7 @@ may make only the following change:
 
 | Rule | Required current state | Allowed candidate change |
 | --- | --- | --- |
-| Read | Absent | Introduce one `ReadRel` with the registered source binding and base schema; filter, best-effort filter, and projection are absent |
+| Read | Absent | Introduce one `ReadRel` with the registered table binding and base schema; filter, best-effort filter, and projection are absent |
 | Projection | Present | Preserve the binding, base schema, filters, extensions, and all other fields; replace only the selection mask and matching `RelRoot` output names with a narrowing of the columns the current remote plan returns |
 | Filter with `ExactOnly` | Present | Preserve every existing field, append exactly the offered predicate to `ReadRel.filter`, and append only extension declarations referenced by that predicate |
 | Filter with `MayRetainOperator` | Present | Preserve every existing field, append exactly the offered predicate to `ReadRel.best_effort_filter`, and append only extension declarations referenced by that predicate |

@@ -64,12 +64,12 @@ separate serializable execution payload containing only `PlannedSubplan` and its
 complete adapter context. Snapshot identities and callback bookkeeping never
 cross to executors or workers. The coordinator or driver retains the planning
 state while further callbacks are possible, then releases its snapshot when
-that state is discarded. Every execution-side connector session performs its
+that state is discarded. Every execution-side Data Source Session performs its
 own first-pull preflight from the serializable payload.
 
 The connector cannot safely rewrite Spark, Trino, DataFusion, or DuckDB native
-plan nodes. Conversely, the Query Engine cannot determine source-specific
-support from an operator name alone. Data type, collation, source version,
+plan nodes. Conversely, the Query Engine cannot determine Data Source-specific
+support from an operator name alone. Data type, collation, Data Source version,
 session settings, and the already-pushed child plan can all change the answer.
 The common planning interface and native rewrite algorithm are defined in
 [Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
@@ -77,7 +77,7 @@ The common planning interface and native rewrite algorithm are defined in
 ## Base scan initialization
 
 Every adapter first completes planning-snapshot preparation for the connector
-source binding and expected Analytics schema resolved for the registered table.
+table binding and expected Analytics schema resolved for the registered table.
 It then establishes the first `PlannedSubplan` before applying projection or
 filter callbacks by building a `ReadRel` and making an exact-only read attempt.
 The binding is the opaque value persisted in the Physical Catalog at
@@ -87,10 +87,10 @@ identifiers.
 ~~~text
 initialize_connector_scan(registered_table, adapter_context):
     snapshot = prepare_planning_snapshot(
-        registered_table.connector_source_binding,
+        registered_table.connector_table_binding,
         registered_table.analytics_schema)
     candidate = ReadRel(
-        named_table = registered_table.connector_source_binding,
+        named_table = registered_table.connector_table_binding,
         base_schema = registered_table.analytics_schema)
     result = plan_pushdown(
         snapshot, current=None, Read, candidate, ExactOnly, adapter_context)
@@ -101,7 +101,7 @@ initialize_connector_scan(registered_table, adapter_context):
         fail creation of the connector scan
 ~~~
 
-There is no residual below a base read and no alternate source-specific reader
+There is no residual below a base read and no alternate Data Source-specific reader
 inside this contract. An adapter may choose another product path before creating
 the connector scan, but it cannot construct one without an exact base read.
 
@@ -376,7 +376,7 @@ physical projection removes those extra residual columns. When remote
 projection is unsupported, the remote plan remains the base read and the same
 local projection restores the schema `scan` must return; no columns are silently
 omitted. The
-support callback has no connector session or request-local state, so it uses
+support callback has no Data Source Session or request-local state, so it uses
 only common representability and conservative static pruning hints; it does not
 claim an exact connector decision. The `PlannedSubplan` is created inside and
 remains local to the `scan` future, so concurrent scans do not share mutable
@@ -487,7 +487,7 @@ Trino negotiate it atomically.
 Relation and expression trees should remain Substrait messages at the planner
 and connector boundary. Repacking them into SDK-owned `ColumnRef`, `Condition`,
 or similar trees would duplicate the AST, restrict future operators, and still
-leave each connector responsible for source-specific semantic checks.
+leave each connector responsible for Data Source-specific semantic checks.
 
 Adapters do not need to convert an entire Query Engine plan. They only need to
 construct the candidate operator pattern recognized by their native pushdown
@@ -500,13 +500,13 @@ the inspected boundaries.
 A static capability declaration can help a planner avoid obviously impossible
 attempts, but it cannot authorize a rewrite. The authoritative decision needs
 the candidate plan and an effective planning context. The adapter contributes
-engine-owned requirements, while the connector session obtains current source
+engine-owned requirements, while the Data Source Session obtains current source
 facts. Together they include at least:
 
-- Analytics and source types;
+- Analytics and Data Source types;
 - collation and string comparison semantics;
 - time zone, decimal, and null-ordering semantics;
-- source product and version;
+- Data Source product and version;
 - source execution domain, snapshot, and security context; and
 - functions and Substrait extensions used by the candidate.
 

@@ -1,6 +1,6 @@
-//! Source-independent Analytics schema types and their Arrow representation.
+//! Data Source-independent Analytics schema types and their Arrow representation.
 //!
-//! Analytics types form one federation schema type system. Source types,
+//! Analytics types form one federation schema type system. Data Source types,
 //! Arrow storage and extension types, and Query Engine types are boundary
 //! representations connected to that model by explicit mappings.
 

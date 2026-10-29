@@ -1,4 +1,4 @@
-//! Shared ADBC access behavior for source-specific connectors.
+//! Shared ADBC access behavior for Connectors.
 
 #![forbid(unsafe_code)]
 

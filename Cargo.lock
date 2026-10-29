@@ -328,7 +328,10 @@ dependencies = [
 name = "connector-sql"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "connector-adbc",
+ "thiserror",
 ]
 
 [[package]]

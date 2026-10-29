@@ -8,7 +8,7 @@ use super::{
     extensions::ExtensionRegistry,
     schema::{analytics_type_complexity, apply_root_names, parse_projection, parse_schema},
 };
-use crate::{RequestError, SourceBinding, ValidatedCandidate};
+use crate::{RequestError, TableReference, ValidatedCandidate};
 
 pub(super) fn validate_plan(plan: Plan) -> Result<ValidatedCandidate, RequestError> {
     validate_version(&plan)?;
@@ -44,13 +44,13 @@ pub(super) fn validate_plan(plan: Plan) -> Result<ValidatedCandidate, RequestErr
             ));
         }
     };
-    let (output_schema, source_binding) = validate_read(read, &root.names, &extensions)?;
+    let (output_schema, table_reference) = validate_read(read, &root.names, &extensions)?;
     let requires_retained_operator = read.best_effort_filter.is_some();
 
     Ok(ValidatedCandidate::new(
         plan,
         output_schema,
-        vec![source_binding],
+        vec![table_reference],
         requires_retained_operator,
     ))
 }
@@ -83,7 +83,7 @@ fn validate_read(
     read: &ReadRel,
     root_names: &[String],
     extensions: &ExtensionRegistry,
-) -> Result<(AnalyticsSchema, SourceBinding), RequestError> {
+) -> Result<(AnalyticsSchema, TableReference), RequestError> {
     if read.common.is_some() || read.advanced_extension.is_some() {
         return Err(RequestError::undeclared(
             "common and advanced ReadRel extensions are not accepted",
@@ -135,7 +135,7 @@ fn validate_read(
     }
     let output_schema = apply_root_names(projected, root_names)?;
 
-    Ok((output_schema, SourceBinding::new(table.names.clone())))
+    Ok((output_schema, TableReference::new(table.names.clone())))
 }
 
 fn validate_table(table: &read_rel::NamedTable) -> Result<(), RequestError> {

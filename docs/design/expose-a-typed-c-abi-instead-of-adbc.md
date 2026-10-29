@@ -9,7 +9,7 @@ this repository?
 
 The connector API is a typed C ABI. Its first implementation publishes the C
 header together with the functions and ABI tests. Results cross it through the
-Arrow C data interface. ADBC remains one of the two forms of source access
+Arrow C data interface. ADBC remains one of the two forms of Data Source access
 inside connectors; it is not the interface callers see.
 
 ## Rationale

@@ -29,7 +29,7 @@ fn exact_projection_keeps_substrait_as_the_plan_ast() {
     };
     assert_eq!(planned.plan(), &plan);
     assert_eq!(planned.encode_plan(), bytes);
-    assert_eq!(planned.source_bindings()[0].names(), ["catalog", "users"]);
+    assert_eq!(planned.table_references()[0].names(), ["catalog", "users"]);
     assert_eq!(planned.output_schema().fields().len(), 2);
     assert_eq!(planned.output_schema().fields()[0].name(), "user_id");
     assert_eq!(

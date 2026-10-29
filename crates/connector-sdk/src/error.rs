@@ -30,7 +30,7 @@ impl RequestError {
     }
 }
 
-/// Stable error kinds exposed by source-independent connector processing.
+/// Stable error kinds exposed by Data Source-independent connector processing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     InvalidSettings,
@@ -44,7 +44,7 @@ pub enum ErrorKind {
     Cancellation,
     Timeout,
     Resource,
-    Source,
+    DataSource,
     Internal,
 }
 
@@ -62,7 +62,7 @@ impl fmt::Display for ErrorKind {
             Self::Cancellation => "cancellation",
             Self::Timeout => "timeout",
             Self::Resource => "resource",
-            Self::Source => "source",
+            Self::DataSource => "data-source",
             Self::Internal => "internal",
         };
         formatter.write_str(name)
@@ -118,8 +118,8 @@ pub struct ConnectorError {
     kind: ErrorKind,
     retryable: bool,
     safe_message: String,
-    source_code: Option<String>,
-    source_message: Option<String>,
+    data_source_code: Option<String>,
+    data_source_message: Option<String>,
     diagnostics: Vec<DiagnosticEntry>,
 }
 
@@ -129,19 +129,19 @@ impl ConnectorError {
             kind,
             retryable,
             safe_message: safe_message.into(),
-            source_code: None,
-            source_message: None,
+            data_source_code: None,
+            data_source_message: None,
             diagnostics: Vec::new(),
         }
     }
 
-    pub fn with_source_error(
+    pub fn with_data_source_error(
         mut self,
-        source_code: Option<String>,
-        source_message: Option<String>,
+        data_source_code: Option<String>,
+        data_source_message: Option<String>,
     ) -> Self {
-        self.source_code = source_code;
-        self.source_message = source_message;
+        self.data_source_code = data_source_code;
+        self.data_source_message = data_source_message;
         self
     }
 
@@ -165,12 +165,12 @@ impl ConnectorError {
         &self.safe_message
     }
 
-    pub fn source_code(&self) -> Option<&str> {
-        self.source_code.as_deref()
+    pub fn data_source_code(&self) -> Option<&str> {
+        self.data_source_code.as_deref()
     }
 
-    pub fn source_message(&self) -> Option<&str> {
-        self.source_message.as_deref()
+    pub fn data_source_message(&self) -> Option<&str> {
+        self.data_source_message.as_deref()
     }
 
     pub fn diagnostics(&self) -> &[DiagnosticEntry] {

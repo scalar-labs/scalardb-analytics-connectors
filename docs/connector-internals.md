@@ -8,7 +8,7 @@ dependency rules, how processing is divided between the connector SDK and
 connectors, the validated Substrait planning state, the traits and data a
 connector supplies, the connector API implementation, lifetimes and resource ownership,
 concurrency, cancellation and cleanup, ADBC driver handling, and the
-credential boundary. Conventions for implementing one source kind's connector
+credential boundary. Conventions for implementing one Connector
 are in [Connector implementation conventions](connector-implementation.md).
 The repository-wide boundaries are summarized in [Architecture](architecture.md).
 
@@ -19,12 +19,25 @@ details are decided in the implementation.
 
 | Term | Meaning |
 | --- | --- |
+| Connector | The product-specific implementation that interprets one kind of Data Source. It owns Data Source-specific catalog, type-mapping, planning, and translation behavior. PostgreSQL and MySQL are separate Connectors. |
+| Data Source | One configured and opened external system instance. It holds validated connection settings and credentials and creates Data Source Sessions. A Connector is code; a Data Source is a runtime object. |
+| Data Source Session | One isolated session opened from a Data Source. With ADBC access it owns one connection; with direct access it owns the equivalent operation-scoped client state. |
+| Data Source access | The narrow mechanism that reads a Data Source catalog and runs queries. `connector-adbc` provides ADBC access; a direct-access Connector implements the same boundary itself. |
+| Table reference | An unresolved non-empty table name path used by metadata requests and Substrait `NamedTable` relations. It is not a table binding and carries no proof that it belongs to an open Data Source or registered schema. The current SDK scaffold stores `TableReference` in validated candidates and planned subplans until binding resolution is implemented. |
+| Table binding | A non-secret opaque identity for one registered table. The Physical Catalog persists it and an adapter copies it into a Substrait `namedTable`; only the Connector interprets it. |
+| SQL dialect | Connector-owned representation rules for SQL identifiers, placeholders, casts, and trusted opaque syntax. It does not represent a Data Source, connection, table, or common SQL grammar. |
 | Connector definition | The data part of a connector crate, loaded at build time ([Connector definition](#connector-definition)) |
 | Connector trait | The Rust trait a connector implements in code. The connector SDK uses a connector only through this trait and its connector definition ([Connector trait](#connector-trait)). |
-| Source access trait | The Rust traits defined by `connector-sdk` that only read the source catalog and run queries. `connector-adbc` implements them for ADBC access; a direct-access connector implements them itself. |
+| Data Source access trait | The Rust traits defined by `connector-sdk` that only read the Data Source catalog and run queries. `connector-adbc` implements them for ADBC access; a direct-access Connector implements them itself. |
 | Validated candidate | A Substrait candidate that passed the common version, shape, schema, extension, and resource checks ([Read representation](#read-representation)) |
-| Planned subplan | Serializable connector-accepted state containing the Substrait plan, Analytics output schema, source bindings, and a non-secret validation manifest with an aggregate fingerprint |
+| Planned subplan | Serializable Connector-accepted state containing the Substrait plan, Analytics output schema, table references, and a non-secret validation manifest with an aggregate fingerprint. The current scaffold has not yet promoted those references to verified table bindings. |
 | Residual operator | A native Query Engine operator retained by its adapter; it is never represented or evaluated by the connector SDK |
+
+Use **Connector** for implementation ownership and **Data Source** for the
+external system or its runtime handle. Do not shorten either to “source” when
+that would leave the ownership ambiguous. Use a narrower domain term such as
+**table binding**, **Data Source type**, or **SQL dialect** when that is the
+actual concept.
 
 ## Implementation form
 
@@ -34,7 +47,7 @@ One library avoids a custom plug-in mechanism for loading separately built
 connectors.
 
 JVM and JDBC are kept out of both the library and the ADBC drivers it loads, in
-either form of source access. A JVM would have to start inside DuckDB and
+either form of Data Source access. A JVM would have to start inside DuckDB and
 DataFusion, which breaks the distribution and performance assumptions of
 embedded Query Engines and of the coordinator, and the product does not
 require users to provide an external JVM. The only candidate exception is an
@@ -53,13 +66,13 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, operator-specific planning rules, serializable planned state, output-schema and fingerprint enforcement, cancellation, deadlines, batch bounds, provenance, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular source |
-| `connector-adbc` | The ADBC access implementation provided by the connector SDK: loading drivers through the ADBC driver manager and checking their versions, passing options, running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by SQL-standard SQLSTATE class ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular source |
-| `connector-sql` | Processing common to sources that speak SQL, using `connector-adbc` for source access: running catalog queries and translating connector-accepted Substrait plans with source-specific dialect and semantic rules | Knowledge of any particular source or native Query Engine plan |
-| `crates/connectors/<source>` | One source kind's connector: its connector definition and the code the definition cannot express. A direct-access connector also implements the source access traits. | Knowledge of other source kinds |
-| `connector-api` | The connector API's C ABI, registering connectors and dispatching by source kind, managing the library, data sources, sessions, and operations, and assembling static information. It builds the library. | Knowledge of any particular source |
-| `adbc-drivers/<source>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
-| `conformance` | The runner that tests the contract through the connector API only, and per-source fixtures | Dependencies on connector internals |
+| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, operator-specific planning rules, serializable planned state, output-schema and fingerprint enforcement, cancellation, deadlines, batch bounds, provenance, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-adbc` | The ADBC access implementation provided by the connector SDK: loading drivers through the ADBC driver manager and checking their versions, passing options, running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by SQL-standard SQLSTATE class ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
+| `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: running catalog queries and translating Connector-accepted Substrait plans with Data Source-specific dialect and semantic rules | Knowledge of any particular Data Source or native Query Engine plan |
+| `crates/connectors/<connector>` | One Connector: its Connector definition and the code the definition cannot express. A direct-access Connector also implements the Data Source access traits. | Knowledge of other Connectors |
+| `connector-api` | The connector API's C ABI, registering Connectors and dispatching by Connector, managing the library, Data Sources, sessions, and operations, and assembling static information. It builds the library. | Knowledge of any particular Data Source |
+| `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
+| `conformance` | The runner that tests the contract through the connector API only, and per-Connector fixtures | Dependencies on Connector internals |
 
 The [connector contract](connector-contract.md) is the semantic source of truth.
 Rust crates enforce the implemented behavior, and callers in other languages,
@@ -68,8 +81,8 @@ such as adapters and the Physical Catalog, use the typed connector API.
 ### Dependency rules
 
 ~~~text
-connector-api --> connectors/<source> (SQL family) --> connector-sql --> connector-adbc --> connector-sdk --> analytics-types
-connector-api --> connectors/<source> (direct access) ----------------------------------> connector-sdk
+connector-api --> connectors/<connector> (SQL family) --> connector-sql --> connector-adbc --> connector-sdk --> analytics-types
+connector-api --> connectors/<connector> (direct access) ----------------------------------> connector-sdk
 connector-api --> connector-sdk
 connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
 conformance --> connector-api C ABI and contract
@@ -82,8 +95,8 @@ conformance --> connector-api C ABI and contract
   belongs in a connector SDK crate.
 - Connector crates do not depend on native libraries. Native dependencies stay
   inside ADBC drivers
-  ([Connector API and source access](connector-contract.md#connector-api-and-source-access),
-  [Source access rules](connector-contract.md#source-access-rules)).
+  ([Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access),
+  [Data Source access rules](connector-contract.md#data-source-access-rules)).
 - A direct-access connector depends only on `connector-sdk`, not on
   `connector-adbc` or `connector-sql`.
 - A connector that uses ADBC access for a source that does not speak SQL, as
@@ -99,8 +112,8 @@ Connectors can be added on a life cycle independent of the rest. This means:
 - **Development and testing:** each crate builds and tests on its own. For
   example, the PostgreSQL connector runs its tests and the PostgreSQL
   conformance tests without building other connectors.
-- **Addition:** adding a source kind is completed by adding a connector crate,
-  the source kind's type mapping, and, with ADBC access, its ADBC driver. The
+- **Addition:** adding a Connector is completed by adding a connector crate,
+  the Connector's type mapping, and, with ADBC access, its ADBC driver. The
   connector SDK, the C ABI, and its callers do not change; `connector-api`
   gains one feature without code changes, and the library MINOR is raised
   ([Compatibility and versions](connector-contract.md#compatibility-and-versions)).
@@ -148,19 +161,19 @@ as follows:
 | Contract element | Connector SDK | Connector |
 | --- | --- | --- |
 | Capability declaration | Assembling metadata declarations and conservative pushdown hints | Metadata coverage and certainly-unsupported hints for the connected source's version and settings |
-| Metadata retrieval | Running catalog queries (`connector-sql` for SQL sources), applying the type mapping, deciding unsupported columns, attaching retrieval info, aggregating completeness, the digest, and converting output to Arrow | Catalog queries, parsing source types, how constraints and identifiers are read, and rules for detecting missing information |
-| Data read | Common Substrait validation, binding adapter context to connector facts, rule dispatch, outcome constraints, planned-state fingerprinting, output-schema enforcement, cancellation, deadlines, batch bounds, and provenance | Obtaining current source/session facts, deciding plan-aware support, translating and executing accepted plans, and converting source output |
-| Calling conventions | Cancellation and timeouts, the error structure, and credential handling; with ADBC access, loading and version-checking the ADBC driver (`connector-adbc`) | Mapping connection options to driver options, fixed settings, and classifying source-specific error codes; with direct access, the source access trait implementation |
+| Metadata retrieval | Running catalog queries (`connector-sql` for SQL sources), applying the type mapping, deciding unsupported columns, attaching retrieval info, aggregating completeness, the digest, and converting output to Arrow | Catalog queries, parsing Data Source types, how constraints and identifiers are read, and rules for detecting missing information |
+| Data read | Common Substrait validation, binding adapter context to connector facts, rule dispatch, outcome constraints, planned-state fingerprinting, output-schema enforcement, cancellation, deadlines, batch bounds, and provenance | Obtaining current Data Source/session facts, deciding plan-aware support, translating and executing accepted plans, and converting source output |
+| Calling conventions | Cancellation and timeouts, the error structure, and credential handling; with ADBC access, loading and version-checking the ADBC driver (`connector-adbc`) | Mapping connection options to driver options, fixed settings, and classifying Data Source-specific error codes; with direct access, the Data Source access trait implementation |
 
 The rule is that whatever must apply with the same meaning to every connector
 belongs in the connector SDK, and whatever needs source knowledge belongs in the
-connector. Source access sits behind a narrow trait that only reads catalogs
+connector. Data Source access sits behind a narrow trait that only reads catalogs
 and runs queries ([Connector trait](#connector-trait)), so common validation,
 type mapping, planned-state checks, read provenance, and table metadata assembly
 have the same SDK boundary in both forms. With ADBC access, connection, query execution, Arrow results,
 cancellation, and error retrieval are also the same `connector-adbc` processing
 for every source, leaving only source knowledge to the connector. With direct
-access, the connector also implements the source access traits.
+access, the connector also implements the Data Source access traits.
 
 ## Read representation
 
@@ -172,7 +185,7 @@ shared relation and expression tree. It does not define a parallel
 ValidatedCandidate {
     plan: Substrait Plan
     output_schema: Analytics schema
-    source_bindings: source objects named by the plan
+    table_references: unresolved table paths named by the plan
     operator fields used to validate the transition from the prior plan
 }
 
@@ -184,8 +197,8 @@ AdapterPlanningContext {
 }
 
 ConnectorFacts {
-    source_product_and_version
-    source_type_attributes
+    data_source_product_and_version
+    data_source_type_attributes
     collation_and_time_zone
     snapshot_and_security_identity
     other candidate-dependent source facts
@@ -196,7 +209,7 @@ PlanningContext = bind(AdapterPlanningContext, ConnectorFacts)
 PlannedSubplan {
     plan: Substrait Plan
     output_schema: Analytics schema
-    source_bindings: source objects named by the plan
+    table_references: unresolved table paths named by the plan
     validation_manifest: component digests plus aggregate fingerprint
 }
 
@@ -204,7 +217,7 @@ ValidationIdentity {
     connector contract and Substrait versions
     connector implementation identity and semantic-rules revision
     candidate plan digest
-    Analytics output schema and source bindings
+    Analytics output schema and table references
     normalized AdapterPlanningContext
     ConnectorFacts snapshot, preserving absent versus empty values
 }
@@ -219,7 +232,7 @@ changed components without retaining their values. Its design
 is described in
 [Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
 
-The adapter supplies only facts it owns. During planning, the connector session
+The adapter supplies only facts it owns. During planning, the Data Source Session
 uses the immutable snapshot prepared for the scan without performing source I/O
 in a native optimizer callback. The SDK binds the two sets before dispatch and
 fingerprints the full validation identity. This prevents an adapter from
@@ -230,7 +243,7 @@ The adapter also retains the complete `AdapterPlanningContext` for each
 accepted plan in the native scan or table handle. A later attempt supplies both
 that old context and a complete context for its candidate, so the SDK can
 validate the old identity without losing earlier requirements. Execution
-supplies the accepted complete context again; the connector session observes
+supplies the accepted complete context again; the Data Source Session observes
 current facts, and the SDK recomputes the full validation identity. The adapter
 context is not duplicated inside `PlannedSubplan`.
 
@@ -261,14 +274,14 @@ execution capabilities:
 
 ~~~text
 ConnectorLibrary:
-    open_source(source_config) -> ConnectorSource
+    open_data_source(data_source_config) -> DataSource
 
-ConnectorSource:
-    open_session(session_config) -> ConnectorSession
+DataSource:
+    open_session(session_config) -> DataSourceSession
 
-ConnectorSession:
+DataSourceSession:
     catalog() -> CatalogReader
-    prepare_planning(source_bindings, expected_schemas) -> PlanningSnapshot
+    prepare_planning(table_bindings, expected_schemas) -> PlanningSnapshot
     release_planning(snapshot)
     preflight(plan) -> ConnectorFacts + ExecutionGuard
     planner() -> ConnectorPlanner
@@ -287,8 +300,8 @@ ConnectorPlanner:
 ConnectorDecision = Exact | Retained | Unsupported
 
 ConnectorExecutor:
-    translate(planned_subplan, current_facts) -> SourceRequest
-    execute(source_request, execution_context, guard) -> ExecutionOutput
+    translate(planned_subplan, current_facts) -> DataSourceRequest
+    execute(data_source_request, execution_context, guard) -> ExecutionOutput
 ~~~
 
 Planning preparation may contact the source and completes before native
@@ -315,7 +328,7 @@ owns native residuals, and the executor must implement exactly the accepted
 
 `ExecutionGuard` keeps every decision-relevant fact stable from preflight
 through evaluation of the accepted remote operators. It may own a transaction,
-snapshot, immutable session settings, or a source version token. A connector
+snapshot, immutable session settings, or a Data Source version token. A connector
 that cannot provide a sufficient guard cannot claim `Exact` for semantics that
 could change in that interval. It can claim `Retained` only when every permitted
 change leaves the remote result conservative, such as a superset for a retained
@@ -326,8 +339,8 @@ whether translation and execution are separate implementation calls. The
 public connector API remains the language-neutral boundary; these internal
 interfaces keep source knowledge out of the SDK.
 
-Source-access interfaces sit below these public contracts. They read catalogs
-and execute source queries returning Arrow streams; they do not expose native
+Data Source access interfaces sit below these public contracts. They read catalogs
+and execute Data Source queries returning Arrow streams; they do not expose native
 Query Engine plans. `connector-adbc` provides the common ADBC implementation,
 while a direct-access connector provides its own. Cancellation remains scoped
 to one execution so another thread can stop a blocked source call.
@@ -365,8 +378,8 @@ pub trait CatalogReader: Send + Sync {
         -> Result<CatalogRead<TableRecord>>;
 }
 
-/// The session lent to one operation. Gives `&mut dyn SourceSession` access, and goes
-/// back to the session when the operation releases its source-side resources.
+/// The session lent to one operation. Gives `&mut dyn DataSourceSession` access, and goes
+/// back to the session when the operation releases its Data Source resources.
 pub struct SessionLease { /* ... */ }
 
 /// One catalog read, owned by the operation. Borrows nothing from the reader,
@@ -390,31 +403,31 @@ pub struct TableEntry { pub table: TableRef, pub kind: TableKind }
 
 /// The three states of one requested table.
 pub enum TableRecord {
-    Read(SourceTable),
+    Read(DataSourceTable),
     NotFound { table: TableRef },
     Unavailable { table: TableRef, reason: MissingReason },
 }
 
-/// What the source declares, as reported by the source.
-pub struct SourceTable {
+/// What the Data Source declares, as reported by the Data Source.
+pub struct DataSourceTable {
     pub table: TableRef,
     pub kind: TableKind,
-    pub columns: Vec<SourceColumn>,
+    pub columns: Vec<DataSourceColumn>,
     /// True if the catalog may have hidden columns without privilege.
     pub columns_may_be_hidden: bool,
-    pub constraints: Reported<Vec<SourceConstraint>>,
-    pub source_id: Reported<SourceId>,
-    pub schema_version: Reported<SourceSchemaVersion>,
+    pub constraints: Reported<Vec<DataSourceConstraint>>,
+    pub data_source_id: Reported<DataSourceId>,
+    pub schema_version: Reported<DataSourceSchemaVersion>,
     pub read_at: Timestamp,
 }
 
-pub struct SourceColumn {
+pub struct DataSourceColumn {
     pub name: String,
     pub ordinal: u32,
     pub nullable: bool,
-    pub source_type: Result<String, MissingReason>,  // missing makes the table incomplete
-    pub attrs: SourceColumnAttributes,
-    pub source_id: Reported<SourceId>,
+    pub data_source_type: Result<String, MissingReason>,  // missing makes the table incomplete
+    pub attrs: DataSourceColumnAttributes,
+    pub data_source_id: Reported<DataSourceId>,
 }
 
 /// An item the connector may fail to read or may declare it does not offer.
@@ -427,7 +440,7 @@ pub enum Reported<T> {
 
 Each `CatalogReader` function takes a session lease from the operation and
 returns a `CatalogRead`. A `CatalogRead` borrows nothing from the reader, the
-session, or the arguments, so the operation can own it as a source-side
+session, or the arguments, so the operation can own it as a Data Source
 resource ([Lifetimes](#lifetimes)). Even when one `CatalogRead` runs several
 executions at the source, such as one query per namespace, its `cancel` stops
 the execution in progress.
@@ -450,19 +463,19 @@ at build time. `connector-sdk` defines its format and validates it when loading.
 
 | Part | Content |
 | --- | --- |
-| Source access | The access form and which options are secret. With ADBC access, the ADBC driver's name and supported version range, and how product connection options map to driver options. |
+| Data Source access | The access form and which options are secret. With ADBC access, the ADBC driver's name and supported version range, and how product connection options map to driver options. |
 | Session | Setting queries run right after connecting, and the driver options or reader crate settings to fix |
 | Catalog | Queries that read namespaces, tables, columns, constraints, and identifiers, and the meaning of their result columns (SQL sources) |
-| Types | Per mapping rule, the Arrow type the source access returns and the name of the building block that converts it to the Analytics type |
+| Types | Per mapping rule, the Arrow type the Data Source access returns and the name of the building block that converts it to the Analytics type |
 | Dialect | Identifier quoting, parameter notation, operator/function translation, and source-semantic guards used by plan-aware rules (SQL sources) |
 | Cancellation | With ADBC access, the means sent to the source when the driver's cancellation does not stop the query at the source |
-| Errors | The classification of source-specific error codes into contract error kinds |
+| Errors | The classification of Data Source-specific error codes into contract error kinds |
 
 Whatever can be data is data. Dialect translation tables, semantic guards, and type correspondence are
 easier to check for errors as tables than scattered through code, and type data
 can be checked against [Type mappings](type-mappings.md) and conformance
 expectations.
-What data cannot express, such as source type grammar, type resolution needing
+What data cannot express, such as Data Source type grammar, type resolution needing
 extra catalog reads, and processing for non-SQL sources, is code. Writing
 everything as data would push the definition format toward a programming
 language.
@@ -474,7 +487,7 @@ language.
 - **Registration:** connectors in the artifact are registered at build time
   and selected by features.
 - **Dispatch:** opening a data source selects the connector for the named
-  source kind. That connector handles all sessions and operations on that data
+  Connector. That connector handles all sessions and operations on that data
   source.
 - **Static information:** assembled from the registered connectors'
   `ConnectorDescriptor` values.
@@ -486,11 +499,11 @@ language.
 | Unit | Created | Holds | Released |
 | --- | --- | --- | --- |
 | Library | At initialization | Settings, the ADBC driver manager (`connector-adbc`), and the timeout watcher thread | At shutdown. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
-| Data source | When opened | The selected connector, validated connection settings and credentials, and its `SourceAccess` (an ADBC database with ADBC access) | When the data source and every session using it are closed |
-| Session | When opened | Its `SourceSession` (an ADBC connection with ADBC access), catalog reader, connector planner, executor, and live planning snapshots | When closed, releasing its snapshots and `SourceSession` |
-| Planning snapshot | When a planning-preparation operation completes | Immutable source bindings, expected schemas, and source/session facts used to build `PlanningContext` | When its coordinator/driver planning state is released, or with the session; it is never part of the serializable execution payload |
-| Operation | When started: validates the request and takes a session lease, sending nothing to the source | Source-side resources: the session lease and, after first pull or `finish_prepare_planning`, its execution/read state and `CancelHandle`; also cancellation, deadline, error, and final read-provenance state | When closed, releasing every source-side resource and operation-owned provenance. Metadata/read resources are also released, and the lease returned, when the stream ends or is released; preparation resources and lease are released when finish returns. |
-| Result stream | When a metadata or read operation starts | A reference to the operation, conversion state, expected output schema, validation manifest, cancellation/deadline state, and batch bounds. It holds no source-side resources. Planning preparation has no stream. | On the stream's `release`; the operation stops the source query and releases the stream returned by source access |
+| Data source | When opened | The selected connector, validated connection settings and credentials, and its `DataSourceAccess` (an ADBC database with ADBC access) | When the data source and every session using it are closed |
+| Session | When opened | Its `DataSourceSession` (an ADBC connection with ADBC access), catalog reader, connector planner, executor, and live planning snapshots | When closed, releasing its snapshots and `DataSourceSession` |
+| Planning snapshot | When a planning-preparation operation completes | Immutable table bindings, expected schemas, and Data Source/session facts used to build `PlanningContext` | When its coordinator/driver planning state is released, or with the session; it is never part of the serializable execution payload |
+| Operation | When started: validates the request and takes a session lease, sending nothing to the Data Source | Data Source resources: the session lease and, after first pull or `finish_prepare_planning`, its execution/read state and `CancelHandle`; also cancellation, deadline, error, and final read-provenance state | When closed, releasing every Data Source resource and operation-owned provenance. Metadata/read resources are also released, and the lease returned, when the stream ends or is released; preparation resources and lease are released when finish returns. |
+| Result stream | When a metadata or read operation starts | A reference to the operation, conversion state, expected output schema, validation manifest, cancellation/deadline state, and batch bounds. It holds no Data Source resources. Planning preparation has no stream. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
 
 The caller-visible rules (one running operation per session, no pool, release
 order) are in [Units and concurrency](connector-contract.md#units-and-concurrency).
@@ -499,7 +512,7 @@ They are realized as follows:
 - Internal state is shared by reference counting. If a parent is closed first,
   its internal state survives while a child refers to it, so freed memory is
   never touched.
-- Each source access unit is released when the last reference to its owner
+- Each Data Source access unit is released when the last reference to its owner
   disappears. With ADBC access, `connector-adbc` keeps ADBC's release order
   (children first).
 - A call on a child after its parent was closed sees the parent's closed flag
@@ -511,17 +524,17 @@ They are realized as follows:
 | --- | --- | --- |
 | Internal state of connector API units | The library | Released by the matching close function |
 | `ExecutionGuard` | The read operation | Created during first-pull preflight and held until every accepted remote operator has been evaluated; released with the source execution |
-| `ArrowArrayStream` | The caller that received it | The caller calls the stream's `release`; the library then releases the stream returned by source access and stops the query |
-| `ArrowArray` and `ArrowSchema` | The caller that received them | Each array is released individually, per the Arrow C data interface. Unconverted columns pass on the buffers source access returned; converted columns pass buffers the library created. |
+| `ArrowArrayStream` | The caller that received it | The caller calls the stream's `release`; the library then releases the stream returned by Data Source access and stops the query |
+| `ArrowArray` and `ArrowSchema` | The caller that received them | Each array is released individually, per the Arrow C data interface. Unconverted columns pass on the buffers Data Source access returned; converted columns pass buffers the library created. |
 | Strings and bytes the caller passes (option values, Substrait plans) | The caller | The library copies them during the call and does not refer to them afterwards |
 | Error structures | The library | Valid until the caller calls the release function; an operation's error is valid until the operation is closed |
 | Read provenance JSON | The read operation | Becomes final when execution ends and remains retrievable until the operation is closed; it is not Arrow schema metadata |
 | Credentials | The data source | [Credential boundary](#credential-boundary) |
 
-A stream pulls one batch at a time from the stream returned by source access,
+A stream pulls one batch at a time from the stream returned by Data Source access,
 converts it, checks the planned schema and configured row/byte bounds, and
 returns it. The connector SDK does not evaluate residual expressions or read
-ahead, so a read's memory is bounded by the source access batch and the
+ahead, so a read's memory is bounded by the Data Source access batch and the
 converted batch.
 
 With ADBC access, unconverted columns pass the driver's buffers on directly.
@@ -534,10 +547,10 @@ built into the library and have no such problem.
 
 ### Execution model
 
-The source access traits are synchronous. ADBC is a synchronous C API, and the
+The Data Source access traits are synchronous. ADBC is a synchronous C API, and the
 connector SDK has no asynchronous runtime. Starting an operation only validates
 the request (including the checks in [Read representation](#read-representation))
-and does not call source access. Source access is called from the caller's
+and does not call Data Source access. Data Source access is called from the caller's
 thread inside a stream pull, or inside `finish_prepare_planning` for planning
 preparation. At the first pull, the connector SDK translates the
 request, calls `read_catalog` or `execute`, stores the returned execution and its
@@ -553,7 +566,7 @@ never leaves the trait.
 | Library, data source | Allowed from several threads |
 | Session, operation, result stream | One at a time ([Units and concurrency](connector-contract.md#units-and-concurrency)), except that an operation may be cancelled from another thread |
 
-A data source uses its `SourceAccess` from several threads. `SourceAccess` is
+A data source uses its `DataSourceAccess` from several threads. `DataSourceAccess` is
 `Send + Sync`, and a direct-access implementation must behave correctly when
 sessions are opened concurrently. ADBC does not require drivers to support
 concurrent use of a database, so `connector-adbc` serializes database
@@ -566,7 +579,7 @@ Cancellation propagates in this order:
 1. The caller cancels an operation from any thread.
 2. The connector SDK calls `cancel` on that operation's execution
    `CancelHandle`.
-3. The implementation stops the work for its form of source access:
+3. The implementation stops the work for its form of Data Source access:
    - **ADBC access:** `connector-adbc` calls `AdbcStatementExecuteQuery` at the
      first pull and, on cancellation, calls the ADBC C function
      `AdbcStatementCancel` directly; ADBC allows it from any thread. It bypasses
@@ -613,7 +626,7 @@ For cancellation and timeouts, a direct-access implementation ensures that:
 However an operation ends (completion, cancellation, timeout, or error), the
 connector SDK:
 
-- releases the stream returned by source access, and with ADBC access also the
+- releases the stream returned by Data Source access, and with ADBC access also the
   statement;
 - with direct access, has the implementation finish open files, source calls,
   and work it started internally, such as background tasks; and
@@ -622,7 +635,7 @@ connector SDK:
   `invalid state`.
 
 A stream released partway also stops the source query and releases the stream
-returned by source access, so the session accepts the next request
+returned by Data Source access, so the session accepts the next request
 ([Requests and results](connector-contract.md#requests-and-results)).
 
 The connector API implementation never lets a Rust panic cross the C ABI. A
@@ -640,18 +653,18 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
   range when the first session opens, returning `invalid settings` if it
   is outside
   ([Calling-convention conformance tests](connector-contract.md#calling-convention-conformance-tests),
-  [Source access rules](connector-contract.md#source-access-rules)).
+  [Data Source access rules](connector-contract.md#data-source-access-rules)).
 - **Options:** product connection options are mapped to driver options as the
   connector definition says, and the fixed driver options are passed at the
   same time.
 - **Errors:** driver errors carry an ADBC status code, a SQLSTATE, and a
-  source-specific vendor code. `connector-adbc` classifies them into contract
+  Data Source-specific vendor code. `connector-adbc` classifies them into contract
   error kinds using the definition's error table and SQLSTATE classes. Because
   the SQLSTATE comes from ADBC's error details, SQLSTATE classification lives in
   `connector-adbc`, not `connector-sql`, so ADBC-access connectors that do not
   use `connector-sql` can use it. Errors mid-stream are retrieved in detail with
   `AdbcErrorFromArrayStream`; when a driver does not support it, the error is
-  classified as `source` from its message alone.
+  classified as `data-source` from its message alone.
 - **Our own ADBC drivers:** a source without an existing ADBC driver gets one
   under `adbc-drivers`, built with the Apache Arrow ADBC project's Rust crates
   `adbc_core` and `adbc_ffi`. `adbc_ffi` does not implement
@@ -667,16 +680,16 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | Stage | Rule |
 | --- | --- |
 | Receive | Values received when opening a data source whose keys the connector marks as secret are placed, on receipt, in a secret-holding type that never prints its value in `Debug` and erases it when dropped |
-| Pass | Passed to source access: as ADBC database options with ADBC access, also used when opening a separate connection for cancellation; with direct access, to the client the implementation uses |
+| Pass | Passed to Data Source access: as ADBC database options with ADBC access, also used when opening a separate connection for cancellation; with direct access, to the client the implementation uses |
 | Hold | The data source holds them, and sessions use them through their reference to the data source without copying. With ADBC access, the driver also keeps them while the database is alive. |
 | Never emit | Not included in errors, logs, metrics, read provenance, capability declarations, or static information. The connector API has no function that returns a secret value. |
-| Discard | Erased when the data source and every session using it are closed, and the `SourceAccess` (the ADBC database with ADBC access) is released |
+| Discard | Erased when the data source and every session using it are closed, and the `DataSourceAccess` (the ADBC database with ADBC access) is released |
 
 ## Correspondence with the contract
 
 | Contract section | Implemented by |
 | --- | --- |
-| [Connector API and source access](connector-contract.md#connector-api-and-source-access) | `connector-api`, the source access traits, `connector-adbc` ([ADBC driver handling](#adbc-driver-handling)), and direct-access connector implementations |
+| [Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access) | `connector-api`, the Data Source access traits, `connector-adbc` ([ADBC driver handling](#adbc-driver-handling)), and direct-access connector implementations |
 | [Calling conventions](connector-contract.md#calling-conventions) | `connector-api` unit management and the connector SDK's cancellation, timeout, and error structure |
 | [Capability declaration](connector-contract.md#capability-declaration) | Metadata coverage and conservative pushdown hints assembled from connector information |
 | [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and `parse_source_type`, and the connector SDK's type mapping and table metadata assembly |

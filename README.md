@@ -1,19 +1,19 @@
 # ScalarDB Analytics Connector
 
 This repository contains the language-neutral connector contract, the Rust
-connector SDK, source-specific connectors, and the C API library that assembles
+connector SDK, Connectors, and the C API library that assembles
 them. The shared Analytics type model and its Arrow schema conversion are
 implemented. The shared connector planning and execution boundaries are also
-implemented; source-specific connector behavior remains out of scope.
+implemented; Data Source-specific Connector behavior remains out of scope.
 
 ## Workspace layout
 
 ```text
 crates/analytics-types/    Analytics types and Arrow type representation
-crates/connector-sdk/      Source-independent connector processing
+crates/connector-sdk/      Data Source-independent connector processing
 crates/connector-adbc/     ADBC access implementation
 crates/connector-sql/      Shared SQL-family processing
-crates/connectors/         Source-specific connectors
+crates/connectors/         Connector implementations
 crates/connector-api/      C API implementation and connector assembly
 ```
 
@@ -64,4 +64,4 @@ Repository-authored source code and documentation are licensed under Apache
 License 2.0. Cargo packages declare `Apache-2.0` through workspace metadata.
 Third-party and native dependencies must retain their own license notices and
 be reviewed before distribution; native libraries must not be added to
-`connector-sdk` or source-specific connector crates.
+`connector-sdk` or Connector crates.

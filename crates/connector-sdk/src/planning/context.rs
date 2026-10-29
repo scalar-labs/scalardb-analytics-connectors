@@ -1,18 +1,18 @@
-//! Source and session semantics that affect pushdown validity.
+//! Data Source and session semantics that affect pushdown validity.
 
 /// Null ordering in the Query Engine session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NullOrdering {
     NullsFirst,
     NullsLast,
-    SourceDefault,
+    DataSourceDefault,
 }
 
-/// Concrete source and session semantics for one planning attempt.
+/// Concrete Data Source and session semantics for one planning attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanningContext {
-    source_product: String,
-    source_version: String,
+    data_source_product: String,
+    data_source_version: String,
     execution_domain: String,
     collation: Option<String>,
     time_zone: Option<String>,
@@ -25,8 +25,8 @@ pub struct PlanningContext {
 impl PlanningContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        source_product: impl Into<String>,
-        source_version: impl Into<String>,
+        data_source_product: impl Into<String>,
+        data_source_version: impl Into<String>,
         execution_domain: impl Into<String>,
         collation: Option<String>,
         time_zone: Option<String>,
@@ -36,8 +36,8 @@ impl PlanningContext {
         security_fingerprint: impl Into<String>,
     ) -> Self {
         Self {
-            source_product: source_product.into(),
-            source_version: source_version.into(),
+            data_source_product: data_source_product.into(),
+            data_source_version: data_source_version.into(),
             execution_domain: execution_domain.into(),
             collation,
             time_zone,
@@ -48,11 +48,11 @@ impl PlanningContext {
         }
     }
 
-    pub fn source_product(&self) -> &str {
-        &self.source_product
+    pub fn data_source_product(&self) -> &str {
+        &self.data_source_product
     }
-    pub fn source_version(&self) -> &str {
-        &self.source_version
+    pub fn data_source_version(&self) -> &str {
+        &self.data_source_version
     }
     pub fn execution_domain(&self) -> &str {
         &self.execution_domain
@@ -78,8 +78,8 @@ impl PlanningContext {
 
     pub(crate) fn fingerprint_fields(&self) -> [&str; 9] {
         [
-            &self.source_product,
-            &self.source_version,
+            &self.data_source_product,
+            &self.data_source_version,
             &self.execution_domain,
             self.collation.as_deref().unwrap_or_default(),
             self.time_zone.as_deref().unwrap_or_default(),
@@ -87,7 +87,7 @@ impl PlanningContext {
             match self.null_ordering {
                 NullOrdering::NullsFirst => "nulls-first",
                 NullOrdering::NullsLast => "nulls-last",
-                NullOrdering::SourceDefault => "source-default",
+                NullOrdering::DataSourceDefault => "data-source-default",
             },
             self.snapshot_fingerprint.as_deref().unwrap_or_default(),
             &self.security_fingerprint,
@@ -95,13 +95,16 @@ impl PlanningContext {
     }
 }
 
-/// A source referenced by the accepted Substrait plan.
+/// An unresolved non-empty table name path.
+///
+/// Metadata requests and Substrait `NamedTable` relations use this carrier.
+/// It does not prove membership in an open Data Source or registered schema.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceBinding {
+pub struct TableReference {
     names: Vec<String>,
 }
 
-impl SourceBinding {
+impl TableReference {
     pub(crate) fn new(names: Vec<String>) -> Self {
         Self { names }
     }

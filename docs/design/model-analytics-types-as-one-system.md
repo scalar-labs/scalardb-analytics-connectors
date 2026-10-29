@@ -12,7 +12,7 @@ system. Int, Text, Uuid, Enum, and structured types are peer variants of
 AnalyticsType.
 
 Arrow storage types and extension metadata belong to the Analytics-to-Arrow
-mapping. Source-native types belong to connector mappings, and Query Engine
+mapping. Data Source-native types belong to Connector mappings, and Query Engine
 types belong to adapter mappings.
 
 ## Rationale
