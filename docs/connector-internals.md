@@ -559,6 +559,33 @@ implementation that uses an asynchronous reader crate keeps that runtime inside
 the implementation and waits for results within the trait call; the runtime
 never leaves the trait.
 
+`AdbcQueryStream` is the state machine for one lazy ADBC query. Its
+`QueryState` enum encodes the current lifecycle phase. The stream and its cloneable
+`AdbcQueryCancelHandle` share an `Arc<Mutex<QueryState>>`: `Arc` keeps the query
+state available until the stream and all cancellation handles have been dropped,
+and `Mutex` serializes state transitions from stream reads, cross-thread
+`Cancel` events, and cleanup. The stream owns one `Arc` reference, and each
+cancellation-handle clone owns another reference to the same state. The stream
+locks the state when moving resources into a blocking read and when recording
+its result. A cancellation handle locks it to inspect the phase and record the
+cancellation transition. Stream drop locks it to transition to `Finished`, then
+drops the replaced state after releasing the lock.
+
+The query states are `Pending`, `Preparing`, `Ready`, `Reading`, `Cancelled`,
+and `Finished`. `Preparing` distinguishes statement creation from reader
+creation because only the latter has a statement-scoped cancel handle.
+`Pending` and `Ready` own query resources between reads. During the blocking
+`Preparing` and `Reading` operations, the polling thread temporarily owns those
+resources while the shared state records the in-progress phase and cancellation
+capability. This ownership tradeoff is recorded in
+[Transfer ADBC query resources to blocking polls](design/transfer-adbc-query-resources-to-blocking-polls.md).
+The state mutex is not held during ordinary source calls. It protects the
+`QueryState`, while the polling thread exclusively accesses any request,
+statement, or execution transferred out for the current blocking call. Native
+cancellation is the exception: the cancellation handle keeps the state mutex
+locked while invoking the statement-scoped callback so cleanup cannot release
+the statement concurrently.
+
 ### Thread safety
 
 | Unit | Concurrent calls |
@@ -580,15 +607,16 @@ Cancellation propagates in this order:
 2. The connector SDK calls `cancel` on that operation's execution
    `CancelHandle`.
 3. The implementation stops the work for its form of Data Source access:
-   - **ADBC access:** `connector-adbc` calls `AdbcStatementExecuteQuery` at the
-     first pull and, on cancellation, calls the ADBC C function
-     `AdbcStatementCancel` directly; ADBC allows it from any thread. It bypasses
-     the Rust driver manager wrapper because that wrapper holds a mutex for the
-     whole statement execution call, which would delay a cancellation issued
-     during execution until the execution ends. If the driver's cancellation
-     does not stop the query at the source, `connector-adbc` sends the means
-     written in the connector definition, such as a PostgreSQL cancel request
-     or MySQL `KILL QUERY`, over a separate connection.
+   - **ADBC access:** at the first pull, `connector-adbc` creates one statement
+     for the execution and obtains its driver-manager `CancelHandle` before
+     calling `AdbcStatementExecuteQuery`. The driver manager invokes
+     `AdbcStatementCancel` without taking the ordinary-operation mutex, so a
+     different thread can cancel while execution or result retrieval is
+     blocked. The handle is statement-scoped and becomes a no-op after that
+     statement is released; `connector-adbc` does not call the ADBC C function
+     directly or substitute connection-wide cancellation. Between driver
+     calls, cancellation is recorded locally and the connector does not issue
+     an unnecessary native cancellation callback.
    - **Direct access:** the implementation uses that execution's
      `CancelHandle` to stop file reads and source calls in progress.
 4. The stream's next pull, or `finish_prepare_planning`, returns

@@ -4,4 +4,4 @@
 
 mod query;
 
-pub use query::{AdbcQueryStream, query};
+pub use query::{AdbcQueryCancelHandle, AdbcQueryStream, query};

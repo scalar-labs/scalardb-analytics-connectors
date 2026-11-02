@@ -34,7 +34,8 @@ residual guarantee, and rewrite behavior.
 
 The focused decisions under [design](design/) explain why the type model is
 flat, why one connector interprets each source, why the boundary is a typed C
-ABI rather than ADBC, and why Substrait remains the shared pushdown AST.
+ABI rather than ADBC, why Substrait remains the shared pushdown AST, and why a
+blocking ADBC poll temporarily owns its query resources.
 
 Use the documentation layers for distinct purposes:
 
