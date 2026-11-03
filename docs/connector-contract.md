@@ -37,7 +37,7 @@ requests:
 
 | Request | Input | Output |
 | --- | --- | --- |
-| Planned read | A connector-accepted Substrait subplan and its validated planning state ([Read request representation](#read-request-representation)) | An Arrow stream with the planned schema, plus operation-owned read provenance retrieved after execution ([Read provenance](#read-provenance)) |
+| Planned read | An adopted `PlannedPushdown` containing the remote Substrait plan and its Connector-generated executable query ([Read request representation](#read-request-representation)) | An Arrow stream with the remote output schema, plus operation-owned read provenance retrieved after execution ([Read provenance](#read-provenance)) |
 
 Both capabilities follow the [calling conventions](#calling-conventions).
 Before receiving requests, a connector states which part of the two
@@ -128,15 +128,12 @@ name their target by handle.
 | Library | Initialized once per process. Receives the maximum result batch size, the location of ADBC drivers, and logging settings. The application initializes and shuts it down. |
 | Data source | Holds one data source's connection settings and credentials. One is opened per registered data source and reopened when connection settings change. |
 | Session | One connection to that data source. For a direct-access source without connections, the unit that runs one operation at a time. Callers open as many as they want concurrent operations. |
-| Operation | One planning preparation, metadata request, or read request. Owns cancellation and error retrieval. Metadata/read source resources are created at the first pull; preparation resources are created by `finish_prepare_planning`. |
-| Result stream | The result of a metadata or read operation, as an Arrow `ArrowArrayStream`. It owns no resources and only pulls results from the operation's resources. A planning-preparation operation has no result stream. |
+| Operation | One metadata request or read request. Owns cancellation and error retrieval. Source resources are created at the first pull. |
+| Result stream | The result of a metadata or read operation, as an Arrow `ArrowArrayStream`. It owns no resources and only pulls results from the operation's resources. |
 
 If a stream is released without ever being pulled, nothing was sent to the
 source. If an operation is cancelled before its first pull, the first pull
 returns `cancellation`.
-If planning preparation is cancelled before or during
-`finish_prepare_planning`, that function returns `cancellation` and no planning
-snapshot is created.
 
 A process has several callers, such as the DuckDB adapter and the Physical
 Catalog. They receive the initialized library from the application and share
@@ -206,14 +203,12 @@ Credentials are handled as follows:
 A function that starts an operation validates the request and immediately
 returns the operation handle. Metadata and read operations also return a result
 stream; their query is sent to the source when its first batch is pulled.
-Planning preparation instead calls Data Source access from
-`finish_prepare_planning`. In both cases the caller already holds the operation
-handle and can cancel from another thread while the source is still answering.
+`plan_pushdown` may call Data Source access while resolving a validated plan.
 
 - Validation errors (`invalid request`, `invalid state`) are
   returned immediately by the function that starts the operation.
-- Errors at the source are returned as pull failures, or by
-  `finish_prepare_planning` for preparation. The caller retrieves
+- Errors at the source are returned as pull failures, or directly by
+  `plan_pushdown` during resolution. The caller retrieves
   their structured details the same way as failures in the middle of a stream
   ([Errors in the API](#errors-in-the-api)).
 - A stream's schema is available before the source is queried. For data read
@@ -223,9 +218,7 @@ handle and can cancel from another thread while the source is still answering.
   ([Functions](#functions)).
 
 For metadata and reads, creating and executing are not separate steps because a
-created-but-not-run state would add another set of release cases. Planning
-preparation is the deliberate exception: its separate finish call is what makes
-a blocking setup query cancellable through the already-returned handle.
+created-but-not-run state would add another set of release cases.
 
 Results are returned as an Arrow stream pulled in order. A caller may release
 the stream before receiving every batch; release means the rest is not wanted,
@@ -233,7 +226,7 @@ and the connector stops the source query and returns its resources. A session
 whose stream was released early accepts the next request.
 
 An operation is complete only when its stream has been pulled to the end
-without an error, or when planning preparation has finished successfully. A
+without an error. A
 caller never treats the result of an operation that ended
 by cancellation, timeout, or error as complete. How much of a partial result is
 valid is defined for
@@ -243,16 +236,15 @@ valid is defined for
 ### Cancellation and timeouts
 
 A caller can cancel any running operation from any thread, including while the
-first pull or `finish_prepare_planning` waits for the source. On cancellation the connector promptly stops
+first pull waits for the source. On cancellation the connector promptly stops
 the source query and its own reading. With ADBC access it uses the driver's
 cancellation; if that does not stop the query at the source, the connector
 uses the source's own means, such as a PostgreSQL cancel request or MySQL
 `KILL QUERY`. With direct access the connector itself stops reads and source
-calls in progress. The next pull of a cancelled stream, or the blocked planning
-finish call, returns `cancellation`.
+calls in progress. The next pull of a cancelled stream returns `cancellation`.
 
 The caller specifies a timeout per request. It counts from sending the query to
-the source (the first pull, or planning finish) until the stream has been pulled to the end or preparation completes. An
+the source at the first pull until the stream has been pulled to the end. An
 operation that exceeds it is stopped the same way as a cancellation and
 returns `timeout`. The timeout does not count from starting the operation so
 that an adapter that starts an operation while planning and reads it later does
@@ -284,7 +276,7 @@ unresolvable host name is not retryable.
 | `authentication` | Authentication failed (not retryable). |
 | `permission` | There is no privilege to read a particular target (not retryable). |
 | `invalid request` | The request's shape or range is invalid, including a request outside the capability declaration (not retryable). |
-| `invalid state` | The call order, session state, or invalidation of a planned subplan prevents accepting the request ([Units and concurrency](#units-and-concurrency), [Cancellation and timeouts](#cancellation-and-timeouts)). Finish the running stream, replan an invalidated subplan, or reopen an unusable session. |
+| `invalid state` | The call order or session state prevents accepting the request ([Units and concurrency](#units-and-concurrency), [Cancellation and timeouts](#cancellation-and-timeouts)). Finish the running stream or reopen an unusable session. |
 | `stale registration` | The table shape registered in the Physical Catalog no longer matches the source: the schema check found a type or nullability mismatch ([Schema check](#schema-check)), or a table or column the request references no longer exists. Re-registration is required (not retryable). |
 | `data` | A value that cannot be carried exactly was encountered ([Values](#values)) (not retryable). |
 | `cancellation` | The caller cancelled (not retryable). The caller cancelled, so the caller decides whether to resend. |
@@ -324,14 +316,14 @@ The declaration contains:
   and schema versions it returns, and its fixed settings
   ([Cancellation, errors, and declarations for metadata](#cancellation-errors-and-declarations-for-metadata)).
 - **Data read:** whether it returns a read point, read consistency
-  ([Consistency](#consistency)), the accepted Substrait version, and optional
+  ([Consistency](#consistency)), the accepted Substrait request shapes, and optional
   pruning hints for planner rules that are certainly unsupported
   ([Planning and residual operators](#planning-and-residual-operators)).
 
 The metadata declaration is authoritative for metadata requests. Data-read
-pushdown support is plan- and context-dependent: a static declaration may
+pushdown support depends on the complete plan and current Data Source facts: a static declaration may
 prevent an obviously futile attempt, but it never authorizes a planner rewrite.
-The connector's decision for the concrete candidate and planning context is
+The connector's decision for the complete offered plan and current source facts is
 authoritative. The implementation and fixed settings in the declaration are
 recorded in the
 [retrieval info](#retrieval-info-and-content-digest) of table metadata and in
@@ -375,7 +367,7 @@ The version to raise follows from which compatibility a change breaks:
 | Add an error kind | Keeps | Keeps; callers handle unknown kinds by the retry flag alone ([Errors in the API](#errors-in-the-api)) | MINOR |
 | Rename an output column or remove an item | Keeps | Breaks | MAJOR |
 | Change the meaning of an existing Analytics type or remove a type | Keeps | Breaks | MAJOR |
-| Change the accepted Substrait version | Keeps | Breaks | MAJOR |
+| Change an accepted Substrait request shape | Keeps | Breaks | MAJOR |
 | Fix behavior to match the contract | Keeps | Keeps | PATCH |
 
 MINOR changes keep data compatibility only because callers follow the handling
@@ -809,47 +801,50 @@ To support those limits, a connector:
 
 ### Read request
 
-A Query Engine adapter first makes a planning attempt. The attempt contains:
+A Query Engine adapter first offers a complete planning region. The request contains:
 
 | Input | Meaning |
 | --- | --- |
-| Rule | The native planner pattern being negotiated: initially read, projection, or filter |
-| Current state | The optional accepted planned subplan and its complete adapter context already stored in the connector scan; absent only for the base read |
-| Candidate | A serialized Substrait plan for the remote work the adapter proposes |
-| Residual policy | Whether the adapter can retain the corresponding native operator |
-| Candidate adapter context | The complete normalized Query Engine/session facts and semantic requirements for the complete candidate plan, not only the current native pattern |
+| Offered plan | A decoded Substrait `Plan` for one complete native region alternative selected by the Adapter |
 
-The SDK validates the candidate. The Data Source Session supplies current source
-facts such as Data Source version, type attributes, collation, time zone, snapshot,
-and security identity. The SDK binds both sets of facts into the effective
-planning context and dispatches the rule to the connector. An accepted
-candidate becomes a serializable `PlannedSubplan` containing the Substrait
-plan, Analytics output schema, table references, and a non-secret validation
-manifest containing component digests and an aggregate fingerprint.
-The adapter stores its sanitized adapter context beside that state and supplies
-it again at execution. Credentials, secret values, open connections, and
-process-local pointers are not part of either state.
+The offered plan is the complete semantic input to Connector planning. The
+request has no separate Query Engine or session-semantics side channel. An
+Adapter must express required semantics in the Substrait plan or a declared
+extension; if it cannot, it must not offer that native region.
 
-Before the base read attempt, the adapter completes planning preparation for
-the registered table bindings and expected schemas. This timeout-bound,
-cancellable Data Source operation hydrates a Data Source Session snapshot. Subsequent
-`plan_pushdown` calls name that snapshot and perform no source I/O inside native
-optimizer callbacks. The snapshot is immutable; a new binding or invalidation
-requires a replacement snapshot and a new base read.
+The SDK produces a `LogicalPlan` as the result of validation and conversion.
+The Connector then resolves opaque
+`NamedTable` bindings into its own private planning metadata and obtains the
+Data Source facts required by that complete region. The SDK applies the
+Connector-supplied semantic rewrite rules. The private metadata exists only
+during planning and does not cross the connector API. The result is a
+remote Substrait plan, an optional local Substrait plan, and an opaque
+`ExecutableQuery` for the remote plan. A successful request becomes a
+`PlannedPushdown`. It contains the remote output schema, opaque bindings, and
+executable payload. The local plan, when present, consumes that remote output through
+the reserved `ExtensionLeafRel(RemoteResult)` and must not independently read a
+named table.
+Credentials, secret values, open connections, and process-local pointers are
+not part of the result.
 
-The manifest covers every semantic input to the decision: connector-contract
-and Substrait versions; connector implementation identity and semantic-rules
-revision; the candidate plan; output schema and table references; normalized
-adapter context; and the connector fact snapshot. Its versioned deterministic
-encoding preserves absent-versus-empty values. Its per-component digests allow
-diagnostics to name changed components without storing their values. A change
-to any input requires replanning. Deadline and cancellation state are execution
-inputs and do not change the decision identity. The complete model is in
-[Validation identity](plan-pushdown-with-query-engine-planners.md#validation-identity).
+Resolution happens after common validation, because the complete validated plan
+determines which catalog and source facts are needed. Resolution may perform
+timeout-bound, cancellable Data Source I/O during planning. A session may
+prefetch or cache facts, but that is an implementation strategy rather than a
+required planning-snapshot protocol.
 
-Execution accepts only a `PlannedSubplan`. Its Arrow stream must have exactly
-the planned column names, order, Analytics types, and nullability. Row order is
-unspecified unless a future accepted rule explicitly guarantees ordering.
+Common structural checks inspect the same `PlannedPushdown`; they do not create
+a second planning-result type. Stable identity, persistence, and restore are not
+part of the shared contract until a concrete consumer requires them. The
+complete model is in [Boundary checks](pushdown-planning.md#boundary-checks).
+
+Remote execution accepts the adopted `PlannedPushdown`. Its Arrow stream must have
+exactly the remote plan's output column names, order, Analytics types, and
+nullability. Before adopting the result, the Adapter must be able to map that
+output and lower the complete local plan when present. If it cannot, it discards
+that proposal without changing native state. After adoption, the Query Engine
+executes the local plan when present. Row order is unspecified unless a future
+accepted rule explicitly guarantees ordering.
 
 ### Relation to table metadata and unsupported columns
 
@@ -908,7 +903,7 @@ rule. They are never turned into NULL or a nearby value.
 They are not turned into NULL because that would silently change the source's
 value and could make a pushed predicate disagree with a native residual
 operator. The error occurs only when the value reaches connector output; a
-user can still read a projection or filter whose accepted plan does not return
+A user can still read a projection or filter whose remote plan does not return
 that value.
 
 Carrying such values as NULL may be considered as a contract change only when
@@ -964,7 +959,7 @@ For data read, the capability declaration includes:
 - whether a read point can be returned;
 - whether one read request reads a single point-in-time state of the source;
   and
-- the Substrait contract version and any conservative pruning hints described
+- the accepted Substrait request shapes and any conservative pruning hints described
   in [Planning and residual operators](#planning-and-residual-operators).
 
 ### Data read conformance tests
@@ -979,9 +974,9 @@ and values it declared in metadata retrieval:
   This substantiates the coverage declaration.
 - Projecting a column with a value that cannot be carried exactly is a `data`
   error; not projecting it is not.
-- Exact projection and filter outcomes return the same rows and schema as the
-  native operators they replace. Retained filter outcomes may reduce source
-  work but preserve the native filter and therefore cannot change results.
+- A remote plan followed by its optional local plan returns the same rows and
+  schema as the offered region. A local filter may allow the remote plan to
+  reduce source work without changing results.
   Fixtures include non-normalized expression trees and values whose comparison
   meaning varies by column, such as trailing spaces, letter case, accents, and
   columns with different character sets.
@@ -1000,10 +995,12 @@ and literals are checked by the
 ## Read request representation
 
 This section defines the plan shared by a Query Engine adapter and a connector
-while they negotiate pushdown. Substrait is the shared relation and expression
-AST; the SDK does not convert it to a second request or expression tree. The
-rationale is in
-[Use Substrait as the shared pushdown AST](design/use-substrait-as-pushdown-ast.md).
+while they negotiate pushdown. Substrait is the language-neutral interchange
+representation at that boundary. Connector planning uses a strictly typed
+internal representation of the accepted Substrait semantic profile, then
+converts its result back to Substrait. That internal representation is not part
+of this contract. The rationale is in
+[Separate interchange and planning representations](design/separate-interchange-and-planning-representations.md).
 
 ### Requirement
 
@@ -1018,89 +1015,120 @@ has the same type and value under any Query Engine.
 
 ### Substrait subset
 
-A candidate is passed as a serialized Substrait plan. Substrait is a published
+A requested plan is passed as a decoded Substrait `Plan`. Substrait is a published
 specification for expressing relational plans independently of any Query
-Engine. The same validated plan is retained in `PlannedSubplan` and later
-passed to connector execution.
+Engine. `PushdownRequest` carries the offered plan. `PlannedPushdown` carries
+the resulting remote and optional local plans beside the Connector-owned
+executable payload.
 
-An accepted plan must:
+Offered and remote plans use the same explicit logical-operator shape. Their
+role differs by placement: the offered plan describes the requested region,
+while the remote plan describes the operators selected for Data Source
+execution.
 
-- be a valid plan in the Substrait version fixed for the library MAJOR
-  ([Compatibility and versions](#compatibility-and-versions)), as judged by the
-  official `substrait-validator`; and
-- fit the shape below.
-
-A plan that is malformed or internally inconsistent is rejected as
-`invalid request`. A valid Substrait plan outside the shared contract subset is
-also rejected as `invalid request`. A candidate inside the shared subset can still be
-`Unsupported` by a connector for the concrete planning context; that is a
+A plan whose required shape or fields cannot be read is rejected as `invalid
+request`. A plan outside the shared contract shape is also rejected as
+`invalid request`. A requested plan inside the shared subset can still be
+`Unsupported` by a connector for its current Data Source facts; that is a
 normal planning outcome, not an invalid request. Adapters check in their own
-tests that the candidates they build pass common validation.
+tests that the plans they build have the expected shape.
 
-The only accepted shape is:
+The initial accepted offered shape is:
 
 ~~~text
 Plan
  +- RelRoot (output column names)
-     +- ReadRel
-         +- namedTable: the table reference
-         +- baseSchema: the expected Analytics schema encoded as Substrait types
-         +- filter or best_effort_filter: optional expression tree
-         +- projection: optional column-selection mask
+     +- ProjectRel? (outermost when present)
+         +- FilterRel?
+             +- ReadRel
+                 +- namedTable: the opaque table binding
+                 +- baseSchema: the expected Analytics schema encoded as Substrait types
 ~~~
 
-The current SDK scaffold carries `namedTable` as an unresolved non-empty table
-reference. It validates the path shape and expected schema shape, but does not
-yet prove that the reference belongs to the open Data Source or registered
-schema. Binding resolution must promote it to a non-secret opaque table binding
-before this boundary fulfills the intended registration and ownership checks;
-until then callers must not treat `TableReference` as such proof.
+This is a logical, pre-pushdown plan. The operator order is fixed: filtering is
+evaluated over the read schema, then projection is evaluated over the filter
+output. The offered `ReadRel` is a bare scan and does not contain `filter`,
+`best_effort_filter`, or `projection` fields.
+
+The initial accepted remote shape is:
+
+~~~text
+Plan
+ +- RelRoot (remote output column names)
+     +- ProjectRel? (outermost when present)
+         +- FilterRel?
+             +- ReadRel
+                 +- namedTable: the opaque table binding
+                 +- baseSchema: the expected Analytics schema encoded as Substrait types
+~~~
+
+Shipped filtering and projection remain explicit `FilterRel` and `ProjectRel`
+nodes. Substrait's `ReadRel.filter` and `ReadRel.projection` instead describe
+operations already embedded inside a scan. The common profile intentionally
+does not use those fields, because pushdown planning here means deciding
+whether a logical operator belongs to the remote or local plan. Mixing the two
+kinds of pushdown would obscure that placement and create two representations
+of the same operation. The Connector's remote query generator translates the
+complete remote tree into the Data Source-specific query.
+
+The SDK validates `namedTable` as a non-empty opaque `TableBinding`. Only the
+Connector interprets it. During Connector planning, the Connector must ensure
+that the binding belongs to the current Data Source Session and resolve the
+physical relation, columns, and source facts required by its rules and query
+generator. Their representation and validation are Connector-private; failures
+stop planning before a `PlannedPushdown` is constructed.
 
 Details of the shape:
 
-- `ReadRel.filter` represents a filter that may be reported `Exact` only when
-  the connector guarantees its semantics. `ReadRel.best_effort_filter`
-  represents an optimization for which the adapter retains its native filter;
-  it can never authorize removal of that operator.
-- Column references in the filter and projection are positions in the expected
-  schema (`base_schema`).
+- Offered `FilterRel` and `ProjectRel` represent the logical work to preserve
+  across the remote and local plans. The initial `ProjectRel` subset uses direct
+  field selections and an emit mapping. Project hints and common advanced
+  fields are outside the initial profile.
+- Offered `ReadRel.filter`, `ReadRel.best_effort_filter`, and
+  `ReadRel.projection` are outside the initial contract. Approximate filtering
+  with an exact local filter is deferred.
+- Column references in offered `FilterRel` and `ProjectRel` nodes are positions
+  in the expected read schema (`base_schema`) for this fixed initial shape.
 - Column names in `root` and `base_schema` follow Substrait's depth-first order
   through `Struct` fields.
 - Functions such as comparisons reference Substrait's standard extensions
   through the plan's extension declarations.
 
-A currently accepted candidate reads exactly one named table. The initial
-rules are read, projection, and filter. Limit, aggregation, sort, TopN, and join
-have separate rule identities but remain `Unsupported` until common validation,
-connector execution, and an adapter rewrite path exist for each rule.
+A plan in the current common validation subset reads exactly one named table.
+The offered plan expresses logical operators as `FilterRel` and `ProjectRel`.
+Connector rewrite rules operate on the strictly typed `LogicalPlan`; generated
+remote and local plans are checked by internal decomposition-contract
+assertions rather than passed through the external-input validator. Converting
+them back to Substrait preserves explicit `FilterRel` and `ProjectRel` nodes,
+with the local operators above `RemoteResult`. Limit, aggregation, sort, TopN,
+and join remain outside the common validation subset until their end-to-end
+validation, execution, and adapter rewrite paths exist. Adding them does not
+add operator-specific planner methods: they become additional shapes inside a
+complete request.
 
-The library pins one accepted Substrait version. Adapters build only the
-candidate pattern their native planner can remove or retain safely; they do not
-need to convert a whole SQL statement or native plan.
+The library pins the Rust Substrait protobuf dependency used to represent
+`Plan`; request-shape validation does not impose a separate runtime policy on
+the plan's version metadata. Adapters build only a complete region their native
+planner can rewrite around safely; they do not need to convert a whole SQL
+statement or native plan.
 
 ### Filters and types
 
 The shared contract does not define a second filter language or require AND,
 CNF, DNF, or another normal form. A filter remains a Substrait expression tree,
-including nested expressions and disjunctions. Common validation checks its
-structure, declared functions, types, and resource bounds; the connector then
-decides whether that concrete expression has the required meaning for the
+including nested expressions and disjunctions. Request-shape validation only
+checks that the expected filter field is present when required; the connector
+rule decides whether that concrete expression has the required meaning for the
 source and session.
 
 For example, `Text` comparisons can depend on Data Source type, collation, character
 set, and trailing-space behavior, while floating-point comparisons can depend
 on NaN and signed-zero semantics. Those facts cannot be decided from the
-operator and Analytics type alone. A connector reports `Exact` only when it can
-execute the complete candidate with the same semantics as the native operator.
-Otherwise it reports `Retained` when the adapter can keep that operator, or
-`Unsupported`.
-
-`Retained` is not permission to run an arbitrary approximate filter. The remote
-best-effort filter must return a superset of the rows selected by the native
-predicate under every fact change allowed during execution; it may produce
-false positives but no false negatives. The native residual removes the false
-positives. Each future operator rule must define its own retained-safety
-condition before that rule can return `Retained`.
+operator and Analytics type alone. A Connector rewrite rule changes the plan
+only when the composition of its remote and optional local plans preserves the
+offered semantics. A best-effort remote filter must return a superset of the requested
+rows, and the generated local plan removes false positives. Each rewrite rule
+defines and tests its own semantic conditions.
 
 The expected schema and literals map Analytics types to Substrait types as
 follows:
@@ -1140,39 +1168,51 @@ Query Engine.
 
 ### Planning and residual operators
 
-The adapter chooses candidate granularity from a native planner pattern it can
-safely replace or retain and proposes the complete next remote plan. The
-connector evaluates that whole validated candidate with the effective planning
-context; it does not rewrite the candidate or return isolated accepted
-conjuncts through the shared API. Data Source attributes used for that judgment come
-from the Data Source Session and must be valid for the planned execution rather
-than copied from an older Physical Catalog registration.
+The Adapter offers a complete native region it can safely rewrite around. It
+may issue other complete requests for alternative regions or topologies.
+Pushdown planning evaluates that whole offered `LogicalPlan`. The Connector resolves
+required source facts and supplies
+its finite, tested rewrite rules; the SDK applies those rules in sequence.
+Every rule converts one complete remote/local plan into another. Planning
+returns a remote plan, an optional local plan, and the directly executable
+remote query. Data Source attributes used by the rule come from the Data Source
+Session and must be valid for planned execution rather than copied from an
+older Physical Catalog registration.
 
-Each rule returns one of three outcomes:
+Rules are evaluated in deterministic configured order. The initial `QueryPlan`
+reduces the remote plan to the base read and represents the offered filter and
+projection over `RemoteResult` in the local plan. A rule that cannot move or
+rewrite more work returns that plan unchanged; an error stops rule evaluation.
 
-- `Exact`: the connector guarantees the candidate semantics, so the adapter may
-  remove the corresponding native operator;
-- `Retained`: the remote operation is an optimization and the adapter must keep
-  the native operator; or
+The Connector result is one of:
+
+- `Planned` without a local plan: all work executes remotely;
+- `Planned` with a local plan: the Query Engine executes that generated plan
+  over the remote plan's output; or
 - `Unsupported`: neither native nor remote planning state changes.
 
-The planning attempt states whether retaining the native operator is possible
-and supplies the current planned subplan with its complete adapter context. The
-candidate context likewise describes the complete candidate rather than only
-the current operator. The SDK validates the candidate as an operator-specific
-transition from that state. It rejects `Retained` for an
-exact-only attempt, and a `ReadRel.best_effort_filter` introduced by this
-attempt can never remove the corresponding native filter. A best-effort filter
-already present in the current state belongs to its earlier residual and does
-not prevent an exact outcome for a different current operator. The connector
-does not return an SDK-owned residual expression, and the SDK does not evaluate
-arbitrary residual predicates over Arrow batches.
+A `Planned` result remains a proposal until the Adapter verifies that it can
+install the remote output and complete local plan. A failure to lower rejects
+only that proposal. The Adapter may retain the original native plan or adopt a
+result from another complete request; it never reports Query Engine lowering
+limits to the Connector.
+
+The remote plan need not be a structural subset of the offered plan. A rewrite
+may introduce intermediate aggregates, such as remote `SUM` and `COUNT` with a
+local division for partial `AVG` pushdown. The Connector owns the semantic
+equivalence guarantee for each rule; the SDK does not prove it.
+
+The Adapter owns native scan state, join shape, and local-plan conversion. If it wants
+the optimizer to compare materially different regions or join topologies, it
+issues multiple complete requests. The Connector does not combine those
+requests. The SDK does not evaluate arbitrary residual predicates over Arrow
+batches.
 
 Static capabilities are optional conservative hints. They may say that an
 operator or extension is certainly unavailable, but only the connector's
 plan-aware result authorizes a rewrite. The complete ownership and lifecycle
 model is in
-[Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
+[Pushdown planning](pushdown-planning.md).
 
 ## Connector API
 
@@ -1206,32 +1246,24 @@ The connector API has these functions:
   credential options, and connection timeout.
 - **Open and close a session.**
 - **Fetch the capability declaration**, per session.
-- **Start, finish, and release planning preparation**, for table bindings and expected
-  schemas. `start_prepare_planning` validates the request, takes the session
-  lease, and returns an operation handle without source I/O.
-  `finish_prepare_planning` may block while it hydrates the facts and returns an
-  opaque planning-snapshot identity. Another thread may use the ordinary
-  operation-cancel function while finish is blocked. Closing or cancellation
-  releases its source resources and never publishes a partial snapshot. A
-  successful finish completes the operation, releases its source resources and
-  session lease, and transfers the snapshot to session ownership.
-  The adapter calls `release_planning_snapshot` when its native scan state is
-  discarded; closing the session releases any remaining snapshots.
-- **Plan pushdown.** A versioned request envelope carries one rule, Substrait
-  candidate, the optional current planned state with its adapter context,
-  residual policy, complete candidate adapter context, and planning-snapshot
-  identity. The Data Source Session adds facts from that immutable snapshot. The
-  result is `Exact`, `Retained`, or `Unsupported`;
-  accepted results carry serialized planned state. Planning is a synchronous,
-  source-I/O-free call over the named immutable snapshot; a missing fact
-  prevents an exact result.
+- **Plan pushdown.** A versioned request envelope carries one complete offered
+  Substrait region. The Adapter constructs that
+  region from a maximal native pattern it can rewrite around. After common
+  validation, the Connector loads private metadata for the opaque table
+  bindings and any Data Source facts required by the region. The standard SDK
+  planner applies the Connector's tested remote/local rewrite rules, and the
+  Connector constructs the remote executable query. The result is `Planned` or
+  `Unsupported`; a planned result carries remote and optional local Substrait
+  plans plus the executable query. Metadata loading follows the
+  ordinary planning timeout and cancellation rules. A Connector may use a
+  session-local cache, but no cache identity crosses the API boundary.
 - **Start an operation.** Every one takes a request timeout, validates the
   request, and immediately returns the operation handle and its result stream;
   the query is sent at the first pull ([Requests and results](#requests-and-results)).
   - Namespace list: a set of namespace names ([Metadata requests](#metadata-requests)).
   - Table list: a set of namespace names and a set of table names.
   - Table metadata: a set of tables, as Arrow rows.
-  - Read: connector-accepted serialized planned state.
+  - Read: an adopted `PlannedPushdown`.
 - **Cancel an operation**, from any thread.
 - **Retrieve an operation's error**, in the structure of
   [Errors in the API](#errors-in-the-api), after a pull ends with an error.
@@ -1243,36 +1275,24 @@ The connector API has these functions:
 At the language-neutral level, planning and read execution form this boundary:
 
 ~~~text
-start_prepare_planning(session, table_bindings, expected_schemas, timeout)
-    -> operation
-finish_prepare_planning(operation)
-    -> planning_snapshot | error
-
-plan_pushdown(session, planning_snapshot, planning_attempt)
-    -> Exact(serialized_planned_subplan)
-     | Retained(serialized_planned_subplan)
+plan_pushdown(session, pushdown_request)
+    -> Planned(planned_pushdown)
      | Unsupported(reason)
      | error
 
-start_read(session, serialized_planned_subplan,
-           complete_adapter_context, timeout)
+start_read(session, planned_pushdown, timeout)
     -> operation + ArrowArrayStream
      | error
 ~~~
 
-The first function changes no native Query Engine state; the adapter interprets
-the outcome and performs that rewrite. The second accepts only state produced
-by successful planning. `start_read` does not contact the source. Before the
-first pull issues the data query, the connector refreshes any facts that are not
-fixed by a session or snapshot guarantee and establishes a guard that keeps
-decision-relevant semantics stable through remote evaluation. A connector that
-cannot establish such a guard cannot have returned `Exact` for a candidate that
-depends on the mutable fact. A mismatch makes that pull return
-`invalid state` with a structured plan-invalidated reason; a schema or object
+`plan_pushdown` changes no native Query Engine state; the adapter interprets
+the outcome and performs that rewrite. `start_read` accepts only an adopted
+planning result. The Connector is responsible for any execution-time source
+checks or guards required by its rewrite semantics. A schema or object
 mismatch remains `stale registration`. The current execution does not invoke
 the optimizer again, but its caller may retry the query and cause replanning.
 The complete responsibility and control flow are in
-[Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
+[Pushdown planning](pushdown-planning.md).
 
 The Arrow schemas of the three metadata requests' inputs and outputs are the
 items of [Metadata retrieval](#metadata-retrieval) laid out as columns. Each
@@ -1321,7 +1341,6 @@ Errors are returned as a structure with these items:
 | Retryable | Whether the request may be retried |
 | Message | Composed by the connector; contains no credentials, literals, or messages returned by the data source |
 | Data Source error code and message | As returned by the data source. The message may contain user data, so callers keep it out of ordinary logs. |
-| Plan invalidation details | For `invalid state` caused by a planned-subplan mismatch: a stable reason code (`source facts changed`, `connector semantics changed`, `contract or Substrait version changed`, `adapter context changed`, or `plan/schema/bindings changed`) and the names of changed identity components; never their secret or literal values |
 | Stale registration details | Per mismatched column, its name, the expected Analytics type and nullability, and the current Data Source type and nullability ([Schema check](#schema-check)); for missing tables or columns, their names |
 
 A failing function returns this structure. When a pull of a result stream fails,
@@ -1428,8 +1447,9 @@ shows how Oracle, ScalarDB, generic ODBC, Trino, and Iceberg connectors meet
 each item or stay within the contract by declaring what they do not offer.
 From those cases, the contract does not presuppose that:
 
-- requests run at the source as SQL; planning candidates arrive as Substrait,
-  and the connector decides support and translation for the concrete context;
+- requests run at the source as SQL; planning requests arrive as Substrait,
+  and the connector decides support and translation from the plan and current
+  Data Source facts;
 - a source has constraints, source identifiers, schema versions, or read
   points; each can be declared as not offered;
 - namespaces have a particular depth; they are returned as name sequences;

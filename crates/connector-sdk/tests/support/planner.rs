@@ -1,84 +1,63 @@
 use connector_sdk::{
-    ConnectorPlanner, NullOrdering, PlannedSubplan, PlanningAttempt, PlanningContext,
-    PlanningError, PushdownDecision, PushdownResult, PushdownRule, ResidualPolicy,
-    ValidatedCandidate, plan_pushdown,
+    ConnectorPlanner, ExecutableQuery, LogicalPlan, PlannedPushdown, PlanningError,
+    PushdownRequest, PushdownResult,
 };
-use std::sync::OnceLock;
+use substrait::proto::Plan;
 
-pub(crate) struct TestPlanner(pub(crate) PushdownDecision);
+use super::substrait_plan::pushed_remote_logical;
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) enum TestDecision {
+    Complete,
+    Unsupported,
+}
+
+pub(crate) struct TestPlanner(pub(crate) TestDecision);
 
 impl ConnectorPlanner for TestPlanner {
-    fn plan_read(
-        &self,
-        _candidate: &ValidatedCandidate,
-        _context: &PlanningContext,
-    ) -> Result<PushdownDecision, PlanningError> {
-        Ok(self.0.clone())
-    }
-
-    fn push_projection(
-        &self,
-        _candidate: &ValidatedCandidate,
-        _context: &PlanningContext,
-    ) -> Result<PushdownDecision, PlanningError> {
-        Ok(self.0.clone())
-    }
-
-    fn push_filter(
-        &self,
-        _candidate: &ValidatedCandidate,
-        _context: &PlanningContext,
-    ) -> Result<PushdownDecision, PlanningError> {
-        Ok(self.0.clone())
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+        connector_result(self.0, offered_plan)
     }
 }
 
-pub(crate) fn exact_plan(bytes: &[u8], context: PlanningContext) -> PlannedSubplan {
-    let PushdownResult::Exact { plan } = plan_pushdown(
-        &TestPlanner(PushdownDecision::Exact),
-        PlanningAttempt {
-            rule: PushdownRule::Read,
-            candidate: bytes,
-            residual_policy: ResidualPolicy::ExactOnly,
-            context: &context,
-        },
-    )
-    .unwrap() else {
-        panic!("expected exact pushdown");
+fn connector_result(
+    decision: TestDecision,
+    offered_plan: &LogicalPlan,
+) -> Result<PushdownResult, PlanningError> {
+    if matches!(decision, TestDecision::Unsupported) {
+        return Ok(PushdownResult::Unsupported {
+            reason: "the complete region is unsupported".to_owned(),
+        });
+    }
+    let pushdown = PlannedPushdown::try_new(
+        offered_plan,
+        pushed_remote_logical(offered_plan),
+        None,
+        ExecutableQuery::new(
+            "test-query-v1",
+            b"SELECT user_id, external_id FROM users".to_vec(),
+        )?,
+    )?;
+    Ok(PushdownResult::Planned {
+        pushdown: Box::new(pushdown),
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn complete_pushdown(plan: Plan) -> PlannedPushdown {
+    let PushdownResult::Planned { pushdown } = (PushdownRequest { offered_plan: plan })
+        .plan(&TestPlanner(TestDecision::Complete))
+        .unwrap()
+    else {
+        panic!("expected planned pushdown");
     };
-    plan
+    *pushdown
 }
 
 #[allow(dead_code)]
-pub(crate) fn attempt<'a>(
-    rule: PushdownRule,
-    candidate: &'a [u8],
-    residual_policy: ResidualPolicy,
-) -> PlanningAttempt<'a> {
-    PlanningAttempt {
-        rule,
-        candidate,
-        residual_policy,
-        context: default_context(),
+pub(crate) fn request(substrait_plan: Plan) -> PushdownRequest {
+    PushdownRequest {
+        offered_plan: substrait_plan,
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn default_context() -> &'static PlanningContext {
-    static CONTEXT: OnceLock<PlanningContext> = OnceLock::new();
-    CONTEXT.get_or_init(|| context("binary"))
-}
-
-pub(crate) fn context(collation: &str) -> PlanningContext {
-    PlanningContext::new(
-        "postgresql",
-        "17.2",
-        "cluster-a",
-        Some(collation.to_owned()),
-        Some("UTC".to_owned()),
-        Some("half-even".to_owned()),
-        NullOrdering::NullsLast,
-        Some("snapshot-42".to_owned()),
-        "role-policy-v3",
-    )
 }

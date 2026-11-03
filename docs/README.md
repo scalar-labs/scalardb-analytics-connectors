@@ -17,9 +17,10 @@ Use the remaining top-level documents by responsibility:
   connector implementations may rely on across the connector boundary.
 - [analytics-types.md](analytics-types.md) defines the shared type-system mental
   model; [type-mappings.md](type-mappings.md) applies it to Connectors.
-- [plan-pushdown-with-query-engine-planners.md](plan-pushdown-with-query-engine-planners.md)
-  defines who owns each plan, the planning and execution interfaces, the
-  operator rules, and the native rewrite algorithm.
+- [pushdown-planning.md](pushdown-planning.md)
+  defines the pushdown glossary and lifecycle, query decomposition, remote
+  query generation and shipping, plan ownership, and the planning and execution
+  interfaces.
 - [query-engine-pushdown.md](query-engine-pushdown.md) maps the planner
   contracts of Spark, Trino, DataFusion, and DuckDB onto that shared model.
 - [connector-internals.md](connector-internals.md) explains SDK, source-access,
@@ -29,13 +30,14 @@ Use the remaining top-level documents by responsibility:
 
 Read the shared pushdown model before changing the Substrait request contract,
 connector planning boundary, or a Query Engine adapter. Then use the
-engine-specific comparison to check the native hook, candidate granularity,
+engine-specific comparison to check the native hook, request granularity,
 residual guarantee, and rewrite behavior.
 
 The focused decisions under [design](design/) explain why the type model is
 flat, why one connector interprets each source, why the boundary is a typed C
-ABI rather than ADBC, why Substrait remains the shared pushdown AST, and why a
-blocking ADBC poll temporarily owns its query resources.
+ABI rather than ADBC, why pushdown planning separates its Substrait interchange
+representation from its internal representation, and why a blocking ADBC poll
+temporarily owns its query resources.
 
 Use the documentation layers for distinct purposes:
 

@@ -9,6 +9,11 @@ use substrait::proto::{Type, r#type};
 use super::{LOGICAL_TYPE_NAME, extensions::ExtensionRegistry};
 use crate::RequestError;
 
+/// Converts one Substrait type and its nullability to the Analytics type model.
+///
+/// Nested struct names are consumed from the same depth-first name stream used
+/// by the enclosing `NamedStruct`. User-defined logical types are resolved
+/// through the validated extension registry.
 pub(super) fn parse_type<'a>(
     data_type: &Type,
     names: &mut impl Iterator<Item = &'a String>,
@@ -108,6 +113,7 @@ pub(super) fn parse_type<'a>(
     Ok((data_type, parse_nullability(nullability)?))
 }
 
+/// Converts Substrait's required/nullable enum to an Analytics nullable flag.
 fn parse_nullability(nullability: i32) -> Result<bool, RequestError> {
     match r#type::Nullability::try_from(nullability) {
         Ok(r#type::Nullability::Required) => Ok(false),
@@ -118,6 +124,10 @@ fn parse_nullability(nullability: i32) -> Result<bool, RequestError> {
     }
 }
 
+/// Decodes a ScalarDB Analytics logical type and validates its carrier type.
+///
+/// Logical types use three Substrait parameters: the logical name, JSON
+/// parameters, and a required physical carrier type.
 fn parse_logical_type<'a>(
     data_type: &r#type::UserDefined,
     names: &mut impl Iterator<Item = &'a String>,
@@ -190,6 +200,7 @@ fn parse_logical_type<'a>(
     Ok((logical, parse_nullability(data_type.nullability)?))
 }
 
+/// Decodes enum members from the logical type's JSON parameters.
 fn parse_enum(parameters: &str, carrier: AnalyticsType) -> Result<AnalyticsType, RequestError> {
     if carrier != AnalyticsType::Text {
         return Err(RequestError::invalid(
@@ -222,6 +233,7 @@ fn parse_enum(parameters: &str, carrier: AnalyticsType) -> Result<AnalyticsType,
     Ok(AnalyticsType::Enum(EnumType::new(members)))
 }
 
+/// Reads one logical-type parameter that is required to be a string.
 fn string_parameter<'a>(
     parameter: &'a r#type::Parameter,
     description: &str,
@@ -234,6 +246,7 @@ fn string_parameter<'a>(
     }
 }
 
+/// Builds a parameterless logical type after checking its physical carrier.
 fn logical_without_parameters(
     parameters: &str,
     carrier: AnalyticsType,
@@ -253,6 +266,7 @@ fn logical_without_parameters(
     Ok(logical)
 }
 
+/// Consumes one required non-empty nested field name.
 fn next_name<'a>(names: &mut impl Iterator<Item = &'a String>) -> Result<String, RequestError> {
     let name = names
         .next()

@@ -2,140 +2,430 @@ mod support;
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    PlanningError, PushdownDecision, PushdownResult, PushdownRule, RequestError, ResidualPolicy,
-    plan_pushdown,
+    ConnectorPlanner, ExecutableQuery, LogicalPlan, LogicalRelation, PlannedPushdown,
+    PlanningError, PushdownResult, QueryPlan, RequestError, RewriteContext, RewriteRule,
+    RewriteRuleConnectorPlanner, RewriteRuleSet,
 };
-use prost::Message;
-use substrait::proto::{FetchRel, Rel, rel};
+use std::sync::OnceLock;
+use substrait::proto::{FetchRel, Rel, plan_rel, rel};
 use support::{
-    planner::{TestPlanner, attempt, context, default_context, exact_plan},
+    planner::{TestDecision, TestPlanner, request},
     substrait_plan::{
-        EQUAL, OR, candidate_plan, column, i64_literal, read_mut, read_ref, root_mut, scalar,
+        EQUAL, column, i64_literal, pushed_remote, pushed_remote_logical, read_mut, read_ref,
+        requested_plan, root_mut, scalar,
     },
 };
 
 #[test]
-fn exact_projection_keeps_substrait_as_the_plan_ast() {
-    let plan = candidate_plan();
-    let bytes = plan.encode_to_vec();
-    let result = plan_pushdown(
-        &TestPlanner(PushdownDecision::Exact),
-        attempt(PushdownRule::Projection, &bytes, ResidualPolicy::ExactOnly),
-    )
-    .unwrap();
+fn connector_returns_the_planned_pushdown_directly() {
+    let plan = requested_plan();
+    let result = request(plan.clone())
+        .plan(&TestPlanner(TestDecision::Complete))
+        .unwrap();
 
-    let PushdownResult::Exact { plan: planned } = result else {
-        panic!("expected exact pushdown");
+    let PushdownResult::Planned { pushdown } = result else {
+        panic!("expected planned pushdown");
     };
-    assert_eq!(planned.plan(), &plan);
-    assert_eq!(planned.encode_plan(), bytes);
-    assert_eq!(planned.table_references()[0].names(), ["catalog", "users"]);
-    assert_eq!(planned.output_schema().fields().len(), 2);
-    assert_eq!(planned.output_schema().fields()[0].name(), "user_id");
+    assert_eq!(pushdown.remote_plan, pushed_remote(&plan));
+    assert!(pushdown.local_plan.is_none());
+    assert_eq!(pushdown.executable_query.format, "test-query-v1");
     assert_eq!(
-        planned.output_schema().fields()[1].data_type(),
+        pushdown.executable_query.payload,
+        b"SELECT user_id, external_id FROM users"
+    );
+    assert_eq!(
+        pushdown.table_bindings[0].components(),
+        ["catalog", "users"]
+    );
+    assert_eq!(pushdown.output_schema.fields().len(), 2);
+    assert_eq!(pushdown.output_schema.fields()[0].name(), "user_id");
+    assert_eq!(
+        pushdown.output_schema.fields()[1].data_type(),
         &AnalyticsType::Uuid
     );
-
-    let serialized = planned.serialize();
-    assert_eq!(serialized.substrait_plan(), bytes);
-    assert_eq!(
-        connector_sdk::PlannedSubplan::restore(serialized, default_context()).unwrap(),
-        planned
-    );
 }
 
 #[test]
-fn retained_filter_accepts_an_or_expression_without_normalizing_it() {
-    let mut plan = candidate_plan();
-    let read = read_mut(&mut plan);
-    read.filter = None;
-    read.best_effort_filter = Some(Box::new(scalar(
-        OR,
-        vec![
-            scalar(EQUAL, vec![column(0), i64_literal(7)]),
-            scalar(EQUAL, vec![column(0), i64_literal(9)]),
-        ],
-    )));
-    let bytes = plan.encode_to_vec();
+fn rejects_best_effort_filters_in_offered_plans() {
+    let mut offered = requested_plan();
+    read_mut(&mut offered).best_effort_filter =
+        Some(Box::new(scalar(EQUAL, vec![column(0), i64_literal(7)])));
+    assert!(matches!(
+        request(offered).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
+    ));
+}
 
-    let result = plan_pushdown(
-        &TestPlanner(PushdownDecision::Retained),
-        attempt(
-            PushdownRule::Filter,
-            &bytes,
-            ResidualPolicy::MayRetainOperator,
-        ),
-    )
-    .unwrap();
-    let PushdownResult::Retained { plan: planned } = result else {
-        panic!("expected retained pushdown");
+#[test]
+fn rejects_scan_fields_and_reordered_operators_in_an_offered_plan() {
+    let mut scan_filtered = requested_plan();
+    read_mut(&mut scan_filtered).filter =
+        Some(Box::new(scalar(EQUAL, vec![column(0), i64_literal(7)])));
+    assert!(matches!(
+        request(scan_filtered).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
+    ));
+
+    let mut reordered = requested_plan();
+    let project = match root_mut(&mut reordered)
+        .input
+        .take()
+        .unwrap()
+        .rel_type
+        .unwrap()
+    {
+        rel::RelType::Project(project) => project,
+        _ => unreachable!(),
     };
-    assert!(read_ref(planned.plan()).best_effort_filter.is_some());
-
-    assert_eq!(
-        plan_pushdown(
-            &TestPlanner(PushdownDecision::Retained),
-            attempt(PushdownRule::Filter, &bytes, ResidualPolicy::ExactOnly),
-        ),
-        Err(PlanningError::ResidualRequired)
-    );
-    assert_eq!(
-        plan_pushdown(
-            &TestPlanner(PushdownDecision::Exact),
-            attempt(
-                PushdownRule::Filter,
-                &bytes,
-                ResidualPolicy::MayRetainOperator
-            ),
-        ),
-        Err(PlanningError::BestEffortRequiresResidual)
-    );
+    let mut project = project;
+    let filter = match project.input.take().unwrap().rel_type.unwrap() {
+        rel::RelType::Filter(filter) => filter,
+        _ => unreachable!(),
+    };
+    let mut filter = filter;
+    project.input = filter.input.take();
+    filter.input = Some(Box::new(Rel {
+        rel_type: Some(rel::RelType::Project(project)),
+    }));
+    root_mut(&mut reordered).input = Some(Rel {
+        rel_type: Some(rel::RelType::Filter(filter)),
+    });
     assert!(matches!(
-        plan_pushdown(
-            &TestPlanner(PushdownDecision::Exact),
-            attempt(PushdownRule::Projection, &bytes, ResidualPolicy::ExactOnly),
-        ),
-        Ok(PushdownResult::Exact { .. })
+        request(reordered).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
     ));
 }
 
 #[test]
-fn future_operator_rules_default_to_unsupported() {
-    let bytes = candidate_plan().encode_to_vec();
-    let result = plan_pushdown(
-        &TestPlanner(PushdownDecision::Exact),
-        attempt(PushdownRule::TopN, &bytes, ResidualPolicy::ExactOnly),
-    )
-    .unwrap();
-    assert!(matches!(result, PushdownResult::Unsupported { reason } if reason.contains("TopN")));
-}
+fn rejects_project_metadata_outside_the_logical_plan_profile() {
+    let mut plan = requested_plan();
+    let project = match root_mut(&mut plan)
+        .input
+        .as_mut()
+        .and_then(|relation| relation.rel_type.as_mut())
+    {
+        Some(rel::RelType::Project(project)) => project,
+        _ => unreachable!(),
+    };
+    project
+        .common
+        .as_mut()
+        .expect("the fixture project has common fields")
+        .hint = Some(Default::default());
 
-#[test]
-fn fingerprint_binds_the_plan_to_the_planning_context() {
-    let bytes = candidate_plan().encode_to_vec();
-    let first = exact_plan(&bytes, context("binary"));
-    let second = exact_plan(&bytes, context("en_US"));
-    assert_ne!(
-        first.validation_fingerprint(),
-        second.validation_fingerprint()
-    );
-}
-
-#[test]
-fn distinguishes_invalid_substrait_from_a_valid_unimplemented_relation() {
-    let invalid = plan_pushdown(
-        &TestPlanner(PushdownDecision::Exact),
-        attempt(PushdownRule::Read, &[0xff, 0xff], ResidualPolicy::ExactOnly),
-    );
     assert!(matches!(
-        invalid,
-        Err(PlanningError::InvalidCandidate(
-            RequestError::InvalidRequest { .. }
-        ))
+        request(plan).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
     ));
+}
 
-    let mut plan = candidate_plan();
+#[test]
+#[should_panic(
+    expected = "the remote plan output schema must equal the offered plan output schema when no local plan is present"
+)]
+fn complete_pushdown_requires_remote_output_to_match_offered_output() {
+    let offered = requested_plan();
+    let _ = request(offered).plan(&MismatchedRemoteOutputPlanner);
+}
+
+struct MismatchedRemoteOutputPlanner;
+
+impl ConnectorPlanner for MismatchedRemoteOutputPlanner {
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+        let mut remote = pushed_remote_logical(offered_plan);
+        let LogicalRelation::Project { input, .. } = remote.relation().clone() else {
+            unreachable!();
+        };
+        remote = remote.with_root(
+            *input,
+            vec!["id".to_owned(), "name".to_owned(), "external_id".to_owned()],
+        );
+        complete_result(offered_plan, remote, None, "SELECT * FROM users")
+    }
+}
+
+#[test]
+fn initial_query_plan_keeps_filter_and_projection_local() {
+    let offered = requested_plan();
+    let result = request(offered).plan(&InitialPlanPlanner).unwrap();
+    let PushdownResult::Planned { pushdown } = result else {
+        panic!("expected planned pushdown");
+    };
+
+    let remote_read = read_ref(&pushdown.remote_plan);
+    assert!(remote_read.filter.is_none());
+    assert!(remote_read.projection.is_none());
+    assert_eq!(pushdown.remote_output_schema.fields().len(), 3);
+
+    let local = pushdown.local_plan.as_ref().expect("local plan");
+    assert_eq!(
+        local.expected_type_urls,
+        ["urn:scalardb:analytics:substrait:remote-result-schema:v1"]
+    );
+    let root = match &local.relations[0].rel_type {
+        Some(plan_rel::RelType::Root(root)) => root,
+        _ => panic!("expected local root"),
+    };
+    let project = match root
+        .input
+        .as_ref()
+        .and_then(|input| input.rel_type.as_ref())
+    {
+        Some(rel::RelType::Project(project)) => project,
+        _ => panic!("expected local project"),
+    };
+    let filter = match project
+        .input
+        .as_ref()
+        .and_then(|input| input.rel_type.as_ref())
+    {
+        Some(rel::RelType::Filter(filter)) => filter,
+        _ => panic!("expected local filter"),
+    };
+    assert!(matches!(
+        filter
+            .input
+            .as_ref()
+            .and_then(|input| input.rel_type.as_ref()),
+        Some(rel::RelType::ExtensionLeaf(_))
+    ));
+}
+
+struct InitialPlanPlanner;
+
+impl RewriteRuleConnectorPlanner for InitialPlanPlanner {
+    type Metadata = PlanningMetadata;
+
+    fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
+        Ok(PlanningMetadata {
+            query: "SELECT * FROM users",
+            marker: "",
+        })
+    }
+
+    fn rewrite_rules(&self) -> &RewriteRuleSet<Self::Metadata> {
+        static RULES: OnceLock<RewriteRuleSet<PlanningMetadata>> = OnceLock::new();
+        RULES.get_or_init(RewriteRuleSet::new)
+    }
+
+    fn create_executable_query(
+        &self,
+        _remote_plan: &LogicalPlan,
+        metadata: &Self::Metadata,
+    ) -> Result<ExecutableQuery, PlanningError> {
+        Ok(ExecutableQuery::new(
+            "test-query-v1",
+            metadata.query.as_bytes().to_vec(),
+        )?)
+    }
+}
+
+struct PlanningMetadata {
+    query: &'static str,
+    marker: &'static str,
+}
+
+#[test]
+fn rewrite_rules_compose_and_no_op_does_not_stop_the_sequence() {
+    let offered = requested_plan();
+    let result = request(offered).plan(&ComposedRulePlanner).unwrap();
+    let PushdownResult::Planned { pushdown } = result else {
+        panic!("expected planned pushdown");
+    };
+    assert_eq!(
+        pushdown.remote_plan.version.as_ref().unwrap().producer,
+        "connector-sdk-tests:first:metadata:second"
+    );
+}
+
+struct ComposedRulePlanner;
+
+impl RewriteRuleConnectorPlanner for ComposedRulePlanner {
+    type Metadata = PlanningMetadata;
+
+    fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
+        Ok(PlanningMetadata {
+            query: "SELECT composed FROM users",
+            marker: ":metadata",
+        })
+    }
+
+    fn rewrite_rules(&self) -> &RewriteRuleSet<Self::Metadata> {
+        static RULES: OnceLock<RewriteRuleSet<PlanningMetadata>> = OnceLock::new();
+        RULES.get_or_init(|| {
+            let mut rules = RewriteRuleSet::new();
+            rules.push(AppendMarkerRule(":first"));
+            rules.push(NoOpRule);
+            rules.push(AppendMetadataMarkerRule);
+            rules.push(AppendMarkerRule(":second"));
+            rules
+        })
+    }
+
+    fn create_executable_query(
+        &self,
+        _remote_plan: &LogicalPlan,
+        metadata: &Self::Metadata,
+    ) -> Result<ExecutableQuery, PlanningError> {
+        Ok(ExecutableQuery::new(
+            "test-query-v1",
+            metadata.query.as_bytes().to_vec(),
+        )?)
+    }
+}
+
+struct AppendMarkerRule(&'static str);
+
+impl RewriteRule<PlanningMetadata> for AppendMarkerRule {
+    fn id(&self) -> &'static str {
+        self.0
+    }
+
+    fn rewrite(
+        &self,
+        plan: QueryPlan,
+        _context: RewriteContext<'_, PlanningMetadata>,
+    ) -> Result<QueryPlan, PlanningError> {
+        let (mut remote, local) = plan.into_parts();
+        let mut version = remote
+            .version()
+            .cloned()
+            .expect("the offered logical plan has a version");
+        version.producer.push_str(self.0);
+        remote = remote.with_version(Some(version));
+        Ok(QueryPlan::new(remote, local))
+    }
+}
+
+struct NoOpRule;
+
+impl RewriteRule<PlanningMetadata> for NoOpRule {
+    fn id(&self) -> &'static str {
+        "no-op"
+    }
+
+    fn rewrite(
+        &self,
+        plan: QueryPlan,
+        _context: RewriteContext<'_, PlanningMetadata>,
+    ) -> Result<QueryPlan, PlanningError> {
+        Ok(plan)
+    }
+}
+
+struct AppendMetadataMarkerRule;
+
+impl RewriteRule<PlanningMetadata> for AppendMetadataMarkerRule {
+    fn id(&self) -> &'static str {
+        "append-metadata-marker"
+    }
+
+    fn rewrite(
+        &self,
+        plan: QueryPlan,
+        context: RewriteContext<'_, PlanningMetadata>,
+    ) -> Result<QueryPlan, PlanningError> {
+        let (mut remote, local) = plan.into_parts();
+        let mut version = remote
+            .version()
+            .cloned()
+            .expect("the offered logical plan has a version");
+        version.producer.push_str(context.metadata.marker);
+        remote = remote.with_version(Some(version));
+        Ok(QueryPlan::new(remote, local))
+    }
+}
+
+#[test]
+fn rewrite_rule_error_stops_the_sequence() {
+    let offered = requested_plan();
+    assert!(matches!(
+        request(offered).plan(&FailingRulePlanner),
+        Err(PlanningError::Connector { reason }) if reason.contains("catalog lookup")
+    ));
+}
+
+struct FailingRulePlanner;
+
+impl RewriteRuleConnectorPlanner for FailingRulePlanner {
+    type Metadata = PlanningMetadata;
+
+    fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
+        Ok(PlanningMetadata {
+            query: "SELECT unreachable FROM users",
+            marker: "",
+        })
+    }
+
+    fn rewrite_rules(&self) -> &RewriteRuleSet<Self::Metadata> {
+        static RULES: OnceLock<RewriteRuleSet<PlanningMetadata>> = OnceLock::new();
+        RULES.get_or_init(|| {
+            let mut rules = RewriteRuleSet::new();
+            rules.push(FailingRule);
+            rules
+        })
+    }
+
+    fn create_executable_query(
+        &self,
+        _remote_plan: &LogicalPlan,
+        _metadata: &Self::Metadata,
+    ) -> Result<ExecutableQuery, PlanningError> {
+        unreachable!("the failing rule must stop the common planner flow")
+    }
+}
+
+struct FailingRule;
+
+impl RewriteRule<PlanningMetadata> for FailingRule {
+    fn id(&self) -> &'static str {
+        "failing"
+    }
+
+    fn rewrite(
+        &self,
+        _plan: QueryPlan,
+        _context: RewriteContext<'_, PlanningMetadata>,
+    ) -> Result<QueryPlan, PlanningError> {
+        Err(PlanningError::Connector {
+            reason: "catalog lookup failed".to_owned(),
+        })
+    }
+}
+
+#[test]
+#[should_panic(expected = "a Connector-produced local plan must terminate in RemoteResult")]
+fn local_plan_cannot_read_the_named_table_again() {
+    let offered = requested_plan();
+    let _ = request(offered).plan(&LocalReadPlanner);
+}
+
+struct LocalReadPlanner;
+
+impl ConnectorPlanner for LocalReadPlanner {
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+        let local = offered_plan.clone();
+        complete_result(
+            offered_plan,
+            pushed_remote_logical(offered_plan),
+            Some(local),
+            "SELECT projected FROM users",
+        )
+    }
+}
+
+#[test]
+fn unsupported_request_produces_no_plans() {
+    let plan = requested_plan();
+    assert!(matches!(
+        request(plan).plan(&TestPlanner(TestDecision::Unsupported)),
+        Ok(PushdownResult::Unsupported { reason }) if reason.contains("complete region")
+    ));
+}
+
+#[test]
+fn rejects_an_unimplemented_offered_relation() {
+    let mut plan = requested_plan();
     let original = root_mut(&mut plan).input.take().unwrap();
     root_mut(&mut plan).input = Some(Rel {
         rel_type: Some(rel::RelType::Fetch(Box::new(FetchRel {
@@ -143,69 +433,25 @@ fn distinguishes_invalid_substrait_from_a_valid_unimplemented_relation() {
             ..Default::default()
         }))),
     });
-    let bytes = plan.encode_to_vec();
-    let unsupported = plan_pushdown(
-        &TestPlanner(PushdownDecision::Exact),
-        attempt(PushdownRule::Limit, &bytes, ResidualPolicy::ExactOnly),
-    );
     assert!(matches!(
-        unsupported,
-        Err(PlanningError::InvalidCandidate(
-            RequestError::Undeclared { .. }
-        ))
+        request(plan).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
     ));
 }
 
-#[test]
-fn rejects_a_different_substrait_version_and_oversized_plan() {
-    let mut wrong_version = candidate_plan();
-    wrong_version.version.as_mut().unwrap().minor_number = 68;
-    assert!(matches!(
-        plan_pushdown(
-            &TestPlanner(PushdownDecision::Exact),
-            attempt(
-                PushdownRule::Read,
-                &wrong_version.encode_to_vec(),
-                ResidualPolicy::ExactOnly
-            ),
-        ),
-        Err(PlanningError::InvalidCandidate(
-            RequestError::Undeclared { .. }
-        ))
-    ));
-
-    let mut oversized = candidate_plan();
-    oversized.version.as_mut().unwrap().producer = "x".repeat(1024 * 1024);
-    assert!(matches!(
-        plan_pushdown(
-            &TestPlanner(PushdownDecision::Exact),
-            attempt(
-                PushdownRule::Read,
-                &oversized.encode_to_vec(),
-                ResidualPolicy::ExactOnly
-            ),
-        ),
-        Err(PlanningError::InvalidCandidate(
-            RequestError::Undeclared { .. }
-        ))
-    ));
-}
-
-#[test]
-fn official_validation_rejects_an_out_of_range_field_reference() {
-    let mut plan = candidate_plan();
-    read_mut(&mut plan).filter = Some(Box::new(scalar(EQUAL, vec![column(99), i64_literal(7)])));
-    assert!(matches!(
-        plan_pushdown(
-            &TestPlanner(PushdownDecision::Exact),
-            attempt(
-                PushdownRule::Filter,
-                &plan.encode_to_vec(),
-                ResidualPolicy::ExactOnly
-            ),
-        ),
-        Err(PlanningError::InvalidCandidate(
-            RequestError::InvalidRequest { .. }
-        ))
-    ));
+fn complete_result(
+    offered_plan: &LogicalPlan,
+    remote: LogicalPlan,
+    local: Option<LogicalPlan>,
+    query: &str,
+) -> Result<PushdownResult, PlanningError> {
+    let pushdown = PlannedPushdown::try_new(
+        offered_plan,
+        remote,
+        local,
+        ExecutableQuery::new("test-query-v1", query.as_bytes().to_vec())?,
+    )?;
+    Ok(PushdownResult::Planned {
+        pushdown: Box::new(pushdown),
+    })
 }

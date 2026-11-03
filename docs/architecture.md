@@ -25,8 +25,8 @@ this repository:
 
 | Component | Unit | Responsibility | Does not hold |
 | --- | --- | --- | --- |
-| Connector | One per supported system; generic ODBC and Query Engine-backed Connectors can each handle several systems | Metadata retrieval, deciding Analytics types, obtaining current Data Source facts, deciding whether a complete Substrait candidate is safe, translating accepted plans, and producing values typed by Analytics types | Query Engine native-plan knowledge |
-| Adapter | One per Query Engine | Recognizing native planner patterns, constructing complete Substrait candidates from the current connector scan, applying planning outcomes to the native tree, retaining residual operators, and binding connector output into the Query Engine. Holds the mapping from Analytics types to Query Engine types, with its losses, as a table. | Data source semantics |
+| Connector | One per supported system; generic ODBC and Query Engine-backed Connectors can each handle several systems | Metadata retrieval, deciding Analytics types, obtaining current Data Source facts, supplying tested remote/local rewrite rules for offered queries, constructing executable remote queries, and producing values typed by Analytics types | Query Engine native-plan knowledge |
+| Adapter | One per Query Engine | Recognizing rewritable native regions, constructing complete alternative Substrait requests, choosing engine-specific join shapes, rejecting results it cannot lower, atomically installing adoptable results, and binding remote output into the Query Engine. Holds the mapping from Analytics types to Query Engine types, with its losses, as a table. | Data source semantics and source-query construction |
 | Type conversion library | One | Converting between Analytics types and the schema carried by connector output; shared by the Physical Catalog and adapters | Decisions other than conversion |
 | Physical Catalog | One | Persisting the Analytics types and Data Source types connectors returned at registration, and serving them for browsing and planning | Type conversion |
 | Query Engine | — | Mapping connector output to its own types and executing queries | Direct access to data sources |
@@ -37,8 +37,8 @@ connector.
 Every column registered in the Physical Catalog carries an Analytics type, or is
 an unsupported column, together with its Data Source type. Logical plan construction,
 catalog browsing, and cross-node references use those Analytics types without
-contacting the source. Before connector pushdown callbacks begin, a separate
-preparation operation hydrates current source facts used only to decide remote
+contacting the source. During connector pushdown, the Connector resolves the
+opaque binding and obtains the current source facts needed to decide remote
 execution safety. A Query Engine maps Analytics types to its own types through
 its adapter. The reasons for this arrangement, including the properties it
 guarantees and the alternatives it rejects, are recorded in
@@ -106,32 +106,42 @@ responsibilities and dependency rules are in
 
 ## Connector flow
 
-A Query Engine adapter first prepares an immutable connector fact snapshot for
-the registered table bindings. It then recognizes a native planner pattern and
-uses the current connector scan to construct the complete next Substrait plan.
-The SDK validates that candidate and binds adapter-owned requirements to facts
-from the prepared snapshot. The connector decides whether the complete
-candidate is supported. The adapter alone applies that outcome to the native
-tree and owns any residual operator. The resulting `PlannedSubplan` crosses the
-assembled connector API and is delegated to the selected Connector for
-execution.
+A Query Engine adapter recognizes native regions and may construct multiple
+complete offered Substrait plans. The SDK validates each request. The Connector
+resolves opaque table bindings, obtains the Data Source facts needed by that
+region, decomposes the query into a remote plan and optional local plan, and
+generates the directly executable remote query. Together these steps are
+**pushdown planning**. Each result is a proposal: the Adapter rejects it if the
+remote output or complete
+local plan cannot be installed, and may consider another request instead.
+`PlannedPushdown` crosses the assembled connector API and is delegated to the
+Connector for remote execution after the Adapter adopts it.
 
 ~~~text
-native pattern + current connector scan
-  -> adapter completes source-fact preparation before optimizer callbacks
-  -> adapter builds the complete next Substrait candidate
-  -> connector-sdk validates it and dispatches an operator-specific rule
-  -> Connector uses prepared facts and makes a plan-aware decision
-  -> adapter removes, retains, or leaves the native pattern
-  -> Connector executes the accepted PlannedSubplan
-  -> connector-sdk validates Arrow schema, lifecycle, and resource bounds
+native region + current connector scan
+  -> adapter builds one or more PushdownRequests with complete offered plans
+  -> connector-sdk validates Substrait and produces a LogicalPlan
+  -> Connector loads private metadata for bindings and required source facts
+  -> connector-sdk applies the Connector's rewrite rules to a complete QueryPlan
+  -> Connector generates the remote executable query from the final remote plan
+  -> connector-sdk checks common carriers and returns PlannedPushdown
+  -> Adapter lowers the local plan and checks mappings without changing native state
+  -> Adapter rejects the proposal or installs it atomically
+  -> Connector ships and executes the remote query
+  -> Query Engine executes the local plan over its output
+  -> connector-sdk validates the Arrow schema and execution lifecycle
 ~~~
 
-Substrait remains the shared relational and expression AST. The SDK does not
-translate predicates into a second connector-specific expression tree or
-evaluate residual predicates over returned Arrow batches. The detailed
-planning decision is recorded in
-[Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
+Substrait remains the language-neutral interchange representation. After
+validation, the SDK converts the accepted Substrait semantic profile to the
+strictly typed `LogicalPlan` used by connector planning. It converts completed
+remote and local plans back to Substrait for the connector boundary; it does
+not evaluate residual predicates over returned Arrow batches. The detailed
+planning model is recorded in [Pushdown planning](pushdown-planning.md), and
+the representation decision is recorded in
+[Separate interchange and planning representations](design/separate-interchange-and-planning-representations.md).
+That document is also the glossary and semantic source of truth for pushdown
+planning, query decomposition, remote query generation, and query shipping.
 
 Schema information crosses the source boundary as an Analytics schema and is
 serialized through Arrow for interchange:
@@ -199,11 +209,11 @@ inside the Analytics type system.
   silently changing the Analytics type.
 - Static capability declarations are pruning hints; only a plan-aware connector
   rule can authorize a native planner rewrite.
-- Serializable planned state contains no credential, open connection, or
-  process-local pointer.
-- Connector execution returns the schema recorded by `PlannedSubplan`; the SDK
-  rejects mismatched batches and enforces cancellation, deadlines, and batch
-  resource limits without adding an unbounded buffer.
+- Planned state contains no credential, open connection, or process-local
+  pointer.
+- Connector execution returns the remote output schema recorded by
+  `PlannedPushdown`; the SDK
+  rejects mismatched batches and enforces cancellation and deadlines.
 - A column the source declares is never dropped: a column that cannot be mapped
   is returned as an unsupported column with its Data Source type.
 
@@ -214,7 +224,7 @@ inside the Analytics type system.
 | [Connector contract](connector-contract.md) | Call a connector, or check what a connector must guarantee |
 | [Analytics type model](analytics-types.md) | Understand the shared type vocabulary and its Arrow encoding |
 | [Type mappings](type-mappings.md) | Look up how a Connector's Data Source types map to Analytics types |
-| [Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md) | Trace responsibility, state, planning, native rewrite, and execution across an adapter, the SDK, and a connector |
+| [Pushdown planning](pushdown-planning.md) | Define the pushdown glossary, lifecycle, query decomposition, remote query generation, ownership, and planning boundary |
 | [Query-engine pushdown integration](query-engine-pushdown.md) | Map Spark, Trino, DataFusion, or DuckDB planner hooks onto the shared pushdown model |
 | [Connector internals](connector-internals.md) | Change the connector SDK, the connector API implementation, or crate structure |
 | [Connector implementation conventions](connector-implementation.md) | Implement or change one Connector |

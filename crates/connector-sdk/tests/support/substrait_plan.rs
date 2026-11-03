@@ -1,8 +1,9 @@
+use connector_sdk::LogicalPlan;
 use substrait::proto::{
-    Expression, FunctionArgument, NamedStruct, Plan, PlanRel, ReadRel, Rel, RelRoot, Type, Version,
-    expression,
+    Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
+    RelCommon, RelRoot, Type, Version, expression,
     extensions::{SimpleExtensionDeclaration, SimpleExtensionUri, simple_extension_declaration},
-    function_argument, plan_rel, read_rel, rel, r#type,
+    function_argument, plan_rel, read_rel, rel, rel_common, r#type,
 };
 
 const COMPARISON_URI: u32 = 1;
@@ -12,7 +13,7 @@ pub(crate) const EQUAL: u32 = 1;
 pub(crate) const OR: u32 = 2;
 const LOGICAL: u32 = 10;
 
-pub(crate) fn candidate_plan() -> Plan {
+pub(crate) fn requested_plan() -> Plan {
     let read = ReadRel {
         base_schema: Some(NamedStruct {
             names: vec!["id".to_owned(), "name".to_owned(), "external_id".to_owned()],
@@ -21,22 +22,6 @@ pub(crate) fn candidate_plan() -> Plan {
                 nullability: required(),
                 ..Default::default()
             }),
-        }),
-        filter: Some(Box::new(scalar(EQUAL, vec![column(0), i64_literal(7)]))),
-        projection: Some(expression::MaskExpression {
-            select: Some(expression::mask_expression::StructSelect {
-                struct_items: vec![
-                    expression::mask_expression::StructItem {
-                        field: 0,
-                        child: None,
-                    },
-                    expression::mask_expression::StructItem {
-                        field: 2,
-                        child: None,
-                    },
-                ],
-            }),
-            maintain_singular_struct: false,
         }),
         read_type: Some(read_rel::ReadType::NamedTable(read_rel::NamedTable {
             names: vec!["catalog".to_owned(), "users".to_owned()],
@@ -71,7 +56,28 @@ pub(crate) fn candidate_plan() -> Plan {
         relations: vec![PlanRel {
             rel_type: Some(plan_rel::RelType::Root(RelRoot {
                 input: Some(Rel {
-                    rel_type: Some(rel::RelType::Read(Box::new(read))),
+                    rel_type: Some(rel::RelType::Project(Box::new(ProjectRel {
+                        common: Some(RelCommon {
+                            emit_kind: Some(rel_common::EmitKind::Emit(rel_common::Emit {
+                                output_mapping: vec![3, 4],
+                            })),
+                            ..Default::default()
+                        }),
+                        input: Some(Box::new(Rel {
+                            rel_type: Some(rel::RelType::Filter(Box::new(FilterRel {
+                                input: Some(Box::new(Rel {
+                                    rel_type: Some(rel::RelType::Read(Box::new(read))),
+                                })),
+                                condition: Some(Box::new(scalar(
+                                    EQUAL,
+                                    vec![column(0), i64_literal(7)],
+                                ))),
+                                ..Default::default()
+                            }))),
+                        })),
+                        expressions: vec![column(0), column(2)],
+                        ..Default::default()
+                    }))),
                 }),
                 names: vec!["user_id".to_owned(), "external_id".to_owned()],
             })),
@@ -242,17 +248,7 @@ pub(crate) fn root_mut(plan: &mut Plan) -> &mut RelRoot {
 
 #[allow(dead_code)]
 pub(crate) fn read_mut(plan: &mut Plan) -> &mut ReadRel {
-    match root_mut(plan)
-        .input
-        .as_mut()
-        .unwrap()
-        .rel_type
-        .as_mut()
-        .unwrap()
-    {
-        rel::RelType::Read(read) => read,
-        _ => unreachable!(),
-    }
+    read_rel_mut(root_mut(plan).input.as_mut().unwrap())
 }
 
 #[allow(dead_code)]
@@ -260,8 +256,32 @@ pub(crate) fn read_ref(plan: &Plan) -> &ReadRel {
     let plan_rel::RelType::Root(root) = plan.relations[0].rel_type.as_ref().unwrap() else {
         unreachable!();
     };
-    match root.input.as_ref().unwrap().rel_type.as_ref().unwrap() {
+    read_rel_ref(root.input.as_ref().unwrap())
+}
+
+#[allow(dead_code)]
+pub(crate) fn pushed_remote(plan: &Plan) -> Plan {
+    plan.clone()
+}
+
+pub(crate) fn pushed_remote_logical(plan: &LogicalPlan) -> LogicalPlan {
+    plan.clone()
+}
+
+fn read_rel_mut(relation: &mut Rel) -> &mut ReadRel {
+    match relation.rel_type.as_mut().unwrap() {
         rel::RelType::Read(read) => read,
+        rel::RelType::Filter(filter) => read_rel_mut(filter.input.as_mut().unwrap()),
+        rel::RelType::Project(project) => read_rel_mut(project.input.as_mut().unwrap()),
+        _ => unreachable!(),
+    }
+}
+
+fn read_rel_ref(relation: &Rel) -> &ReadRel {
+    match relation.rel_type.as_ref().unwrap() {
+        rel::RelType::Read(read) => read,
+        rel::RelType::Filter(filter) => read_rel_ref(filter.input.as_ref().unwrap()),
+        rel::RelType::Project(project) => read_rel_ref(project.input.as_ref().unwrap()),
         _ => unreachable!(),
     }
 }

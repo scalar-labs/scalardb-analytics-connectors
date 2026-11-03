@@ -4,14 +4,20 @@ use std::collections::HashMap;
 
 use substrait::proto::extensions::{self, simple_extension_declaration};
 
-use super::{BOOLEAN_URI, COMPARISON_URI, LOGICAL_TYPE_NAME, LOGICAL_URI};
+use super::{LOGICAL_TYPE_NAME, LOGICAL_URI};
 use crate::RequestError;
 
+/// Validated lookup tables for extension anchors referenced by plan payloads.
+///
+/// Function declarations are accepted for expression payloads but need no
+/// lookup during schema conversion. Type declarations are retained because
+/// user-defined schema types reference them by anchor.
 pub(super) struct ExtensionRegistry {
     pub(super) types: HashMap<u32, String>,
 }
 
 impl ExtensionRegistry {
+    /// Validates extension declarations and indexes declared type anchors.
     pub(super) fn new(
         uris: &[extensions::SimpleExtensionUri],
         declarations: &[extensions::SimpleExtensionDeclaration],
@@ -28,30 +34,10 @@ impl ExtensionRegistry {
                 ));
             }
         }
-        let mut function_anchors = HashMap::new();
         let mut types = HashMap::new();
         for declaration in declarations {
             match declaration.mapping_type.as_ref() {
-                Some(simple_extension_declaration::MappingType::ExtensionFunction(function)) => {
-                    let uri = require_uri(&uri_anchors, function.extension_uri_reference)?;
-                    let base_name = function.name.split(':').next().unwrap_or_default();
-                    if let Some(expected_uri) = expected_function_uri(base_name) {
-                        if uri != expected_uri {
-                            return Err(RequestError::undeclared(format!(
-                                "function {base_name:?} must use its pinned standard extension URI"
-                            )));
-                        }
-                    }
-                    if function.name.is_empty()
-                        || function_anchors
-                            .insert(function.function_anchor, ())
-                            .is_some()
-                    {
-                        return Err(RequestError::invalid(
-                            "function anchors must be unique and named",
-                        ));
-                    }
-                }
+                Some(simple_extension_declaration::MappingType::ExtensionFunction(_)) => {}
                 Some(simple_extension_declaration::MappingType::ExtensionType(data_type)) => {
                     let uri = require_uri(&uri_anchors, data_type.extension_uri_reference)?;
                     if data_type.name == LOGICAL_TYPE_NAME && uri != LOGICAL_URI {
@@ -81,14 +67,7 @@ impl ExtensionRegistry {
     }
 }
 
-fn expected_function_uri(name: &str) -> Option<&'static str> {
-    match name {
-        "equal" | "not_equal" | "lt" | "lte" | "gt" | "gte" => Some(COMPARISON_URI),
-        "and" | "or" | "is_null" | "is_not_null" => Some(BOOLEAN_URI),
-        _ => None,
-    }
-}
-
+/// Resolves an extension URI reference and rejects undeclared anchors.
 fn require_uri<'a>(uris: &HashMap<u32, &'a str>, reference: u32) -> Result<&'a str, RequestError> {
     uris.get(&reference).copied().ok_or_else(|| {
         RequestError::invalid(format!(

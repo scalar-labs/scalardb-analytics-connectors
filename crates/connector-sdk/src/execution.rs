@@ -13,7 +13,7 @@ use std::{
 use arrow_array::RecordBatch;
 use futures_core::Stream;
 
-use crate::{ConnectorError, ErrorKind, PlannedSubplan, ValidationFingerprint};
+use crate::{ConnectorError, ErrorKind, PlannedPushdown};
 
 /// Pull-based Arrow batch stream returned by a connector.
 pub type RecordBatchStream =
@@ -35,79 +35,25 @@ impl CancellationToken {
     }
 }
 
-/// Per-stream limits enforced without adding an internal buffer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StreamLimits {
-    max_batch_rows: usize,
-    max_batch_bytes: usize,
-}
-
-impl StreamLimits {
-    pub fn new(max_batch_rows: usize, max_batch_bytes: usize) -> Result<Self, ConnectorError> {
-        if max_batch_rows == 0 || max_batch_bytes == 0 {
-            return Err(ConnectorError::new(
-                ErrorKind::InvalidSettings,
-                false,
-                "stream limits must be non-zero",
-            ));
-        }
-        Ok(Self {
-            max_batch_rows,
-            max_batch_bytes,
-        })
-    }
-
-    pub fn max_batch_rows(self) -> usize {
-        self.max_batch_rows
-    }
-
-    pub fn max_batch_bytes(self) -> usize {
-        self.max_batch_bytes
-    }
-}
-
-impl Default for StreamLimits {
-    fn default() -> Self {
-        Self {
-            max_batch_rows: 1_048_576,
-            max_batch_bytes: 64 * 1024 * 1024,
-        }
-    }
-}
-
 /// Non-serializable controls for one execution.
 #[derive(Clone, Debug)]
 pub struct ExecutionContext {
-    cancellation: CancellationToken,
-    deadline: Option<Instant>,
-    limits: StreamLimits,
+    /// Cooperative cancellation shared with Connector execution.
+    pub cancellation: CancellationToken,
+    /// Absolute deadline for starting and polling execution.
+    pub deadline: Option<Instant>,
 }
 
 impl ExecutionContext {
-    pub fn new(
-        cancellation: CancellationToken,
-        deadline: Option<Instant>,
-        limits: StreamLimits,
-    ) -> Self {
+    /// Creates the per-execution cancellation and deadline controls.
+    pub fn new(cancellation: CancellationToken, deadline: Option<Instant>) -> Self {
         Self {
             cancellation,
             deadline,
-            limits,
         }
     }
 
-    pub fn cancellation(&self) -> &CancellationToken {
-        &self.cancellation
-    }
-
-    pub fn deadline(&self) -> Option<Instant> {
-        self.deadline
-    }
-
-    pub fn limits(&self) -> StreamLimits {
-        self.limits
-    }
-
+    /// Fails before or during polling when cancellation or the deadline applies.
     fn check_active(&self) -> Result<(), ConnectorError> {
         if self.cancellation.is_cancelled() {
             return Err(ConnectorError::new(
@@ -133,11 +79,14 @@ impl ExecutionContext {
 /// Auditable identity of one connector execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionProvenance {
-    connector: String,
-    data_source_product: String,
-    data_source_version: String,
-    snapshot_fingerprint: Option<String>,
-    validation_fingerprint: ValidationFingerprint,
+    /// Connector implementation that performed the query.
+    pub connector: String,
+    /// Data Source product observed during execution.
+    pub data_source_product: String,
+    /// Data Source version observed during execution.
+    pub data_source_version: String,
+    /// Optional Connector-defined identity of the executed source state.
+    pub snapshot_fingerprint: Option<String>,
 }
 
 impl ExecutionProvenance {
@@ -146,35 +95,13 @@ impl ExecutionProvenance {
         data_source_product: impl Into<String>,
         data_source_version: impl Into<String>,
         snapshot_fingerprint: Option<String>,
-        validation_fingerprint: ValidationFingerprint,
     ) -> Self {
         Self {
             connector: connector.into(),
             data_source_product: data_source_product.into(),
             data_source_version: data_source_version.into(),
             snapshot_fingerprint,
-            validation_fingerprint,
         }
-    }
-
-    pub fn connector(&self) -> &str {
-        &self.connector
-    }
-
-    pub fn data_source_product(&self) -> &str {
-        &self.data_source_product
-    }
-
-    pub fn data_source_version(&self) -> &str {
-        &self.data_source_version
-    }
-
-    pub fn snapshot_fingerprint(&self) -> Option<&str> {
-        self.snapshot_fingerprint.as_deref()
-    }
-
-    pub fn validation_fingerprint(&self) -> ValidationFingerprint {
-        self.validation_fingerprint
     }
 }
 
@@ -185,6 +112,7 @@ pub struct ExecutionOutput {
 }
 
 impl ExecutionOutput {
+    /// Wraps the Connector stream and its provenance for SDK validation.
     pub fn new(stream: RecordBatchStream, provenance: ExecutionProvenance) -> Self {
         Self { stream, provenance }
     }
@@ -192,9 +120,13 @@ impl ExecutionOutput {
 
 /// Executes plans that have already passed connector planning.
 pub trait ConnectorExecutor: Send + Sync {
+    /// Starts the already planned remote query and returns its unchecked stream.
+    ///
+    /// The SDK wraps the returned stream to enforce lifecycle and schema
+    /// checks before batches are exposed to the caller.
     fn execute(
         &self,
-        plan: &PlannedSubplan,
+        pushdown: &PlannedPushdown,
         context: &ExecutionContext,
     ) -> Result<ExecutionOutput, ConnectorError>;
 }
@@ -202,28 +134,21 @@ pub trait ConnectorExecutor: Send + Sync {
 /// Starts execution and installs the shared lifecycle and schema boundary.
 pub fn execute_planned(
     executor: &impl ConnectorExecutor,
-    plan: &PlannedSubplan,
+    pushdown: &PlannedPushdown,
     context: ExecutionContext,
 ) -> Result<ExecutionStream, ConnectorError> {
     context.check_active()?;
-    let output = executor.execute(plan, &context)?;
-    if output.provenance.validation_fingerprint() != plan.validation_fingerprint() {
-        return Err(ConnectorError::new(
-            ErrorKind::Internal,
-            false,
-            "execution provenance does not match the planned subplan",
-        ));
-    }
+    let output = executor.execute(pushdown, &context)?;
     Ok(ExecutionStream {
         inner: output.stream,
         provenance: output.provenance,
-        expected_schema: plan.output_schema().to_arrow(),
+        expected_schema: pushdown.remote_output_schema.to_arrow(),
         context,
         terminated: false,
     })
 }
 
-/// Stream wrapper that enforces cancellation, deadline, bounds, and output schema.
+/// Stream wrapper that enforces cancellation, deadline, and output schema.
 pub struct ExecutionStream {
     inner: RecordBatchStream,
     provenance: ExecutionProvenance,
@@ -237,21 +162,8 @@ impl ExecutionStream {
         &self.provenance
     }
 
+    /// Checks one remote batch against the schema fixed during planning.
     fn validate_batch(&self, batch: &RecordBatch) -> Result<(), ConnectorError> {
-        if batch.num_rows() > self.context.limits.max_batch_rows {
-            return Err(ConnectorError::new(
-                ErrorKind::Resource,
-                true,
-                "connector batch exceeds the configured row limit",
-            ));
-        }
-        if batch.get_array_memory_size() > self.context.limits.max_batch_bytes {
-            return Err(ConnectorError::new(
-                ErrorKind::Resource,
-                true,
-                "connector batch exceeds the configured byte limit",
-            ));
-        }
         if batch.schema().as_ref() != &self.expected_schema {
             return Err(ConnectorError::new(
                 ErrorKind::Internal,

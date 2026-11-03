@@ -4,25 +4,27 @@ use std::{error::Error, fmt};
 
 use thiserror::Error as ThisError;
 
-/// Failure to validate or convert a serialized read request.
+/// Failure to validate or convert a read request.
 #[derive(Clone, Debug, ThisError, PartialEq, Eq)]
 pub enum RequestError {
-    /// The input is not a valid Substrait request or is internally inconsistent.
+    /// The expected request shape is malformed or internally inconsistent.
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
 
-    /// The input is valid Substrait but exceeds the connector contract subset.
+    /// The request is outside the accepted shape.
     #[error("request is outside the declared contract: {reason}")]
     Undeclared { reason: String },
 }
 
 impl RequestError {
+    /// Reports a malformed value inside the declared request profile.
     pub(crate) fn invalid(reason: impl Into<String>) -> Self {
         Self::InvalidRequest {
             reason: reason.into(),
         }
     }
 
+    /// Reports a validly encoded feature outside the declared request profile.
     pub(crate) fn undeclared(reason: impl Into<String>) -> Self {
         Self::Undeclared {
             reason: reason.into(),
@@ -124,6 +126,7 @@ pub struct ConnectorError {
 }
 
 impl ConnectorError {
+    /// Creates an error containing only information safe for common reporting.
     pub fn new(kind: ErrorKind, retryable: bool, safe_message: impl Into<String>) -> Self {
         Self {
             kind,
@@ -135,6 +138,7 @@ impl ConnectorError {
         }
     }
 
+    /// Attaches the original Data Source code and message for restricted diagnostics.
     pub fn with_data_source_error(
         mut self,
         data_source_code: Option<String>,
@@ -145,6 +149,7 @@ impl ConnectorError {
         self
     }
 
+    /// Replaces the typed diagnostic entries attached to this error.
     pub fn with_diagnostics(
         mut self,
         diagnostics: impl IntoIterator<Item = DiagnosticEntry>,

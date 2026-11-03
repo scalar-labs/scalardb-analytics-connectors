@@ -3,22 +3,28 @@
 use analytics_types::{AnalyticsSchema, AnalyticsType};
 use sha2::{Digest, Sha256};
 
-use crate::{ConnectorError, ConnectorExecutor, ConnectorPlanner, TableReference};
+use crate::{ConnectorError, ConnectorExecutor, ConnectorPlanner, RequestError};
 
 /// Completeness of a metadata lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetadataState<T> {
+    /// The requested metadata is available without known omissions.
     Complete(T),
+    /// Usable metadata is available, with explicitly reported omissions.
     Incomplete { value: T, missing: Vec<MetadataGap> },
+    /// The requested object does not exist in the observed catalog state.
     NotFound,
+    /// The lookup could not determine catalog state.
     Unavailable { reason: String },
 }
 
 /// A part of table metadata that the Data Source could not supply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetadataGap {
-    field: String,
-    reason: String,
+    /// Metadata field that could not be supplied.
+    pub field: String,
+    /// Connector-provided explanation of the omission.
+    pub reason: String,
 }
 
 impl MetadataGap {
@@ -28,14 +34,6 @@ impl MetadataGap {
             reason: reason.into(),
         }
     }
-
-    pub fn field(&self) -> &str {
-        &self.field
-    }
-
-    pub fn reason(&self) -> &str {
-        &self.reason
-    }
 }
 
 /// Stable digest of a connector-defined canonical metadata representation.
@@ -43,6 +41,7 @@ impl MetadataGap {
 pub struct MetadataDigest([u8; 32]);
 
 impl MetadataDigest {
+    /// Hashes a Connector-defined canonical metadata encoding.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
@@ -55,9 +54,12 @@ impl MetadataDigest {
 /// Provenance attached to one table metadata result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetadataProvenance {
-    data_source_product: String,
-    data_source_version: String,
-    catalog_snapshot: Option<String>,
+    /// Data Source product observed during metadata retrieval.
+    pub data_source_product: String,
+    /// Data Source version observed during metadata retrieval.
+    pub data_source_version: String,
+    /// Optional Connector-defined identity of the observed catalog state.
+    pub catalog_snapshot: Option<String>,
 }
 
 impl MetadataProvenance {
@@ -72,27 +74,44 @@ impl MetadataProvenance {
             catalog_snapshot,
         }
     }
+}
 
-    pub fn data_source_product(&self) -> &str {
-        &self.data_source_product
+/// An unresolved non-empty table name path used by metadata requests.
+///
+/// It does not prove membership in an open Data Source or registered schema
+/// and is distinct from a Substrait table binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableReference {
+    names: Vec<String>,
+}
+
+impl TableReference {
+    /// Creates an unresolved identifier from non-empty name components.
+    pub fn new(names: Vec<String>) -> Result<Self, RequestError> {
+        if names.is_empty() || names.iter().any(String::is_empty) {
+            return Err(RequestError::invalid(
+                "a table reference must contain only non-empty names",
+            ));
+        }
+        Ok(Self { names })
     }
 
-    pub fn data_source_version(&self) -> &str {
-        &self.data_source_version
-    }
-
-    pub fn catalog_snapshot(&self) -> Option<&str> {
-        self.catalog_snapshot.as_deref()
+    pub fn names(&self) -> &[String] {
+        &self.names
     }
 }
 
 /// Data Source-independent table metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TableMetadata {
-    table_reference: TableReference,
-    schema: AnalyticsSchema,
-    digest: MetadataDigest,
-    provenance: MetadataProvenance,
+    /// Unresolved table identifier used for the lookup.
+    pub table_reference: TableReference,
+    /// Data Source schema mapped into Analytics types.
+    pub schema: AnalyticsSchema,
+    /// Digest of the Connector's canonical metadata representation.
+    pub digest: MetadataDigest,
+    /// Data Source state from which this metadata was read.
+    pub provenance: MetadataProvenance,
 }
 
 impl TableMetadata {
@@ -109,26 +128,11 @@ impl TableMetadata {
             provenance,
         }
     }
-
-    pub fn table_reference(&self) -> &TableReference {
-        &self.table_reference
-    }
-
-    pub fn schema(&self) -> &AnalyticsSchema {
-        &self.schema
-    }
-
-    pub fn digest(&self) -> MetadataDigest {
-        self.digest
-    }
-
-    pub fn provenance(&self) -> &MetadataProvenance {
-        &self.provenance
-    }
 }
 
 /// Reads catalog state without collapsing absence, partial results, and failures.
 pub trait CatalogReader: Send + Sync {
+    /// Reads one table without collapsing absence, partial data, or failure.
     fn table_metadata(
         &self,
         table_reference: &TableReference,
@@ -137,6 +141,7 @@ pub trait CatalogReader: Send + Sync {
 
 /// Maps one Data Source-native type into the Analytics type system.
 pub trait TypeMapper<DataSourceType> {
+    /// Maps one native type or explains why its semantics cannot be preserved.
     fn map_type(&self, data_source_type: &DataSourceType)
     -> Result<AnalyticsType, UnsupportedType>;
 }
@@ -145,8 +150,10 @@ pub trait TypeMapper<DataSourceType> {
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 #[error("unsupported Data Source type {data_source_type}: {reason}")]
 pub struct UnsupportedType {
-    data_source_type: String,
-    reason: String,
+    /// Data Source-native type description.
+    pub data_source_type: String,
+    /// Reason its semantics cannot be represented.
+    pub reason: String,
 }
 
 impl UnsupportedType {
@@ -156,21 +163,16 @@ impl UnsupportedType {
             reason: reason.into(),
         }
     }
-
-    pub fn data_source_type(&self) -> &str {
-        &self.data_source_type
-    }
-
-    pub fn reason(&self) -> &str {
-        &self.reason
-    }
 }
 
 /// Process-level connector factory.
 pub trait ConnectorLibrary: Send + Sync {
+    /// Process-level settings used to open a Data Source handle.
     type DataSourceConfig;
+    /// Long-lived Data Source handle created by this library.
     type DataSource: DataSource;
 
+    /// Opens a configured Data Source handle.
     fn open_data_source(
         &self,
         config: Self::DataSourceConfig,
@@ -179,19 +181,28 @@ pub trait ConnectorLibrary: Send + Sync {
 
 /// Long-lived Data Source handle that can create isolated sessions.
 pub trait DataSource: Send + Sync {
+    /// Settings whose lifetime and isolation belong to one session.
     type SessionConfig;
+    /// Session implementation created by this handle.
     type Session: DataSourceSession;
 
+    /// Opens an isolated session with catalog, planner, and executor state.
     fn open_session(&self, config: Self::SessionConfig) -> Result<Self::Session, ConnectorError>;
 }
 
 /// Session-scoped catalog, planning, and execution capabilities.
 pub trait DataSourceSession: Send + Sync {
+    /// Catalog implementation bound to this session.
     type Catalog: CatalogReader;
+    /// Pushdown planner bound to this session.
     type Planner: ConnectorPlanner;
+    /// Remote-query executor bound to this session.
     type Executor: ConnectorExecutor;
 
+    /// Returns the session-scoped catalog reader.
     fn catalog(&self) -> &Self::Catalog;
+    /// Returns the session-scoped pushdown planner.
     fn planner(&self) -> &Self::Planner;
+    /// Returns the session-scoped remote-query executor.
     fn executor(&self) -> &Self::Executor;
 }

@@ -160,7 +160,7 @@ Connection settings passed by the caller cannot override fixed settings.
 
 ### Translation
 
-- Filter literals in the accepted Substrait plan are passed as parameters, never
+- Filter literals in the remote Substrait plan are passed as parameters, never
   embedded in the query text. Embedding them would let quoting errors change the
   query's meaning and leave literals in logs.
 - A parameter's type is one that the source compares with the column's type
@@ -173,39 +173,55 @@ Connection settings passed by the caller cannot override fixed settings.
   ([Plan-aware support decisions](#plan-aware-support-decisions),
   [Type information for the schema check](#type-information-for-the-schema-check))
   read no rows and are outside this rule.
-- Translation implements the accepted `PlannedSubplan` exactly. A best-effort
-  filter may be used as a source optimization only when the adapter retains the
-  native filter. The connector SDK does not apply a leftover expression after
-  the source returns Arrow.
+- Planning constructs the `ExecutableQuery` that implements the remote plan.
+  Execution sends that generated query directly rather than retranslating the
+  Substrait plan. When work remains local, the Connector returns a `local_plan`
+  as part of its proposal. The Adapter adopts the proposal only if it can
+  convert the complete local plan to native Query Engine work. The connector
+  SDK does not apply a leftover expression after the source returns Arrow.
 - Limit, aggregation, sort, TopN, and join translation are not part of the
   initial implementation. Their planner rules stay `Unsupported` until their
   end-to-end semantics and execution paths exist.
 
 ### Plan-aware support decisions
 
-The connector decides whether the complete candidate can be executed with the
-semantics required by the adapter. The decision is made by the operator-specific
-planner method with the validated Substrait plan and the effective
-`PlanningContext`. The SDK forms that context from adapter-owned requirements
-and facts observed by the Data Source Session; it is not made from an
-operator/type capability table alone. The shared contract does not require a
-filter to be split into conjuncts or normalized to CNF or DNF.
+The standard implementation uses `RewriteRuleConnectorPlanner`. The Connector
+defines a private metadata type, loads the source facts needed by the
+offered `LogicalPlan`, supplies an ordered `RewriteRuleSet<Metadata>` over
+`LogicalPlan`, and generates the executable query from the final remote logical
+plan. The SDK implements the common `ConnectorPlanner` flow around those three
+operations, including constructing `LogicalPlan` while validating Substrait
+and converting the result back to Substrait. A Connector that needs a
+different flow may implement the basic `ConnectorPlanner` interface directly.
+The decision is not made from an operator/type capability table alone. The
+shared contract does not require a filter to be split into conjuncts or
+normalized to CNF or DNF.
+
+`RewriteRuleSet` evaluates rules in configured order. Every rule converts one
+complete `QueryPlan` into another; returning the input unchanged is a no-op, and
+an error stops planning. The initial `QueryPlan` contains a remote full-column
+`Read` and a local `RemoteResult -> Filter -> Project` logical plan, so the
+complete execution path works before source-specific pushdown is implemented.
+Each rule receives a `RewriteContext` that borrows the offered `LogicalPlan`
+and the Connector's private metadata. The metadata never becomes part of
+`QueryPlan` or `PlannedPushdown`.
 
 Translation tables and conservative semantic guards are still useful connector
 implementation tools. They enumerate only combinations known to be safe, but
 their result is input to the plan-aware decision rather than an authorization
 visible to the adapter. An overlooked collation, Data Source type, or session
-setting must lead to `Retained` only when the remote result is provably
-conservative for the native residual, and otherwise to `Unsupported`; it must
-never produce a silently different `Exact` result.
+setting must prevent the affected rewrite rule from being applied. The
+affected rule remains a no-op, and a later Connector-supplied rule may produce
+an appropriate local plan. A custom `ConnectorPlanner` may instead return
+`Unsupported`; it must never produce a silently different decomposition.
 
 The source attributes used for the decision, such as Data Source type, collation,
 character set, and Data Source version, must be valid for the planned execution.
-Before the base scan is created, planning preparation reads them for the named
-table bindings into an immutable session-local fact snapshot. Preparation is a
-timeout-bound, cancellable source operation. Operator callbacks read that
-snapshot and perform no source I/O. A missing fact makes an exact candidate
-unsupported.
+After common validation, Connector planning interprets opaque table bindings and
+reads the catalog or source facts required by that complete region. This operation
+may perform timeout-bound, cancellable Data Source I/O. A Connector may prefetch
+or cache facts for a session, but the cache is an implementation strategy rather
+than a required planning-snapshot abstraction.
 
 On the first pull, before sending the data query, the connector refreshes those
 facts with a metadata preflight unless the session or a named snapshot
@@ -214,21 +230,20 @@ execution guard that remains effective while the source evaluates accepted
 operators: for example a transaction/snapshot, immutable session settings, a
 version token validated in the same operation, or semantics encoded explicitly
 in the generated request. If no such guard is possible, the connector does not
-return `Exact` for a candidate that depends on the mutable fact. `Retained` is
-valid only if every permitted change still makes the remote result conservative
-for the native residual. Result type
-information remains part of the schema check, but information available only
-after the data query starts cannot justify an earlier exact pushdown decision.
+apply a rewrite whose correctness depends on the mutable fact. A rewrite with a
+local plan is valid only if every permitted change still makes the remote result
+safe input for that local plan. Result type information remains part of the
+schema check, but information available only
+after the data query starts cannot justify an earlier rewrite decision.
 
 If confirmation shows a change, the connector must not execute the previously
-accepted plan under the old assumptions. It refreshes the planning context and
-requires replanning; if the change also changes an Analytics type, the result is
-`stale registration`.
+planned remote query under the old assumptions. It refreshes the source facts
+and requires replanning; if the change also changes an Analytics type, the
+result is `stale registration`.
 
 Semantic guard tables are managed with the connector's version. Data-read
-conformance tests use fixtures whose comparison meaning varies to prove exact
-outcomes, retained best-effort outcomes with the native operator still present,
-and unsupported outcomes.
+conformance tests use fixtures whose comparison meaning varies to prove fully
+remote rewrites, rewrites with local work, and unsupported outcomes.
 
 ### Type information for the schema check
 
@@ -282,9 +297,9 @@ An error with ADBC status `ADBC_STATUS_IO` and no SQLSTATE (connection broken or
 impossible) is `connection`. Errors detected by the connector SDK itself are
 classified separately from source errors. A value that cannot be carried exactly
 is `data` ([Values](connector-contract.md#values)), and `data` is used only for
-that case. If execution cannot translate a `PlannedSubplan` that the same
-connector accepted, the mismatch is `internal`; rejecting a candidate during
-planning is instead the normal `Unsupported` outcome.
+that case. If execution cannot consume a `PlannedPushdown` that the same
+Connector produced, the mismatch is `internal`; rejecting an offered region
+during planning is instead the normal `Unsupported` outcome.
 
 ### Logs, metrics, and diagnostics
 
@@ -325,40 +340,44 @@ which require that secret values never appear anywhere in logs or errors.
 | Metadata conformance tests | [Metadata conformance tests](connector-contract.md#metadata-conformance-tests) | With per-source-kind fixtures |
 | Data read conformance tests | [Data read conformance tests](connector-contract.md#data-read-conformance-tests) | The same |
 | Query Engine adapter integration tests | Native planner callback mapping, scan-state replacement, and removal or retention of native operators | Per supported Query Engine and pinned version |
-| Connector SDK planning tests | Common validation, outcome enforcement, planned-state serialization, and validation identity | In the connector SDK |
+| Connector SDK planning tests | Common validation, direct planning-result construction, and rule composition | In the connector SDK |
 
 Every read request plan used in tests has passed the Substrait validator.
 
 Connector conformance tests call through the connector API's C ABI only, from
 `conformance`. They never call connector internals, so the connector contract
 is checked at the same boundary callers use. They can prove that planning
-returns `Exact`, `Retained`, or `Unsupported` and that accepted plans execute
-correctly, but they cannot observe a Query Engine's native plan.
+returns `Planned` or `Unsupported`, that planned queries carry the correct
+remote/local decomposition, and that remote queries execute correctly, but they
+cannot observe a Query Engine's native plan.
 
-Adapter integration tests exercise the pinned Query Engine planner boundary.
-They separately prove that `Exact` removes the corresponding native pattern,
-`Retained` preserves it, `Unsupported` changes no scan state, and an execution-
-time plan invalidation fails rather than silently weakening an exact plan.
+No Query Engine Adapter is implemented in this repository yet. Each future
+Adapter integration suite must exercise its pinned Query Engine planner
+boundary and prove that a plan without local work replaces the offered native
+region, an adoptable local plan becomes the required native work over remote
+output, an unlowerable proposal and `Unsupported` change no scan state, and
+execution uses the adopted executable query without changing its rewrite.
 
 The boundary cases have explicit owners:
 
 | Boundary case | Owning test suite |
 | --- | --- |
-| A connector returns `Retained` for `ExactOnly`, or `Exact` when this attempt introduces a residual | Connector SDK planning tests reject the contradictory decision while allowing an exact later operator over a prior best-effort plan |
-| A read, projection, and filter accumulate | Connector SDK planning tests validate only the rule's allowed structural diff and verify old and candidate complete adapter contexts independently |
-| Any validation-identity input changes, including connector semantic-rules revision or absent-versus-empty facts | Connector SDK planning tests invalidate the serialized planned state and identify the changed manifest components |
-| A Spark multi-predicate callback fails after an earlier predicate was accepted | Spark adapter integration tests prove that the builder rolls back to its original state |
-| Trino presents the same native constraint again or adds a new exact constraint after a retained one | Trino adapter integration tests prove that predicates are not appended again and every prior retained constraint remains in Trino |
-| The standard DataFusion provider sees a representable filter or an unsupported projection | DataFusion adapter integration tests prove that it reports filters as `Inexact`, keeps planned state local to `scan`, and supplies a local projection over a full remote scan when needed |
-| A DuckDB multi-expression callback fails after an earlier expression was accepted | DuckDB adapter integration tests prove that bind state and the residual vector roll back together |
-| An engine creates its first connector scan | Each adapter integration suite proves that it initializes the exact base `ReadRel` before later operator attempts |
-| Planning facts need hydration or become invalid | Connector API tests cancel a blocked `finish_prepare_planning`, prove no partial snapshot escapes, and prove planning callbacks perform no source I/O |
-| Data Source facts differ at execution | Data read conformance tests prove that the first pull returns `invalid state` before sending the data query |
-| A mutable semantic fact changes after preflight | Data read conformance tests prove the execution guard fixes it through remote evaluation, or the connector never reports `Exact` for the affected candidate |
+| The initial `QueryPlan` passes through no-op rules before later rules run | Connector SDK planning tests prove rules compose and the initial plan contains one schema-matched `RemoteResult`, local filter/projection work, and no local table read |
+| A rewrite rule returns an error | Connector SDK planning tests prove selection stops instead of silently falling back |
+| A Connector returns another local plan | Connector SDK planning tests assert its remote/local decomposition contract; a future Adapter integration test must prove it either becomes native work over the remote result or rejects that proposal without native-state changes |
+| Read, projection, and filter appear together | A future Adapter integration test must prove they are offered as one complete region rather than independent requests |
+| A Spark multi-predicate callback fails after an earlier predicate was accepted | A future Spark Adapter integration test must prove that the builder rolls back to its original state |
+| Trino presents the same native constraint again or adds a new exact constraint after a retained one | A future Trino Adapter integration test must prove that predicates are not appended again and every prior retained constraint remains in Trino |
+| The standard DataFusion provider sees a representable filter or an unsupported projection | A future DataFusion Adapter integration test must prove that it reports filters as `Inexact`, keeps planned state local to `scan`, and supplies a local projection over a full remote scan when needed |
+| A DuckDB multi-expression callback fails after an earlier expression was accepted | A future DuckDB Adapter integration test must prove that bind state and the residual vector roll back together |
+| An engine creates its first connector scan | Each future Adapter integration suite must prove that it initializes the exact base `ReadRel` before later operator attempts |
+| Planning facts require Data Source I/O or become invalid | Connector SDK tests prove metadata loading happens after common validation; each Connector's operation tests must prove its I/O handling and any source-specific execution guard |
+| A mutable semantic fact may change after planning | Connector-specific tests prove its execution guard preserves the fact through remote evaluation, or the Connector never applies a rewrite that depends on that fact |
 
-The last test uses an instrumented source fixture so the assertion covers both
-the error category and the absence of a data-query side effect. Schema or object
-changes remain covered as `stale registration` rather than plan invalidation.
+The last test uses an instrumented source fixture so the assertion covers the
+fact for the full period in which the remote operator is evaluated. Schema or
+object changes remain covered as `stale registration`; there is no common plan
+invalidation protocol.
 
 ### Fixtures
 
@@ -475,16 +494,16 @@ as follows:
 | Data Source identifiers | Table OIDs and column numbers are returned | Declared as not offered |
 | Data Source schema versions | Declared as not offered | Declared as not offered |
 | Fixed settings | `TimeZone` to `UTC` and `client_encoding` to `UTF8`; driver options that change how types and values are produced | `time_zone` to `+00:00` and the character set to `utf8mb4`. `TIMESTAMP` values are converted by the session time zone, so fixing UTC produces `TimestampTz` values. Driver options that change how types and values are produced. |
-| `Text` comparison guards | When `server_encoding` is `UTF8` and the column's Data Source type is `text` or `character varying`, `COLLATE "C"` compares bytes in code-point order. `character(n)` ignores trailing spaces, so its comparison cannot be `Exact` under these semantics. | With character set `utf8mb4`, the NO PAD binary collation `utf8mb4_0900_bin` supplies the required comparison. `utf8mb4_bin` is PAD SPACE and ignores trailing spaces, so it cannot support an `Exact` outcome. Other character sets need a different proven rule. |
+| `Text` comparison guards | When `server_encoding` is `UTF8` and the column's Data Source type is `text` or `character varying`, `COLLATE "C"` compares bytes in code-point order. `character(n)` ignores trailing spaces, so a fully remote comparison rewrite cannot use this rule for that type. | With character set `utf8mb4`, the NO PAD binary collation `utf8mb4_0900_bin` supplies the required comparison. `utf8mb4_bin` is PAD SPACE and ignores trailing spaces, so it cannot support a fully remote comparison rewrite. Other character sets need a different proven rule. |
 | Read point | Declared as not offered | Declared as not offered |
 | Cancellation | The driver's cancellation; if it does not reach the source, a cancel request | The driver's cancellation; if it does not reach the source, `KILL QUERY` from another connection |
 | Query time limit | `statement_timeout` | `max_execution_time` |
 | Data Source-specific errors | The table in [Error classification](#error-classification) | `1045` is `authentication`; `1142` and `1143` are `permission`; `1317` (query interrupted) is `cancellation` if a cancellation was received or `timeout` if the deadline has passed; `3024` (maximum execution time exceeded) is `timeout` |
 
 Specifying a collation in `Text` comparisons can keep the source from using an
-index. A connector reports `Exact` only when the source expression preserves
-the required semantics; otherwise it uses a retained optimization or reports
-the candidate unsupported.
+index. A connector uses a fully remote rewrite only when the source expression
+preserves the required semantics; otherwise it returns an appropriate local
+plan or reports the offered region unsupported.
 
 ## Applying the conventions to other sources
 
@@ -516,14 +535,15 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Missing information:** objects hidden by privilege are "could not be read".
 - **Data read:** read consistency within one query; the SCN can be the read
   point.
-- **Filter planning:** translate only candidates whose Oracle type and
-  collation semantics are proven equivalent. Otherwise retain the native
-  filter when the adapter permits it, or report `Unsupported`.
+- **Filter planning:** apply a remote filter rewrite only when the Oracle type
+  and collation semantics are proven equivalent. A rule may instead return a
+  semantics-preserving local filter over remote output; the Adapter decides
+  whether that proposal can be installed.
 
 ### ScalarDB
 
 - **Structure:** no `connector-sql`; catalog, planner, and executor are written
-  in code, translating accepted Substrait candidates to ScalarDB scans.
+  in code, translating final remote `LogicalPlan` values to ScalarDB scans.
 - **Data Source access:** both direct gRPC access and an ADBC driver can satisfy the
   common contract. Direct access keeps the Rust gRPC client in the connector;
   ADBC access keeps it inside the driver. Any JVM implementation remains subject
@@ -539,9 +559,10 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Identifiers and schema versions:** declared as not offered.
 - **Missing information:** objects hidden by privilege are "could not be read".
 - **Data read:** read by scan; the read point is declared as not offered.
-- **Filter planning:** candidates expressible with equivalent ScalarDB scan
-  semantics can be exact. A useful but incomplete scan is retained only when
-  the adapter keeps its native filter; otherwise the rule is unsupported.
+- **Filter planning:** filters expressible with equivalent ScalarDB scan
+  semantics can execute remotely. A useful but incomplete scan may be proposed
+  with an exact local filter over its output; the Adapter decides whether that
+  proposal can be installed.
   ScalarDB does not speak SQL, so catalog reading and plan translation are
   connector code.
 
@@ -582,8 +603,8 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Missing information:** when Trino silently omits objects by privilege, table
   metadata is incomplete.
 - **Data read:** the read point is declared as not offered.
-- **Filter planning:** translated to Trino SQL only after the connector checks
-  the concrete candidate against Trino type and session semantics.
+- **Filter planning:** translated to Trino SQL only after the Connector checks
+  the complete offered plan against Trino type and session semantics.
 
 ### Iceberg (direct access)
 
@@ -609,6 +630,7 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Data read:** one snapshot is read, so one read request reads one
   point-in-time state of the table; the snapshot ID can be the read point.
 - **Filter planning:** partition and column statistics may drive data-file
-  skipping, but skipping alone is not exact row filtering. Such a candidate is
-  `Retained` only when the adapter preserves its native filter; exact removal
-  requires a row-level implementation with equivalent semantics.
+  skipping, but skipping alone is not exact row filtering. Such pruning is
+  represented by a remote pruning plan plus a local row-level filter. Omitting
+  the local filter requires a remote row-level implementation with equivalent
+  semantics.

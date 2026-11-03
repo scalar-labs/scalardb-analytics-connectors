@@ -23,14 +23,19 @@ details are decided in the implementation.
 | Data Source | One configured and opened external system instance. It holds validated connection settings and credentials and creates Data Source Sessions. A Connector is code; a Data Source is a runtime object. |
 | Data Source Session | One isolated session opened from a Data Source. With ADBC access it owns one connection; with direct access it owns the equivalent operation-scoped client state. |
 | Data Source access | The narrow mechanism that reads a Data Source catalog and runs queries. `connector-adbc` provides ADBC access; a direct-access Connector implements the same boundary itself. |
-| Table reference | An unresolved non-empty table name path used by metadata requests and Substrait `NamedTable` relations. It is not a table binding and carries no proof that it belongs to an open Data Source or registered schema. The current SDK scaffold stores `TableReference` in validated candidates and planned subplans until binding resolution is implemented. |
+| Table reference | An unresolved non-empty table name path used by metadata requests. It is not a table binding and carries no proof that it belongs to an open Data Source or registered schema. |
 | Table binding | A non-secret opaque identity for one registered table. The Physical Catalog persists it and an adapter copies it into a Substrait `namedTable`; only the Connector interprets it. |
 | SQL dialect | Connector-owned representation rules for SQL identifiers, placeholders, casts, and trusted opaque syntax. It does not represent a Data Source, connection, table, or common SQL grammar. |
 | Connector definition | The data part of a connector crate, loaded at build time ([Connector definition](#connector-definition)) |
 | Connector trait | The Rust trait a connector implements in code. The connector SDK uses a connector only through this trait and its connector definition ([Connector trait](#connector-trait)). |
 | Data Source access trait | The Rust traits defined by `connector-sdk` that only read the Data Source catalog and run queries. `connector-adbc` implements them for ADBC access; a direct-access Connector implements them itself. |
-| Validated candidate | A Substrait candidate that passed the common version, shape, schema, extension, and resource checks ([Read representation](#read-representation)) |
-| Planned subplan | Serializable Connector-accepted state containing the Substrait plan, Analytics output schema, table references, and a non-secret validation manifest with an aggregate fingerprint. The current scaffold has not yet promoted those references to verified table bindings. |
+| Validated plan | A `LogicalPlan` produced by validating and converting an offered Substrait plan in the SDK-supported semantic profile ([Read representation](#read-representation)) |
+| Planning metadata | Connector-private, per-call facts used by rewrite rules and executable-query generation; its shape is specific to the Data Source and it does not cross the planning boundary |
+| Pushdown planning | Query decomposition followed by remote query generation. It ends when the Connector returns a planned pushdown. See the canonical [pushdown glossary](pushdown-planning.md#glossary). |
+| Query decomposition | Semantics-preserving transformation of an offered query into a remote plan and optional local plan; it may rewrite rather than merely split operators |
+| Remote query generation | Translation of a remote plan into a Data Source-executable query |
+| Planned pushdown | Connector proposal containing a remote plan, optional local plan, and generated executable query |
+| Query shipping | Runtime transmission of the generated remote query to the Data Source; it is part of pushdown execution, not pushdown planning |
 | Residual operator | A native Query Engine operator retained by its adapter; it is never represented or evaluated by the connector SDK |
 
 Use **Connector** for implementation ownership and **Data Source** for the
@@ -66,9 +71,9 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, operator-specific planning rules, serializable planned state, output-schema and fingerprint enforcement, cancellation, deadlines, batch bounds, provenance, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, batch bounds, provenance, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: loading drivers through the ADBC driver manager and checking their versions, passing options, running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by SQL-standard SQLSTATE class ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
-| `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: running catalog queries and translating Connector-accepted Substrait plans with Data Source-specific dialect and semantic rules | Knowledge of any particular Data Source or native Query Engine plan |
+| `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: running catalog queries and generating SQL from remote `LogicalPlan` values with Data Source-specific dialect and semantic rules | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its Connector definition and the code the definition cannot express. A direct-access Connector also implements the Data Source access traits. | Knowledge of other Connectors |
 | `connector-api` | The connector API's C ABI, registering Connectors and dispatching by Connector, managing the library, Data Sources, sessions, and operations, and assembling static information. It builds the library. | Knowledge of any particular Data Source |
 | `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
@@ -162,7 +167,7 @@ as follows:
 | --- | --- | --- |
 | Capability declaration | Assembling metadata declarations and conservative pushdown hints | Metadata coverage and certainly-unsupported hints for the connected source's version and settings |
 | Metadata retrieval | Running catalog queries (`connector-sql` for SQL sources), applying the type mapping, deciding unsupported columns, attaching retrieval info, aggregating completeness, the digest, and converting output to Arrow | Catalog queries, parsing Data Source types, how constraints and identifiers are read, and rules for detecting missing information |
-| Data read | Common Substrait validation, binding adapter context to connector facts, rule dispatch, outcome constraints, planned-state fingerprinting, output-schema enforcement, cancellation, deadlines, batch bounds, and provenance | Obtaining current Data Source/session facts, deciding plan-aware support, translating and executing accepted plans, and converting source output |
+| Data read | Offered Substrait validation and `LogicalPlan` conversion, initial `QueryPlan` construction, application of the Connector-supplied rule set, decomposition-contract assertions, cancellation, deadlines, batch bounds, and provenance | Obtaining current Data Source/session facts, supplying remote/local rewrite rules, generating and executing remote queries, guaranteeing rewrite semantics, and converting source output |
 | Calling conventions | Cancellation and timeouts, the error structure, and credential handling; with ADBC access, loading and version-checking the ADBC driver (`connector-adbc`) | Mapping connection options to driver options, fixed settings, and classifying Data Source-specific error codes; with direct access, the Data Source access trait implementation |
 
 The rule is that whatever must apply with the same meaning to every connector
@@ -177,93 +182,81 @@ access, the connector also implements the Data Source access traits.
 
 ## Read representation
 
-The connector SDK validates the received Substrait plan and preserves it as the
-shared relation and expression tree. It does not define a parallel
-`ScanRequest`, `ColumnRef`, or `Condition` hierarchy.
+The connector SDK validates the received Substrait plan's expected shape and
+converts the accepted semantics to `LogicalPlan`, the strictly typed internal
+representation used during connector planning. `LogicalPlan` is not a second
+wire format or an independent query language: it represents the SDK-supported
+semantic subset of Substrait without the structurally invalid states permitted
+by the generated protobuf model. Its `Read`, `Filter`, `Project`, and
+`RemoteResult` relation variants make required children and conditions
+non-optional. Expressions, schemas, extension declarations, version metadata,
+and dynamic parameter bindings remain Substrait payload types whose accepted
+shape is checked at planning boundaries, so the SDK does not define a parallel
+expression or type system. Planning rules transform trees, so `LogicalPlan` is
+immutable through its public API. A rule chooses the next relation tree; the
+`LogicalPlan` construction operation, rather than the rule, owns maintaining
+plan-level derived state and stores the corresponding output schema.
 
 ~~~text
-ValidatedCandidate {
-    plan: Substrait Plan
-    output_schema: Analytics schema
-    table_references: unresolved table paths named by the plan
-    operator fields used to validate the transition from the prior plan
+ExecutableQuery {
+    Connector-defined format
+    opaque serializable payload
 }
 
-AdapterPlanningContext {
-    contract version and canonical execution domain
-    closed-enum semantic requirements for the complete candidate
-    normalized session semantics
-    sorted declared extension requirements
-}
-
-ConnectorFacts {
-    data_source_product_and_version
-    data_source_type_attributes
-    collation_and_time_zone
-    snapshot_and_security_identity
-    other candidate-dependent source facts
-}
-
-PlanningContext = bind(AdapterPlanningContext, ConnectorFacts)
-
-PlannedSubplan {
-    plan: Substrait Plan
-    output_schema: Analytics schema
-    table_references: unresolved table paths named by the plan
-    validation_manifest: component digests plus aggregate fingerprint
-}
-
-ValidationIdentity {
-    connector contract and Substrait versions
-    connector implementation identity and semantic-rules revision
-    candidate plan digest
-    Analytics output schema and table references
-    normalized AdapterPlanningContext
-    ConnectorFacts snapshot, preserving absent versus empty values
+PlannedPushdown {
+    remote_plan: Substrait Plan
+    local_plan: optional Substrait Plan
+    executable_query
+    base_schema: Analytics schema
+    remote_output_schema: Analytics schema
+    final_output_schema: offered result schema
+    table_bindings: opaque identifiers from NamedTable
 }
 ~~~
 
-`ValidatedCandidate` is transient input to a connector planning rule.
-`PlannedSubplan` is process-independent state an adapter can store in its scan
-or table handle. Restoring it reruns common validation and verifies that the
-manifest still matches the full validation identity. The manifest contains one
-non-secret digest per identity component so invalidation diagnostics can name
-changed components without retaining their values. Its design
-is described in
-[Plan pushdown with Query Engine planners](plan-pushdown-with-query-engine-planners.md).
+`LogicalPlan` is the successful result of validating and converting the
+offered Substrait plan, and is the direct input to Connector planning.
+`PlannedPushdown` is the Connector's direct planning result and proposal to the
+Adapter. Its design is described in
+[Pushdown planning](pushdown-planning.md).
 
-The adapter supplies only facts it owns. During planning, the Data Source Session
-uses the immutable snapshot prepared for the scan without performing source I/O
-in a native optimizer callback. The SDK binds the two sets before dispatch and
-fingerprints the full validation identity. This prevents an adapter from
-asserting that an old catalog value is the source's current collation, version,
-or snapshot.
+Validation forms the conversion boundary. For every Substrait plan accepted by
+the current validation profile, converting to `LogicalPlan` and back preserves
+the query meaning and metadata required by that profile. The guarantee is
+semantic rather than byte-level: protobuf serialization details and unknown
+fields are not part of the internal planning contract. Completed remote and
+local `LogicalPlan` values are converted back to Substrait when constructing
+`PlannedPushdown`.
 
-The adapter also retains the complete `AdapterPlanningContext` for each
-accepted plan in the native scan or table handle. A later attempt supplies both
-that old context and a complete context for its candidate, so the SDK can
-validate the old identity without losing earlier requirements. Execution
-supplies the accepted complete context again; the Data Source Session observes
-current facts, and the SDK recomputes the full validation identity. The adapter
-context is not duplicated inside `PlannedSubplan`.
+The adapter supplies one semantically complete offered plan, without a separate
+Query Engine/session context. After common validation, the Connector resolves
+the offered plan's opaque bindings and obtains whichever catalog or source
+facts that complete region requires. Resolution may perform Data Source I/O. A
+session-local cache or prefetch step is optional and does not change the
+contract. This prevents an adapter from asserting that an old catalog value is
+the source's current collation, version, or snapshot.
 
-On an operation's first pull, `preflight` refreshes every fact not fixed by a
-session or snapshot guarantee and establishes the execution guard before the
-data query is issued. A missing planning fact prevents an exact outcome; it is
-not fetched by blocking the planner callback.
+The resulting planning metadata is a Connector-private type. Its shape may
+differ by Data Source and may include physical identifiers, source types,
+collations, capabilities, or any other facts needed by that Connector. It is
+created for one planning call, borrowed by rewrite rules and executable-query
+generation, and then dropped. It does not appear in `ConnectorPlanner`,
+`PlannedPushdown`, or the language-neutral connector API.
+
+The Connector owns any source checks or execution guards required to preserve
+the semantics of a rewrite. The SDK does not encode those checks as a common
+fingerprint or restore protocol.
 
 While building the representation, the connector SDK checks the plan and
 rejects it if a check fails:
 
 | Check | Error on failure |
 | --- | --- |
-| The plan is valid in the fixed Substrait version (passes the validator) | `invalid request` |
-| The plan fits the shared contract subset and resource bounds | `invalid request` |
-| Column references are within the expected schema | `invalid request` |
-| Expressions, literals, and declared functions are internally type-consistent | `invalid request` |
+| The plan fits the shared request shape | `invalid request` |
+| Fields required to derive the table binding and input/output schemas are present and structurally usable | `invalid request` |
 
-Passing these checks does not claim that a connector can execute the candidate.
-The operator-specific connector rule makes that plan-aware decision and may
+Passing these checks does not prove that the remote/local rewrite preserves the
+offered semantics. Each Connector rewrite rule owns that guarantee and may
 return `Unsupported` without turning a normal optimizer attempt into an error.
 
 ## Connector trait
@@ -281,58 +274,70 @@ DataSource:
 
 DataSourceSession:
     catalog() -> CatalogReader
-    prepare_planning(table_bindings, expected_schemas) -> PlanningSnapshot
-    release_planning(snapshot)
-    preflight(plan) -> ConnectorFacts + ExecutionGuard
     planner() -> ConnectorPlanner
     executor() -> ConnectorExecutor
 
 ConnectorPlanner:
-    plan_read(candidate, context)        -> ConnectorDecision
-    push_projection(candidate, context)  -> ConnectorDecision
-    push_filter(candidate, context)      -> ConnectorDecision
-    push_limit(candidate, context)       -> ConnectorDecision
-    push_aggregation(candidate, context) -> ConnectorDecision
-    push_sort(candidate, context)        -> ConnectorDecision
-    push_top_n(candidate, context)       -> ConnectorDecision
-    push_join(candidate, context)        -> ConnectorDecision
+    plan(offered_plan)
+        -> Planned(PlannedPushdown) | Unsupported
 
-ConnectorDecision = Exact | Retained | Unsupported
+RewriteRuleConnectorPlanner:
+    load_metadata(offered_plan) -> Connector-private metadata
+    rewrite_rules() -> RewriteRuleSet<Connector-private metadata>
+    create_executable_query(remote_plan, metadata) -> ExecutableQuery
+
+Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner:
+    metadata = load_metadata(offered_plan)
+    query_plan = initial complete remote/local QueryPlan
+    for rule in rewrite_rules() in configured order:
+        query_plan = rule.rewrite(query_plan, metadata)
+        unchanged query_plan -> no-op and continue
+        error -> stop with error
+    executable_query = create_executable_query(query_plan.remote_plan, metadata)
+    convert the remote/local LogicalPlans to Substrait
+    return PlannedPushdown
 
 ConnectorExecutor:
-    translate(planned_subplan, current_facts) -> DataSourceRequest
-    execute(data_source_request, execution_context, guard) -> ExecutionOutput
+    execute(planned_pushdown, execution_context) -> ExecutionOutput
 ~~~
 
-Planning preparation may contact the source and completes before native
-optimizer callbacks begin. It hydrates a session-owned `PlanningSnapshot` for
-the named bindings; the adapter's scan state retains that snapshot identity.
-The connector API wraps this internal call in
-`start_prepare_planning`/`finish_prepare_planning` so a caller obtains the
-operation handle before the blocking source call and can cancel it.
-Calls to the planner read facts from that snapshot synchronously and perform no
-source I/O. Preparation uses the connector API's ordinary timeout,
-cancellation, error, and session-lease rules. A snapshot is released with its
-coordinator/driver planning state or session and is replaced, not mutated, when
-facts are refreshed. When an adapter freezes a scan for distributed execution,
-it serializes only `PlannedSubplan` and the complete adapter context; snapshot
-identities never cross to workers.
+Connector planning runs after the SDK has produced a `LogicalPlan`, because
+that is the first point at which the Connector can know which source facts are
+needed. It may query the Data Source under the planning operation's ordinary
+timeout, cancellation, error, and session-lease rules. Implementations may
+reuse cached facts across requests, but no planning-snapshot identity is
+required or serialized to workers.
 
-The connector planner receives Substrait directly and decides support using the
-complete candidate and `PlanningContext`. The SDK owns dispatch and outcome
-constraints; the connector owns the fact snapshot, preflight, and decision. Any SQL or
-direct-access translation is connector-side implementation behind the planner
-and executor. It does not return leftover expressions to the SDK. The adapter
-owns native residuals, and the executor must implement exactly the accepted
-`PlannedSubplan`.
+The basic `ConnectorPlanner` interface gives a Connector full control of those
+steps. For the standard rule-based case, `RewriteRuleConnectorPlanner` lets the
+Connector provide its private metadata loader, ordered rules, and executable
+query generator while the SDK owns the common control flow. Its blanket
+`ConnectorPlanner` implementation returns `PlannedPushdown` directly; no
+resolved-plan carrier or second planning result crosses the boundary. The SDK
+constructs `LogicalPlan` as part of offered Substrait validation and asserts the
+decomposition contract when constructing `PlannedPushdown`. It does not
+revalidate Connector-produced plans as external input, interpret Connector
+metadata, or prove semantic equivalence.
+The Adapter treats the result as a proposal, adopts it only if it can lower the
+complete local plan and map the remote output, and otherwise leaves native
+state unchanged. The executor directly executes the adopted remote query
+without planning or translating it again.
 
-`ExecutionGuard` keeps every decision-relevant fact stable from preflight
-through evaluation of the accepted remote operators. It may own a transaction,
-snapshot, immutable session settings, or a Data Source version token. A connector
-that cannot provide a sufficient guard cannot claim `Exact` for semantics that
-could change in that interval. It can claim `Retained` only when every permitted
-change leaves the remote result conservative, such as a superset for a retained
-native filter.
+The initial complete decomposition keeps relational processing local: its
+remote plan performs the minimum Data Source read, and its local logical plan
+contains the remaining `RemoteResult -> Filter -> Project` work. Each rule receives
+and returns a complete decomposition. A rule that makes no change is a no-op;
+there is no distinct fully-local planning result. `RemoteResult` is a reserved
+Substrait extension leaf carrying the remote output schema. The SDK asserts
+that the local plan terminates in that leaf rather than an independent read,
+that its schema equals the remote output, and that the final output equals the
+offered output. These are internal contract assertions, not input validation or
+a proof that an arbitrary rewrite preserves query semantics.
+
+If a rewrite depends on mutable Data Source semantics, the Connector must use a
+transaction, snapshot, immutable session setting, version check, or another
+source-specific mechanism sufficient for that rule. This remains Connector
+behavior rather than an SDK-wide planning data model.
 
 The pseudocode describes responsibilities, not required Rust method names or
 whether translation and execution are separate implementation calls. The
@@ -500,10 +505,9 @@ language.
 | --- | --- | --- | --- |
 | Library | At initialization | Settings, the ADBC driver manager (`connector-adbc`), and the timeout watcher thread | At shutdown. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
 | Data source | When opened | The selected connector, validated connection settings and credentials, and its `DataSourceAccess` (an ADBC database with ADBC access) | When the data source and every session using it are closed |
-| Session | When opened | Its `DataSourceSession` (an ADBC connection with ADBC access), catalog reader, connector planner, executor, and live planning snapshots | When closed, releasing its snapshots and `DataSourceSession` |
-| Planning snapshot | When a planning-preparation operation completes | Immutable table bindings, expected schemas, and Data Source/session facts used to build `PlanningContext` | When its coordinator/driver planning state is released, or with the session; it is never part of the serializable execution payload |
-| Operation | When started: validates the request and takes a session lease, sending nothing to the Data Source | Data Source resources: the session lease and, after first pull or `finish_prepare_planning`, its execution/read state and `CancelHandle`; also cancellation, deadline, error, and final read-provenance state | When closed, releasing every Data Source resource and operation-owned provenance. Metadata/read resources are also released, and the lease returned, when the stream ends or is released; preparation resources and lease are released when finish returns. |
-| Result stream | When a metadata or read operation starts | A reference to the operation, conversion state, expected output schema, validation manifest, cancellation/deadline state, and batch bounds. It holds no Data Source resources. Planning preparation has no stream. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
+| Session | When opened | Its `DataSourceSession` (an ADBC connection with ADBC access), catalog reader, connector planner, executor, and optional planning-facts cache | When closed, releasing its cache and `DataSourceSession` |
+| Operation | When started: validates the request and takes a session lease | Data Source resources: the session lease and, after resolution or first pull, its execution/read state and `CancelHandle`; also cancellation, deadline, error, and final read-provenance state | When closed, releasing every Data Source resource and operation-owned provenance. Metadata/read resources are also released, and the lease returned, when the stream ends or is released. |
+| Result stream | When a metadata or read operation starts | A reference to the operation, conversion state, expected output schema, cancellation/deadline state, and batch bounds. It holds no Data Source resources. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
 
 The caller-visible rules (one running operation per session, no pool, release
 order) are in [Units and concurrency](connector-contract.md#units-and-concurrency).
@@ -523,7 +527,6 @@ They are realized as follows:
 | Resource | Owner | Rule |
 | --- | --- | --- |
 | Internal state of connector API units | The library | Released by the matching close function |
-| `ExecutionGuard` | The read operation | Created during first-pull preflight and held until every accepted remote operator has been evaluated; released with the source execution |
 | `ArrowArrayStream` | The caller that received it | The caller calls the stream's `release`; the library then releases the stream returned by Data Source access and stops the query |
 | `ArrowArray` and `ArrowSchema` | The caller that received them | Each array is released individually, per the Arrow C data interface. Unconverted columns pass on the buffers Data Source access returned; converted columns pass buffers the library created. |
 | Strings and bytes the caller passes (option values, Substrait plans) | The caller | The library copies them during the call and does not refer to them afterwards |
@@ -532,8 +535,7 @@ They are realized as follows:
 | Credentials | The data source | [Credential boundary](#credential-boundary) |
 
 A stream pulls one batch at a time from the stream returned by Data Source access,
-converts it, checks the planned schema and configured row/byte bounds, and
-returns it. The connector SDK does not evaluate residual expressions or read
+converts it, checks the planned schema, and returns it. The connector SDK does not evaluate residual expressions or read
 ahead, so a read's memory is bounded by the Data Source access batch and the
 converted batch.
 
@@ -550,9 +552,9 @@ built into the library and have no such problem.
 The Data Source access traits are synchronous. ADBC is a synchronous C API, and the
 connector SDK has no asynchronous runtime. Starting an operation only validates
 the request (including the checks in [Read representation](#read-representation))
-and does not call Data Source access. Data Source access is called from the caller's
-thread inside a stream pull, or inside `finish_prepare_planning` for planning
-preparation. At the first pull, the connector SDK translates the
+and does not call Data Source access. Read and metadata Data Source access is
+called from the caller's thread inside a stream pull; planning resolution may
+also call it from `plan_pushdown`. At the first pull, the connector SDK translates the
 request, calls `read_catalog` or `execute`, stores the returned execution and its
 `CancelHandle` in the operation, and then pulls its stream. A direct-access
 implementation that uses an asynchronous reader crate keeps that runtime inside
@@ -619,10 +621,9 @@ Cancellation propagates in this order:
      an unnecessary native cancellation callback.
    - **Direct access:** the implementation uses that execution's
      `CancelHandle` to stop file reads and source calls in progress.
-4. The stream's next pull, or `finish_prepare_planning`, returns
-   `cancellation`.
+4. The stream's next pull returns `cancellation`.
 
-An operation cancelled before its first pull or planning finish only records
+An operation cancelled before its first pull only records
 the cancellation flag; that call returns `cancellation` without sending a
 query.
 
@@ -721,6 +722,6 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | [Calling conventions](connector-contract.md#calling-conventions) | `connector-api` unit management and the connector SDK's cancellation, timeout, and error structure |
 | [Capability declaration](connector-contract.md#capability-declaration) | Metadata coverage and conservative pushdown hints assembled from connector information |
 | [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and `parse_source_type`, and the connector SDK's type mapping and table metadata assembly |
-| [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's fingerprint, schema, lifecycle, batch-bound, and provenance checks |
-| [Read request representation](connector-contract.md#read-request-representation) | The SDK's common validation and operator dispatch plus the connector's plan-aware decision |
+| [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema, lifecycle, batch-bound, and provenance checks |
+| [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |
 | [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header |
