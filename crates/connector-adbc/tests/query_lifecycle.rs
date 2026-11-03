@@ -23,6 +23,7 @@ use adbc_ffi::FFI_AdbcDriverInitFunc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use connector_adbc::{AdbcQueryStream, query};
+use connector_sdk::{ConnectorError, ErrorKind};
 use futures_core::Stream;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,7 +49,7 @@ enum BlockAt {
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-type QueryPull = Poll<Option<std::result::Result<RecordBatch, Error>>>;
+type QueryPull = Poll<Option<std::result::Result<RecordBatch, ConnectorError>>>;
 type PullWorker = thread::JoinHandle<(QueryPull, AdbcQueryStream)>;
 
 #[test]
@@ -119,7 +120,8 @@ fn execute_failure_is_not_retried() {
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("first pull should return the fixture execution error");
     };
-    assert_eq!(error.message, "fixture execute failure");
+    assert_eq!(error.kind(), ErrorKind::Internal);
+    assert_eq!(error.data_source_message(), Some("fixture execute failure"));
     assert_eq!(pull(&mut stream), Poll::Ready(None));
     assert_eq!(fixture.count(Event::NewStatement), 1);
     assert_eq!(fixture.count(Event::Execute), 1);
@@ -143,7 +145,18 @@ fn stream_error_releases_the_reader_first() {
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("first pull should return the fixture stream error");
     };
-    assert!(error.message.contains("fixture stream failure"));
+    assert_eq!(error.kind(), ErrorKind::DataSource);
+    assert_eq!(
+        error.safe_message(),
+        "the data source result stream failed without structured diagnostics"
+    );
+    assert_eq!(error.data_source_code(), None);
+    assert!(error.diagnostics().is_empty());
+    assert!(
+        error
+            .data_source_message()
+            .is_some_and(|message| message.contains("fixture stream failure"))
+    );
     assert_eq!(pull(&mut stream), Poll::Ready(None));
 
     assert_release_order(&fixture);
@@ -344,7 +357,7 @@ fn assert_cancelled(result: QueryPull) {
     let Poll::Ready(Some(Err(error))) = result else {
         panic!("query should end with cancellation");
     };
-    assert_eq!(error.status, Status::Cancelled);
+    assert_eq!(error.kind(), ErrorKind::Cancellation);
 }
 
 fn wait_for(condition: impl Fn() -> bool) {

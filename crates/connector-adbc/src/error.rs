@@ -154,6 +154,15 @@ impl From<Error> for AdbcDiagnostic {
     }
 }
 
+pub(crate) fn stream_fallback_error(message: String) -> ConnectorError {
+    ConnectorError::new(
+        ErrorKind::DataSource,
+        false,
+        "the data source result stream failed without structured diagnostics",
+    )
+    .with_data_source_error(None, Some(message))
+}
+
 /// A connector-level classification selected by a generic rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Classification {

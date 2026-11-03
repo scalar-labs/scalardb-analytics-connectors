@@ -11,12 +11,12 @@ description = "ADBC access implementation for the connector SDK"
 adbc_core.workspace = true
 adbc_driver_manager.workspace = true
 arrow-array.workspace = true
+arrow-schema.workspace = true
 connector-sdk.workspace = true
 futures-core.workspace = true
 
 [dev-dependencies]
 adbc_ffi.workspace = true
-arrow-schema.workspace = true
 
 [lib]
 path = "src/lib.rs"

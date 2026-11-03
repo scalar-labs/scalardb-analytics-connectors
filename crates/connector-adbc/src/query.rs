@@ -12,7 +12,11 @@ use adbc_core::{
 };
 use adbc_driver_manager::{ManagedConnection, ManagedStatement};
 use arrow_array::{RecordBatch, RecordBatchReader};
+use arrow_schema::ArrowError;
+use connector_sdk::ConnectorError;
 use futures_core::Stream;
+
+use crate::error::{classify_error, stream_fallback_error};
 
 /// Creates a query stream without sending anything to the source.
 ///
@@ -198,7 +202,7 @@ impl CancelHandle for AdbcQueryCancelHandle {
 }
 
 impl Stream for AdbcQueryStream {
-    type Item = Result<RecordBatch, Error>;
+    type Item = Result<RecordBatch, ConnectorError>;
 
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -209,12 +213,12 @@ impl Stream for AdbcQueryStream {
             Ok(ReadAction::ReadBatch(execution)) => read_batch(&this.state, execution),
             Ok(ReadAction::ReturnCancellation) => {
                 this.finish();
-                Poll::Ready(Some(Err(cancelled_error())))
+                Poll::Ready(Some(Err(classify_adbc_error(cancelled_error()))))
             }
             Ok(ReadAction::ReturnEnd) => Poll::Ready(None),
             Err(error) => {
                 this.finish();
-                Poll::Ready(Some(Err(error)))
+                Poll::Ready(Some(Err(classify_adbc_error(error))))
             }
         }
     }
@@ -229,16 +233,18 @@ impl Drop for AdbcQueryStream {
 fn prepare_statement_and_read(
     state: &Mutex<QueryState>,
     mut request: QueryRequest,
-) -> Poll<Option<Result<RecordBatch, Error>>> {
+) -> Poll<Option<Result<RecordBatch, ConnectorError>>> {
     let statement = match request.connection.new_statement() {
         Ok(statement) => statement,
-        Err(error) => return finish_operation(state, is_creating_statement, error),
+        Err(error) => {
+            return finish_operation(state, is_creating_statement, classify_adbc_error(error));
+        }
     };
     let cancel_handle: Arc<dyn CancelHandle> = statement.get_cancel_handle().into();
 
     let mut query_state = match lock_state(state) {
         Ok(query_state) => query_state,
-        Err(error) => return Poll::Ready(Some(Err(error))),
+        Err(error) => return Poll::Ready(Some(Err(classify_adbc_error(error)))),
     };
     match &*query_state {
         QueryState::Preparing(QueryPreparation::CreatingStatement) => {
@@ -259,40 +265,42 @@ fn prepare_statement_and_read(
         }
         QueryState::Cancelled => {
             *query_state = QueryState::Finished;
-            Poll::Ready(Some(Err(cancelled_error())))
+            Poll::Ready(Some(Err(classify_adbc_error(cancelled_error()))))
         }
-        _ => Poll::Ready(Some(Err(invalid_state_error(
+        _ => Poll::Ready(Some(Err(classify_adbc_error(invalid_state_error(
             "statement creation completed after its query state changed",
-        )))),
+        ))))),
     }
 }
 
 fn prepare_reader_and_read(
     state: &Mutex<QueryState>,
     mut creation: ReaderCreation,
-) -> Poll<Option<Result<RecordBatch, Error>>> {
+) -> Poll<Option<Result<RecordBatch, ConnectorError>>> {
     if let Err(error) = check_reader_creation(state) {
-        return Poll::Ready(Some(Err(error)));
+        return Poll::Ready(Some(Err(classify_adbc_error(error))));
     }
     if let Err(error) = creation.statement.statement.set_sql_query(&creation.sql) {
-        return finish_operation(state, is_creating_reader, error);
+        return finish_operation(state, is_creating_reader, classify_adbc_error(error));
     }
     if let Err(error) = check_reader_creation(state) {
-        return Poll::Ready(Some(Err(error)));
+        return Poll::Ready(Some(Err(classify_adbc_error(error))));
     }
 
     if let Some(parameters) = creation.parameters.take() {
         if let Err(error) = creation.statement.statement.bind(parameters) {
-            return finish_operation(state, is_creating_reader, error);
+            return finish_operation(state, is_creating_reader, classify_adbc_error(error));
         }
         if let Err(error) = check_reader_creation(state) {
-            return Poll::Ready(Some(Err(error)));
+            return Poll::Ready(Some(Err(classify_adbc_error(error))));
         }
     }
 
     let reader = match creation.statement.statement.execute() {
         Ok(reader) => reader,
-        Err(error) => return finish_operation(state, is_creating_reader, error),
+        Err(error) => {
+            return finish_operation(state, is_creating_reader, classify_adbc_error(error));
+        }
     };
     let execution = QueryExecution {
         reader,
@@ -301,7 +309,7 @@ fn prepare_reader_and_read(
 
     let mut query_state = match lock_state(state) {
         Ok(query_state) => query_state,
-        Err(error) => return Poll::Ready(Some(Err(error))),
+        Err(error) => return Poll::Ready(Some(Err(classify_adbc_error(error)))),
     };
     match &*query_state {
         QueryState::Preparing(QueryPreparation::CreatingReader(_)) => {
@@ -311,26 +319,26 @@ fn prepare_reader_and_read(
         }
         QueryState::Cancelled => {
             *query_state = QueryState::Finished;
-            Poll::Ready(Some(Err(cancelled_error())))
+            Poll::Ready(Some(Err(classify_adbc_error(cancelled_error()))))
         }
-        _ => Poll::Ready(Some(Err(invalid_state_error(
+        _ => Poll::Ready(Some(Err(classify_adbc_error(invalid_state_error(
             "reader creation completed after its query state changed",
-        )))),
+        ))))),
     }
 }
 
 fn read_batch(
     state: &Mutex<QueryState>,
     mut execution: QueryExecution,
-) -> Poll<Option<Result<RecordBatch, Error>>> {
+) -> Poll<Option<Result<RecordBatch, ConnectorError>>> {
     if let Err(error) = check_reading(state) {
-        return Poll::Ready(Some(Err(error)));
+        return Poll::Ready(Some(Err(classify_adbc_error(error))));
     }
     let item = execution.reader.next();
 
     let mut query_state = match lock_state(state) {
         Ok(query_state) => query_state,
-        Err(error) => return Poll::Ready(Some(Err(error))),
+        Err(error) => return Poll::Ready(Some(Err(classify_adbc_error(error)))),
     };
     match &*query_state {
         QueryState::Reading(_) => match item {
@@ -340,7 +348,7 @@ fn read_batch(
             }
             Some(Err(error)) => {
                 *query_state = QueryState::Finished;
-                Poll::Ready(Some(Err(error.into())))
+                Poll::Ready(Some(Err(classify_stream_error(error))))
             }
             None => {
                 *query_state = QueryState::Finished;
@@ -349,11 +357,11 @@ fn read_batch(
         },
         QueryState::Cancelled => {
             *query_state = QueryState::Finished;
-            Poll::Ready(Some(Err(cancelled_error())))
+            Poll::Ready(Some(Err(classify_adbc_error(cancelled_error()))))
         }
-        _ => Poll::Ready(Some(Err(invalid_state_error(
+        _ => Poll::Ready(Some(Err(classify_adbc_error(invalid_state_error(
             "batch reading completed after its query state changed",
-        )))),
+        ))))),
     }
 }
 
@@ -404,22 +412,22 @@ fn is_reading(state: &QueryState) -> bool {
 fn finish_operation(
     state: &Mutex<QueryState>,
     is_active: impl FnOnce(&QueryState) -> bool,
-    error: Error,
-) -> Poll<Option<Result<RecordBatch, Error>>> {
+    error: ConnectorError,
+) -> Poll<Option<Result<RecordBatch, ConnectorError>>> {
     let mut query_state = match lock_state(state) {
         Ok(query_state) => query_state,
-        Err(lock_error) => return Poll::Ready(Some(Err(lock_error))),
+        Err(lock_error) => return Poll::Ready(Some(Err(classify_adbc_error(lock_error)))),
     };
     if is_active(&query_state) {
         *query_state = QueryState::Finished;
         Poll::Ready(Some(Err(error)))
     } else if matches!(*query_state, QueryState::Cancelled) {
         *query_state = QueryState::Finished;
-        Poll::Ready(Some(Err(cancelled_error())))
+        Poll::Ready(Some(Err(classify_adbc_error(cancelled_error()))))
     } else {
-        Poll::Ready(Some(Err(invalid_state_error(
+        Poll::Ready(Some(Err(classify_adbc_error(invalid_state_error(
             "source work failed after its query state changed",
-        ))))
+        )))))
     }
 }
 
@@ -435,4 +443,17 @@ fn cancelled_error() -> Error {
 
 fn invalid_state_error(message: impl Into<String>) -> Error {
     Error::with_message_and_status(message, Status::InvalidState)
+}
+
+fn classify_adbc_error(error: Error) -> ConnectorError {
+    classify_error(error.into())
+}
+
+fn classify_stream_error(error: ArrowError) -> ConnectorError {
+    // TODO: The Rust ADBC driver manager does not yet import rich errors from
+    // ArrowArrayStream. Until the upstream issue below is resolved, mid-stream
+    // failures arrive as ArrowError and therefore lack the original ADBC status,
+    // SQLSTATE, vendor code, and details:
+    // https://github.com/apache/arrow-adbc/issues/4984
+    stream_fallback_error(error.to_string())
 }
