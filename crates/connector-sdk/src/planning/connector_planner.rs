@@ -18,6 +18,21 @@ pub enum PushdownResult {
     Unsupported { reason: String },
 }
 
+/// Result of compiling a rewritten remote plan.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExecutableQueryResult {
+    /// The remote plan can be executed with these instructions.
+    Executable(ExecutableQuery),
+    /// The Connector cannot preserve the remote plan's semantics.
+    Unsupported { reason: String },
+}
+
+impl From<ExecutableQuery> for ExecutableQueryResult {
+    fn from(query: ExecutableQuery) -> Self {
+        Self::Executable(query)
+    }
+}
+
 /// Connector-owned planning for one complete pushdown request.
 pub trait ConnectorPlanner {
     /// Plans one complete request and constructs the directly executable
@@ -34,8 +49,8 @@ pub trait ConnectorPlanner {
 ///
 /// Metadata is Connector-private, exists only for this planning call, and is
 /// shared by the rewrite rules and executable-query construction. The common
-/// implementation returns a planned result on success; a Connector that needs
-/// to return `Unsupported` implements [`ConnectorPlanner`] directly.
+/// implementation preserves both successful compilation and an unsupported
+/// semantic outcome.
 pub trait RewriteRuleConnectorPlanner {
     /// Connector-private facts shared by rewrite rules and query generation.
     type Metadata;
@@ -53,7 +68,7 @@ pub trait RewriteRuleConnectorPlanner {
         &self,
         remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
-    ) -> Result<ExecutableQuery, PlanningError>;
+    ) -> Result<ExecutableQueryResult, PlanningError>;
 }
 
 impl<T> ConnectorPlanner for T
@@ -66,7 +81,13 @@ where
             QueryPlan::initial(offered_plan),
             RewriteContext::new(offered_plan, &metadata),
         )?;
-        let executable_query = self.create_executable_query(query_plan.remote_plan(), &metadata)?;
+        let executable_query =
+            match self.create_executable_query(query_plan.remote_plan(), &metadata)? {
+                ExecutableQueryResult::Executable(query) => query,
+                ExecutableQueryResult::Unsupported { reason } => {
+                    return Ok(PushdownResult::Unsupported { reason });
+                }
+            };
         let (remote_plan, local_plan) = query_plan.into_parts();
         let pushdown =
             PlannedPushdown::try_new(offered_plan, remote_plan, local_plan, executable_query)?;

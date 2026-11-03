@@ -25,7 +25,7 @@ details are decided in the implementation.
 | Data Source access | The narrow mechanism that reads a Data Source catalog and runs queries. `connector-adbc` provides ADBC access; a direct-access Connector implements the same boundary itself. |
 | Table reference | An unresolved non-empty table name path used by metadata requests. It is not a table binding and carries no proof that it belongs to an open Data Source or registered schema. |
 | Table binding | A non-secret opaque identity for one registered table. The Physical Catalog persists it and an adapter copies it into a Substrait `namedTable`; only the Connector interprets it. |
-| SQL dialect | Connector-owned representation rules for SQL identifiers, placeholders, casts, and trusted opaque syntax. It does not represent a Data Source, connection, table, or common SQL grammar. |
+| SQL dialect | Connector-owned representation rules for SQL identifiers and placeholders. It does not represent a Data Source, connection, table, or common SQL grammar. |
 | Connector definition | The data part of a connector crate, loaded at build time ([Connector definition](#connector-definition)) |
 | Connector trait | The Rust trait a connector implements in code. The connector SDK uses a connector only through this trait and its connector definition ([Connector trait](#connector-trait)). |
 | Data Source access trait | The Rust traits defined by `connector-sdk` that only read the Data Source catalog and run queries. `connector-adbc` implements them for ADBC access; a direct-access Connector implements them itself. |
@@ -254,6 +254,8 @@ rejects it if a check fails:
 | --- | --- |
 | The plan fits the shared request shape | `invalid request` |
 | Fields required to derive the table binding and input/output schemas are present and structurally usable | `invalid request` |
+| Filter field references are direct base-schema positions within range | `invalid request` |
+| Referenced scalar-function anchors are declared, their URI anchors resolve, and the initial comparison, Boolean, and null-test signatures have the required arity and Boolean result | `invalid request` |
 
 Passing these checks does not prove that the remote/local rewrite preserves the
 offered semantics. Each Connector rewrite rule owns that guarantee and may
@@ -284,7 +286,13 @@ ConnectorPlanner:
 RewriteRuleConnectorPlanner:
     load_metadata(offered_plan) -> Connector-private metadata
     rewrite_rules() -> RewriteRuleSet<Connector-private metadata>
-    create_executable_query(remote_plan, metadata) -> ExecutableQuery
+    create_executable_query(remote_plan, metadata) -> ExecutableQuery | Unsupported
+
+SQL-family create_executable_query:
+    connector-sql translates remote_plan using physical names from metadata
+        common visitor owns Read/Project/Filter, fixed SQL syntax, and Boolean/null-test structure
+        SqlDialect owns identifier and placeholder representation
+        Fragment finalizes SQL and typed Arrow parameters with the dialect
 
 Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner:
     metadata = load_metadata(offered_plan)
@@ -294,6 +302,7 @@ Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner
         unchanged query_plan -> no-op and continue
         error -> stop with error
     executable_query = create_executable_query(query_plan.remote_plan, metadata)
+    unsupported -> return Unsupported without constructing a pushdown
     convert the remote/local LogicalPlans to Substrait
     return PlannedPushdown
 
@@ -343,6 +352,23 @@ The pseudocode describes responsibilities, not required Rust method names or
 whether translation and execution are separate implementation calls. The
 public connector API remains the language-neutral boundary; these internal
 interfaces keep source knowledge out of the SDK.
+
+For SQL-family Connectors, `connector-sql` traverses the validated remote
+`LogicalPlan` and its retained Substrait expressions directly. It does not
+construct another relational or expression tree. `load_metadata` creates one
+Connector-private metadata value containing the physical names and Data Source
+facts needed by the planning call. Rewrite rules and executable-query generation
+borrow that same value; no separate SQL metadata model is constructed.
+
+The common visitor owns explicit projection and aliases, the single-table
+`SELECT`/`FROM`/optional `WHERE` shape, Boolean composition, null tests, and
+depth-first parameter collection. It emits the profile's fixed SQL syntax
+directly; it does not mirror that syntax in a second token model. `SqlDialect`
+owns actual representation differences such as identifier quoting and
+placeholders. Connector rewrite rules use the concrete Data Source type,
+nullability, collation, version, and session facts in the shared metadata before
+leaving an expression in the remote plan. SQL translation renders that approved
+plan without repeating the semantic decision.
 
 Data Source access interfaces sit below these public contracts. They read catalogs
 and execute Data Source queries returning Arrow streams; they do not expose native
@@ -472,7 +498,8 @@ at build time. `connector-sdk` defines its format and validates it when loading.
 | Session | Setting queries run right after connecting, and the driver options or reader crate settings to fix |
 | Catalog | Queries that read namespaces, tables, columns, constraints, and identifiers, and the meaning of their result columns (SQL sources) |
 | Types | Per mapping rule, the Arrow type the Data Source access returns and the name of the building block that converts it to the Analytics type |
-| Dialect | Identifier quoting, parameter notation, operator/function translation, and source-semantic guards used by plan-aware rules (SQL sources) |
+| Dialect | Identifier quoting and parameter notation (SQL sources) |
+| Semantics | Guards that prove an operator preserves meaning for concrete Data Source types, nullability, collations, versions, and session facts; an unproved case remains local or is `Unsupported` |
 | Cancellation | With ADBC access, the means sent to the source when the driver's cancellation does not stop the query at the source |
 | Errors | The classification of Data Source-specific error codes into contract error kinds |
 

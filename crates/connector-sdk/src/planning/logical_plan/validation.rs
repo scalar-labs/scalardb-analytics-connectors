@@ -5,6 +5,7 @@ use substrait::proto::{Plan, ProjectRel, ReadRel, RelRoot, plan_rel, read_rel, r
 
 use super::{
     LogicalPlan, LogicalRelation, TableBinding,
+    expressions::validate_filter_expression,
     extensions::ExtensionRegistry,
     schema::{apply_root_names, derive_project_schema, parse_schema},
 };
@@ -53,6 +54,7 @@ impl LogicalPlan {
             version: plan.version,
             extension_uris: plan.extension_uris,
             extensions: plan.extensions,
+            extension_registry: extensions,
             parameter_bindings: plan.parameter_bindings,
             relation: validated.relation,
             output_names,
@@ -113,6 +115,7 @@ fn validate_filter_pushdown(
         .as_deref()
         .ok_or_else(|| RequestError::invalid("the offered FilterRel has no input"))?;
     let input = validate_read(input, extensions)?;
+    validate_filter_expression(condition, &input.output_schema, extensions)?;
     Ok(ValidatedRelation {
         relation: LogicalRelation::Filter {
             input: Box::new(input.relation),
@@ -170,6 +173,11 @@ fn validate_project_schema(
             ));
         }
     };
+    if mapping.is_empty() {
+        return Err(RequestError::undeclared(
+            "zero-column projects are outside the initial pushdown profile",
+        ));
+    }
 
     let output_schema =
         derive_project_schema(input_schema, &project.expressions, mapping, "offered")?;
@@ -231,6 +239,11 @@ fn validate_read_base(
         .as_ref()
         .ok_or_else(|| RequestError::invalid("the ReadRel base schema is missing"))?;
     let base_schema = parse_schema(logical_base_schema, extensions)?;
+    if base_schema.fields().is_empty() {
+        return Err(RequestError::undeclared(
+            "zero-column reads are outside the initial pushdown profile",
+        ));
+    }
     let table_binding = TableBinding::new(table.names.clone())?;
     Ok(ValidatedRelation {
         relation: LogicalRelation::Read {

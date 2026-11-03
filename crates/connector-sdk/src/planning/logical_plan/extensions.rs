@@ -9,15 +9,24 @@ use crate::RequestError;
 
 /// Validated lookup tables for extension anchors referenced by plan payloads.
 ///
-/// Function declarations are accepted for expression payloads but need no
-/// lookup during schema conversion. Type declarations are retained because
-/// user-defined schema types reference them by anchor.
+/// Type and function declarations are validated and indexed once. Schema
+/// conversion resolves user-defined types, while expression validation and
+/// SQL translation reuse the function index.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ExtensionRegistry {
     pub(super) types: HashMap<u32, String>,
+    pub(super) functions: HashMap<u32, FunctionExtension>,
+}
+
+/// One function declaration after its URI anchor has been resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FunctionExtension {
+    pub(super) uri: String,
+    pub(super) name: String,
 }
 
 impl ExtensionRegistry {
-    /// Validates extension declarations and indexes declared type anchors.
+    /// Validates extension declarations and indexes declared type and function anchors.
     pub(super) fn new(
         uris: &[extensions::SimpleExtensionUri],
         declarations: &[extensions::SimpleExtensionDeclaration],
@@ -35,9 +44,27 @@ impl ExtensionRegistry {
             }
         }
         let mut types = HashMap::new();
+        let mut functions = HashMap::new();
         for declaration in declarations {
             match declaration.mapping_type.as_ref() {
-                Some(simple_extension_declaration::MappingType::ExtensionFunction(_)) => {}
+                Some(simple_extension_declaration::MappingType::ExtensionFunction(function)) => {
+                    let uri = require_uri(&uri_anchors, function.extension_uri_reference)?;
+                    if function.name.is_empty()
+                        || functions
+                            .insert(
+                                function.function_anchor,
+                                FunctionExtension {
+                                    uri: uri.to_owned(),
+                                    name: function.name.clone(),
+                                },
+                            )
+                            .is_some()
+                    {
+                        return Err(RequestError::invalid(
+                            "function anchors must be unique and named",
+                        ));
+                    }
+                }
                 Some(simple_extension_declaration::MappingType::ExtensionType(data_type)) => {
                     let uri = require_uri(&uri_anchors, data_type.extension_uri_reference)?;
                     if data_type.name == LOGICAL_TYPE_NAME && uri != LOGICAL_URI {
@@ -63,7 +90,7 @@ impl ExtensionRegistry {
                 None => return Err(RequestError::invalid("extension declaration is empty")),
             }
         }
-        Ok(Self { types })
+        Ok(Self { types, functions })
     }
 }
 

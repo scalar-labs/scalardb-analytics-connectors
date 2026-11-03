@@ -2,9 +2,9 @@ mod support;
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    ConnectorPlanner, ExecutableQuery, LogicalPlan, LogicalRelation, PlannedPushdown,
-    PlanningError, PushdownResult, QueryPlan, RequestError, RewriteContext, RewriteRule,
-    RewriteRuleConnectorPlanner, RewriteRuleSet,
+    ConnectorPlanner, ExecutableQuery, ExecutableQueryResult, LogicalPlan, LogicalRelation,
+    PlannedPushdown, PlanningError, PushdownResult, QueryPlan, RequestError, RewriteContext,
+    RewriteRule, RewriteRuleConnectorPlanner, RewriteRuleSet,
 };
 use std::sync::OnceLock;
 use substrait::proto::{FetchRel, Rel, plan_rel, rel};
@@ -43,6 +43,44 @@ fn connector_returns_the_planned_pushdown_directly() {
         pushdown.output_schema.fields()[1].data_type(),
         &AnalyticsType::Uuid
     );
+}
+
+#[test]
+fn rewrite_rule_planner_preserves_an_unsupported_query_result() {
+    let result = request(requested_plan())
+        .plan(&UnsupportedQueryPlanner)
+        .unwrap();
+    assert_eq!(
+        result,
+        PushdownResult::Unsupported {
+            reason: "remote semantics are not exact".to_owned(),
+        }
+    );
+}
+
+struct UnsupportedQueryPlanner;
+
+impl RewriteRuleConnectorPlanner for UnsupportedQueryPlanner {
+    type Metadata = ();
+
+    fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
+        Ok(())
+    }
+
+    fn rewrite_rules(&self) -> &RewriteRuleSet<Self::Metadata> {
+        static RULES: OnceLock<RewriteRuleSet<()>> = OnceLock::new();
+        RULES.get_or_init(RewriteRuleSet::new)
+    }
+
+    fn create_executable_query(
+        &self,
+        _remote_plan: &LogicalPlan,
+        _metadata: &Self::Metadata,
+    ) -> Result<ExecutableQueryResult, PlanningError> {
+        Ok(ExecutableQueryResult::Unsupported {
+            reason: "remote semantics are not exact".to_owned(),
+        })
+    }
 }
 
 #[test]
@@ -112,6 +150,50 @@ fn rejects_project_metadata_outside_the_logical_plan_profile() {
         .as_mut()
         .expect("the fixture project has common fields")
         .hint = Some(Default::default());
+
+    assert!(matches!(
+        request(plan).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
+    ));
+}
+
+#[test]
+fn rejects_a_zero_column_project_at_the_validation_boundary() {
+    let mut plan = requested_plan();
+    root_mut(&mut plan).names.clear();
+    let project = match root_mut(&mut plan)
+        .input
+        .as_mut()
+        .and_then(|relation| relation.rel_type.as_mut())
+    {
+        Some(rel::RelType::Project(project)) => project,
+        _ => unreachable!(),
+    };
+    project.expressions.clear();
+    let Some(substrait::proto::rel_common::EmitKind::Emit(emit)) =
+        project.common.as_mut().unwrap().emit_kind.as_mut()
+    else {
+        unreachable!()
+    };
+    emit.output_mapping.clear();
+
+    assert!(matches!(
+        request(plan).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
+    ));
+}
+
+#[test]
+fn rejects_a_zero_column_read_at_the_validation_boundary() {
+    let mut plan = requested_plan();
+    let mut read = read_ref(&plan).clone();
+    let schema = read.base_schema.as_mut().unwrap();
+    schema.names.clear();
+    schema.r#struct.as_mut().unwrap().types.clear();
+    root_mut(&mut plan).names.clear();
+    root_mut(&mut plan).input = Some(Rel {
+        rel_type: Some(rel::RelType::Read(Box::new(read))),
+    });
 
     assert!(matches!(
         request(plan).plan(&TestPlanner(TestDecision::Complete)),
@@ -212,11 +294,8 @@ impl RewriteRuleConnectorPlanner for InitialPlanPlanner {
         &self,
         _remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
-    ) -> Result<ExecutableQuery, PlanningError> {
-        Ok(ExecutableQuery::new(
-            "test-query-v1",
-            metadata.query.as_bytes().to_vec(),
-        )?)
+    ) -> Result<ExecutableQueryResult, PlanningError> {
+        Ok(ExecutableQuery::new("test-query-v1", metadata.query.as_bytes().to_vec())?.into())
     }
 }
 
@@ -266,11 +345,8 @@ impl RewriteRuleConnectorPlanner for ComposedRulePlanner {
         &self,
         _remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
-    ) -> Result<ExecutableQuery, PlanningError> {
-        Ok(ExecutableQuery::new(
-            "test-query-v1",
-            metadata.query.as_bytes().to_vec(),
-        )?)
+    ) -> Result<ExecutableQueryResult, PlanningError> {
+        Ok(ExecutableQuery::new("test-query-v1", metadata.query.as_bytes().to_vec())?.into())
     }
 }
 
@@ -370,7 +446,7 @@ impl RewriteRuleConnectorPlanner for FailingRulePlanner {
         &self,
         _remote_plan: &LogicalPlan,
         _metadata: &Self::Metadata,
-    ) -> Result<ExecutableQuery, PlanningError> {
+    ) -> Result<ExecutableQueryResult, PlanningError> {
         unreachable!("the failing rule must stop the common planner flow")
     }
 }

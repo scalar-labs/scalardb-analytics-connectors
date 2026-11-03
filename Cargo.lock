@@ -263,9 +263,12 @@ dependencies = [
 name = "connector-sql"
 version = "0.1.0"
 dependencies = [
+ "analytics-types",
  "arrow-array",
  "arrow-schema",
  "connector-adbc",
+ "connector-sdk",
+ "substrait",
  "thiserror",
 ]
 

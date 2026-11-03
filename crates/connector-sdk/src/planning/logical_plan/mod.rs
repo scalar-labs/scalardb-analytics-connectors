@@ -1,5 +1,6 @@
 //! Logical plans and their Substrait planning boundary.
 
+mod expressions;
 mod extensions;
 mod schema;
 mod types;
@@ -10,12 +11,36 @@ use prost::Message;
 use prost_types::Any;
 use substrait::proto::{
     DynamicParameterBinding, Expression, ExtensionLeafRel, FilterRel, NamedStruct, Plan, PlanRel,
-    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, Version,
+    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, Type, Version,
     extensions::{SimpleExtensionDeclaration, SimpleExtensionUri},
     plan_rel, read_rel, rel, rel_common,
 };
 
 use crate::RequestError;
+
+/// One declared scalar function with its URI anchor resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionDeclaration<'a> {
+    pub uri: &'a str,
+    pub name: &'a str,
+}
+
+/// A scalar function in the initial SQL translation profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarFunction {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    And,
+    Or,
+    Not,
+    IsNull,
+    IsNotNull,
+    Unknown,
+}
 
 /// Substrait extension type used to encode a remote result consumed by a local plan.
 pub(crate) const REMOTE_RESULT_TYPE_URL: &str =
@@ -67,6 +92,8 @@ pub struct LogicalPlan {
     extension_uris: Vec<SimpleExtensionUri>,
     /// Function and type declarations referenced by plan payloads.
     extensions: Vec<SimpleExtensionDeclaration>,
+    /// Validated indexes reused by planning and translation.
+    extension_registry: extensions::ExtensionRegistry,
     /// Dynamic parameter values preserved for the remote or local plan.
     parameter_bindings: Vec<DynamicParameterBinding>,
     /// Strictly typed relational operator tree rewritten by Connector rules.
@@ -167,6 +194,35 @@ impl LogicalPlan {
 
     pub fn output_schema(&self) -> &AnalyticsSchema {
         &self.output_schema
+    }
+
+    /// Returns the terminal-relation position from which each output field originates.
+    pub fn output_field_positions(&self) -> Vec<usize> {
+        schema::derive_output_field_positions(&self.relation)
+            .expect("a constructed logical plan has valid field lineage")
+    }
+
+    /// Resolves one declared scalar-function anchor to its URI and signature.
+    pub fn function_declaration(&self, anchor: u32) -> Option<FunctionDeclaration<'_>> {
+        let function = self.extension_registry.functions.get(&anchor)?;
+        Some(FunctionDeclaration {
+            uri: &function.uri,
+            name: &function.name,
+        })
+    }
+
+    /// Resolves and classifies one declared scalar function.
+    pub fn scalar_function(&self, anchor: u32) -> Option<ScalarFunction> {
+        self.function_declaration(anchor)
+            .map(expressions::classify_function)
+    }
+
+    /// Resolves a scalar Substrait type through this plan's validated declarations.
+    pub fn analytics_type(
+        &self,
+        data_type: &Type,
+    ) -> Result<(analytics_types::AnalyticsType, bool), RequestError> {
+        expressions::parse_scalar_type(data_type, &self.extension_registry)
     }
 
     /// Returns a plan with replacement producer/version metadata.

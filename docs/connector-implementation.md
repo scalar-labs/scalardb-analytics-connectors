@@ -341,6 +341,7 @@ which require that secret values never appear anywhere in logs or errors.
 | Data read conformance tests | [Data read conformance tests](connector-contract.md#data-read-conformance-tests) | The same |
 | Query Engine adapter integration tests | Native planner callback mapping, scan-state replacement, and removal or retention of native operators | Per supported Query Engine and pinned version |
 | Connector SDK planning tests | Common validation, direct planning-result construction, and rule composition | In the connector SDK |
+| SQL translation tests | Direct validated-plan traversal, physical names loaded into planning metadata, dialect rendering, and typed parameters | In `connector-sql`, with a representative dialect fixture |
 
 Every read request plan used in tests has passed the Substrait validator.
 

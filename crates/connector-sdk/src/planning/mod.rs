@@ -11,9 +11,12 @@ mod pushdown_request;
 mod query_plan;
 
 pub use connector_planner::{
-    ConnectorPlanner, PlanningError, PushdownResult, RewriteRuleConnectorPlanner,
+    ConnectorPlanner, ExecutableQueryResult, PlanningError, PushdownResult,
+    RewriteRuleConnectorPlanner,
 };
-pub use logical_plan::{LogicalPlan, LogicalRelation, TableBinding};
+pub use logical_plan::{
+    FunctionDeclaration, LogicalPlan, LogicalRelation, ScalarFunction, TableBinding,
+};
 pub use planned_pushdown::{ExecutableQuery, PlannedPushdown};
 pub use pushdown_request::PushdownRequest;
 pub use query_plan::{QueryPlan, RewriteContext, RewriteRule, RewriteRuleSet};

@@ -36,6 +36,39 @@ pub(super) fn derive_output_schema(
     apply_root_names(derive_relation_output_schema(relation)?, output_names)
 }
 
+/// Resolves each output field to its position in the terminal relation.
+pub(super) fn derive_output_field_positions(
+    relation: &LogicalRelation,
+) -> Result<Vec<usize>, RequestError> {
+    match relation {
+        LogicalRelation::Read { base_schema, .. } => Ok((0..base_schema.fields().len()).collect()),
+        LogicalRelation::RemoteResult { output_schema, .. } => {
+            Ok((0..output_schema.fields().len()).collect())
+        }
+        LogicalRelation::Filter { input, .. } => derive_output_field_positions(input),
+        LogicalRelation::Project {
+            input,
+            expressions,
+            output_mapping,
+        } => {
+            let input_positions = derive_output_field_positions(input)?;
+            let mut project_positions = input_positions.clone();
+            for expression in expressions {
+                let position = direct_field_position(expression, "logical")?;
+                project_positions.push(input_positions[position]);
+            }
+            output_mapping
+                .iter()
+                .map(|position| {
+                    let position = usize::try_from(*position)
+                        .expect("logical projection positions are validated when constructed");
+                    Ok(project_positions[position])
+                })
+                .collect()
+        }
+    }
+}
+
 /// Applies a project's direct-field expressions and emit mapping to its input schema.
 ///
 /// The initial profile accepts only direct top-level field selections. Each

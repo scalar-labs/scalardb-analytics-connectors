@@ -1116,10 +1116,15 @@ statement or native plan.
 
 The shared contract does not define a second filter language or require AND,
 CNF, DNF, or another normal form. A filter remains a Substrait expression tree,
-including nested expressions and disjunctions. Request-shape validation only
-checks that the expected filter field is present when required; the connector
-rule decides whether that concrete expression has the required meaning for the
-source and session.
+including nested expressions and disjunctions. The initial shared validation
+profile resolves declared function anchors through the pinned comparison and
+Boolean extension URIs, checks direct base-schema field positions, typed scalar
+literals, signatures, arity, and Boolean predicate results, and preserves the
+validated Substrait expressions in `LogicalPlan`. A declared function outside
+the initial SQL mapping remains structurally valid but produces `Unsupported`
+during SQL translation. Connector rewrite rules use the metadata loaded for the
+planning call to decide whether each concrete expression has the required
+meaning for the Data Source and session before it remains in the remote plan.
 
 For example, `Text` comparisons can depend on Data Source type, collation, character
 set, and trailing-space behavior, while floating-point comparisons can depend
