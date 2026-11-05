@@ -1,4 +1,6 @@
-use connector_sdk::LogicalPlan;
+use connector_sdk::{
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, LOGICAL_TYPE_URI, LogicalPlan,
+};
 use substrait::proto::{
     Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
     RelCommon, RelRoot, Type, Version, expression,
@@ -38,15 +40,9 @@ pub(crate) fn requested_plan() -> Plan {
             ..Default::default()
         }),
         extension_uris: vec![
-            extension_uri(
-                COMPARISON_URI,
-                "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_comparison.yaml",
-            ),
-            extension_uri(
-                BOOLEAN_URI,
-                "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_boolean.yaml",
-            ),
-            extension_uri(LOGICAL_URI, "urn:scalardb:analytics:substrait:logical"),
+            extension_uri(COMPARISON_URI, COMPARISON_FUNCTIONS_URI),
+            extension_uri(BOOLEAN_URI, BOOLEAN_FUNCTIONS_URI),
+            extension_uri(LOGICAL_URI, LOGICAL_TYPE_URI),
         ],
         extensions: vec![
             function_decl(COMPARISON_URI, EQUAL, "equal:any1_any1"),

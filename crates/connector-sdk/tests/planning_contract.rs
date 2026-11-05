@@ -7,7 +7,9 @@ use connector_sdk::{
     RewriteRule, RewriteRuleConnectorPlanner, RewriteRuleSet,
 };
 use std::sync::OnceLock;
-use substrait::proto::{FetchRel, Rel, plan_rel, rel};
+use substrait::proto::{
+    DynamicParameter, DynamicParameterBinding, Expression, FetchRel, Rel, expression, plan_rel, rel,
+};
 use support::{
     planner::{TestDecision, TestPlanner, request},
     substrait_plan::{
@@ -46,16 +48,43 @@ fn connector_returns_the_planned_pushdown_directly() {
 }
 
 #[test]
+fn logical_expression_debug_output_redacts_literals() {
+    let result = request(requested_plan())
+        .plan(&DebugExpressionPlanner)
+        .unwrap();
+    assert!(matches!(result, PushdownResult::Unsupported { .. }));
+}
+
+struct DebugExpressionPlanner;
+
+impl ConnectorPlanner for DebugExpressionPlanner {
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+        let LogicalRelation::Project { input, .. } = offered_plan.relation() else {
+            unreachable!();
+        };
+        let LogicalRelation::Filter { condition, .. } = input.as_ref() else {
+            unreachable!();
+        };
+        let expression_debug = format!("{condition:?}");
+        assert!(expression_debug.contains("Binary"));
+        assert!(expression_debug.contains("Field"));
+        assert!(expression_debug.contains("Literal(<redacted>)"));
+        assert!(!expression_debug.contains('7'));
+        Ok(PushdownResult::Unsupported {
+            reason: "debug inspection completed".to_owned(),
+        })
+    }
+}
+
+#[test]
 fn rewrite_rule_planner_preserves_an_unsupported_query_result() {
     let result = request(requested_plan())
         .plan(&UnsupportedQueryPlanner)
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         result,
-        PushdownResult::Unsupported {
-            reason: "remote semantics are not exact".to_owned(),
-        }
-    );
+        PushdownResult::Unsupported { reason } if reason == "remote semantics are not exact"
+    ));
 }
 
 struct UnsupportedQueryPlanner;
@@ -81,6 +110,58 @@ impl RewriteRuleConnectorPlanner for UnsupportedQueryPlanner {
             reason: "remote semantics are not exact".to_owned(),
         })
     }
+}
+
+#[test]
+fn rejects_dynamic_parameter_bindings_in_offered_plans() {
+    let mut offered = requested_plan();
+    offered.parameter_bindings.push(DynamicParameterBinding {
+        parameter_anchor: 1,
+        value: None,
+    });
+
+    assert!(matches!(
+        request(offered).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
+    ));
+}
+
+#[test]
+fn rejects_dynamic_parameter_expressions_in_offered_plans() {
+    let mut offered = requested_plan();
+    let project = match root_mut(&mut offered)
+        .input
+        .as_mut()
+        .and_then(|relation| relation.rel_type.as_mut())
+    {
+        Some(rel::RelType::Project(project)) => project,
+        _ => unreachable!(),
+    };
+    let filter = match project
+        .input
+        .as_mut()
+        .and_then(|relation| relation.rel_type.as_mut())
+    {
+        Some(rel::RelType::Filter(filter)) => filter,
+        _ => unreachable!(),
+    };
+    filter.condition = Some(Box::new(scalar(
+        EQUAL,
+        vec![
+            column(0),
+            Expression {
+                rex_type: Some(expression::RexType::DynamicParameter(DynamicParameter {
+                    r#type: None,
+                    parameter_reference: 1,
+                })),
+            },
+        ],
+    )));
+
+    assert!(matches!(
+        request(offered).plan(&TestPlanner(TestDecision::Complete)),
+        Err(PlanningError::InvalidPlan(RequestError::Undeclared { .. }))
+    ));
 }
 
 #[test]
@@ -210,6 +291,55 @@ fn complete_pushdown_requires_remote_output_to_match_offered_output() {
     let _ = request(offered).plan(&MismatchedRemoteOutputPlanner);
 }
 
+#[test]
+#[should_panic(expected = "a Connector-produced logical plan must remain valid and derivable")]
+fn transformed_plan_revalidates_filter_expressions() {
+    let offered = requested_plan();
+    let _ = request(offered).plan(&InvalidTransformedFilterPlanner);
+}
+
+struct InvalidTransformedFilterPlanner;
+
+impl ConnectorPlanner for InvalidTransformedFilterPlanner {
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+        let LogicalRelation::Project {
+            input,
+            expressions,
+            output_mapping,
+        } = offered_plan.relation().clone()
+        else {
+            unreachable!();
+        };
+        let LogicalRelation::Filter { input, condition } = *input else {
+            unreachable!();
+        };
+        let LogicalRelation::Read {
+            substrait_schema,
+            table_binding,
+            ..
+        } = *input
+        else {
+            unreachable!();
+        };
+        let relation = LogicalRelation::Project {
+            input: Box::new(LogicalRelation::Filter {
+                input: Box::new(LogicalRelation::Read {
+                    substrait_schema,
+                    base_schema: analytics_types::AnalyticsSchema::new(Vec::new()),
+                    table_binding,
+                }),
+                condition,
+            }),
+            expressions,
+            output_mapping,
+        };
+        let _ = offered_plan
+            .clone()
+            .with_root(relation, offered_plan.output_names().to_vec());
+        unreachable!()
+    }
+}
+
 struct MismatchedRemoteOutputPlanner;
 
 impl ConnectorPlanner for MismatchedRemoteOutputPlanner {
@@ -242,7 +372,7 @@ fn initial_query_plan_keeps_filter_and_projection_local() {
     let local = pushdown.local_plan.as_ref().expect("local plan");
     assert_eq!(
         local.expected_type_urls,
-        ["urn:scalardb:analytics:substrait:remote-result-schema:v1"]
+        [connector_sdk::REMOTE_RESULT_TYPE_URL]
     );
     let root = match &local.relations[0].rel_type {
         Some(plan_rel::RelType::Root(root)) => root,

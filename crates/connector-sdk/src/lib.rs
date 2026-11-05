@@ -17,8 +17,9 @@ pub use metadata::{
     MetadataProvenance, MetadataState, TableMetadata, TableReference, TypeMapper, UnsupportedType,
 };
 pub use planning::{
-    ConnectorPlanner, ExecutableQuery, ExecutableQueryResult, FunctionDeclaration, LogicalPlan,
-    LogicalRelation, PlannedPushdown, PlanningError, PushdownRequest, PushdownResult, QueryPlan,
-    RewriteContext, RewriteRule, RewriteRuleConnectorPlanner, RewriteRuleSet, ScalarFunction,
-    TableBinding,
+    BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, ConnectorPlanner,
+    ExecutableQuery, ExecutableQueryResult, LOGICAL_TYPE_URI, LiteralValue, LogicalExpression,
+    LogicalExpressionKind, LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError,
+    PushdownRequest, PushdownResult, QueryPlan, REMOTE_RESULT_TYPE_URL, RewriteContext,
+    RewriteRule, RewriteRuleConnectorPlanner, RewriteRuleSet, TableBinding, UnaryOperator,
 };

@@ -1,19 +1,20 @@
 use std::cell::RefCell;
 
-use arrow_array::{
-    Array, DurationMicrosecondArray, Int64Array, IntervalMonthDayNanoArray, StringArray,
-};
-use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use connector_sdk::{
-    ConnectorPlanner, LogicalPlan, PlanningError, PushdownRequest, PushdownResult,
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, LOGICAL_TYPE_URI,
+    LogicalPlan, LogicalRelation, PlanningError, PushdownRequest, PushdownResult,
 };
-use connector_sql::{SqlDialect, TranslationError, translate};
+use connector_sql::{TranslationError, translate};
 use substrait::proto::{
     Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
     RelCommon, RelRoot, Type, Version, expression,
     extensions::{SimpleExtensionDeclaration, SimpleExtensionUri, simple_extension_declaration},
     function_argument, plan_rel, read_rel, rel, rel_common, r#type,
 };
+
+mod support;
+
+use support::TestDialect;
 
 const COMPARISON_URI_ANCHOR: u32 = 1;
 const BOOLEAN_URI_ANCHOR: u32 = 2;
@@ -30,19 +31,6 @@ const LESS_THAN_OR_EQUAL: u32 = 8;
 const GREATER_THAN: u32 = 9;
 const GREATER_THAN_OR_EQUAL: u32 = 10;
 const IS_NULL: u32 = 11;
-
-struct PostgreSqlDialect;
-
-impl SqlDialect for PostgreSqlDialect {
-    fn quote_identifier(&self, identifier: &str) -> String {
-        format!("\"{}\"", identifier.replace('"', "\"\""))
-    }
-
-    fn write_placeholder(&self, position: usize, sql: &mut String) {
-        sql.push('$');
-        sql.push_str(&position.to_string());
-    }
-}
 
 struct TranslationPlanner {
     relation: Vec<String>,
@@ -70,7 +58,7 @@ impl ConnectorPlanner for TranslationPlanner {
             plan,
             &self.relation,
             &self.columns,
-            PostgreSqlDialect,
+            TestDialect,
         )));
         Ok(PushdownResult::Unsupported {
             reason: "test captured translation".to_owned(),
@@ -86,7 +74,6 @@ fn translates_read() {
         query.sql,
         "SELECT \"id_col\" AS \"id\", \"name_col\" AS \"name\", \"score_col\" AS \"score\" FROM \"physical\".\"users\""
     );
-    assert!(query.parameters.is_none());
 }
 
 #[test]
@@ -97,7 +84,6 @@ fn translates_project_over_read() {
         query.sql,
         "SELECT \"score_col\" AS \"score_alias\", \"id_col\" AS \"id_alias\" FROM \"physical\".\"users\""
     );
-    assert!(query.parameters.is_none());
 }
 
 #[test]
@@ -109,30 +95,25 @@ fn translates_filter_over_read() {
 
     assert_eq!(
         query.sql,
-        "SELECT \"id_col\" AS \"id\", \"name_col\" AS \"name\", \"score_col\" AS \"score\" FROM \"physical\".\"users\" WHERE (\"id_col\" = $1)"
-    );
-    let parameters = query.parameters.unwrap();
-    assert_eq!(parameters.num_columns(), 1);
-    assert_eq!(
-        parameters
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap()
-            .value(0),
-        7
+        "SELECT \"id_col\" AS \"id\", \"name_col\" AS \"name\", \"score_col\" AS \"score\" FROM \"physical\".\"users\" WHERE (\"id_col\" = test_literal('big_int:7'))"
     );
 }
 
 #[test]
 fn translates_each_supported_predicate() {
     let comparisons = [
-        (EQUAL, "(\"id_col\" = $1)"),
-        (NOT_EQUAL, "(\"id_col\" <> $1)"),
-        (LESS_THAN, "(\"id_col\" < $1)"),
-        (LESS_THAN_OR_EQUAL, "(\"id_col\" <= $1)"),
-        (GREATER_THAN, "(\"id_col\" > $1)"),
-        (GREATER_THAN_OR_EQUAL, "(\"id_col\" >= $1)"),
+        (EQUAL, "(\"id_col\" = test_literal('big_int:7'))"),
+        (NOT_EQUAL, "(\"id_col\" <> test_literal('big_int:7'))"),
+        (LESS_THAN, "(\"id_col\" < test_literal('big_int:7'))"),
+        (
+            LESS_THAN_OR_EQUAL,
+            "(\"id_col\" <= test_literal('big_int:7'))",
+        ),
+        (GREATER_THAN, "(\"id_col\" > test_literal('big_int:7'))"),
+        (
+            GREATER_THAN_OR_EQUAL,
+            "(\"id_col\" >= test_literal('big_int:7'))",
+        ),
     ];
     for (function, expected) in comparisons {
         assert_predicate_sql(scalar(function, vec![column(0), i64_literal(7)]), expected);
@@ -146,7 +127,7 @@ fn translates_each_supported_predicate() {
                 scalar(EQUAL, vec![column(2), i64_literal(2)]),
             ],
         ),
-        "((\"id_col\" = $1) AND (\"score_col\" = $2))",
+        "((\"id_col\" = test_literal('big_int:1')) AND (\"score_col\" = test_literal('big_int:2')))",
     );
     assert_predicate_sql(
         scalar(
@@ -156,11 +137,11 @@ fn translates_each_supported_predicate() {
                 scalar(EQUAL, vec![column(2), i64_literal(2)]),
             ],
         ),
-        "((\"id_col\" = $1) OR (\"score_col\" = $2))",
+        "((\"id_col\" = test_literal('big_int:1')) OR (\"score_col\" = test_literal('big_int:2')))",
     );
     assert_predicate_sql(
         scalar(NOT, vec![scalar(EQUAL, vec![column(0), i64_literal(7)])]),
-        "(NOT (\"id_col\" = $1))",
+        "(NOT (\"id_col\" = test_literal('big_int:7')))",
     );
     assert_predicate_sql(scalar(IS_NULL, vec![column(1)]), "(\"name_col\" IS NULL)");
     assert_predicate_sql(
@@ -170,7 +151,7 @@ fn translates_each_supported_predicate() {
 }
 
 #[test]
-fn translates_projection_filter_and_typed_parameters_in_depth_first_order() {
+fn translates_projection_filter_with_literals_in_place() {
     let planner = TranslationPlanner::new();
 
     PushdownRequest {
@@ -182,30 +163,7 @@ fn translates_projection_filter_and_typed_parameters_in_depth_first_order() {
 
     assert_eq!(
         query.sql,
-        "SELECT \"score_col\" AS \"score_alias\", \"id_col\" AS \"id_alias\" FROM \"physical\".\"users\" WHERE (((NOT (\"name_col\" = $1)) OR (\"score_col\" IS NOT NULL)) AND (\"id_col\" = $2))"
-    );
-    let parameters = query.parameters.unwrap();
-    assert_eq!(parameters.num_rows(), 1);
-    assert_eq!(parameters.num_columns(), 2);
-    assert_eq!(parameters.schema().field(0).data_type(), &DataType::Utf8);
-    assert!(parameters.column(0).is_null(0));
-    assert_eq!(
-        parameters
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        parameters
-            .column(1)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap()
-            .value(0),
-        7
+        "SELECT \"score_col\" AS \"score_alias\", \"id_col\" AS \"id_alias\" FROM \"physical\".\"users\" WHERE (((NOT (\"name_col\" = test_literal('null:Text'))) OR (\"score_col\" IS NOT NULL)) AND (\"id_col\" = test_literal('big_int:7')))"
     );
 }
 
@@ -222,6 +180,35 @@ fn reports_a_declared_but_unmapped_function_as_unsupported() {
         planner.result.take().unwrap(),
         Err(TranslationError::Unsupported { .. })
     ));
+}
+
+#[test]
+fn exposes_an_unmapped_function_to_pushdown_planning() {
+    PushdownRequest {
+        offered_plan: requested_plan("mystery:any1_any1", column(1)),
+    }
+    .plan(&UnsupportedFunctionPlanner)
+    .unwrap();
+}
+
+struct UnsupportedFunctionPlanner;
+
+impl ConnectorPlanner for UnsupportedFunctionPlanner {
+    fn plan(&self, plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+        let LogicalRelation::Project { input, .. } = plan.relation() else {
+            unreachable!();
+        };
+        let LogicalRelation::Filter { condition, .. } = input.as_ref() else {
+            unreachable!();
+        };
+        assert_eq!(
+            condition.unsupported_function(),
+            Some((COMPARISON_FUNCTIONS_URI, "mystery:any1_any1"))
+        );
+        Ok(PushdownResult::Unsupported {
+            reason: "the filter must remain local".to_owned(),
+        })
+    }
 }
 
 #[test]
@@ -262,6 +249,151 @@ fn accepts_function_anchor_zero() {
 }
 
 #[test]
+fn renders_every_supported_literal_value_through_the_validated_plan_boundary() {
+    let cases = vec![
+        (
+            bool_type(false),
+            literal(expression::literal::LiteralType::Boolean(true)),
+            "test_literal('boolean:true')",
+        ),
+        (
+            scalar_type(r#type::Kind::I8(r#type::I8::default())),
+            literal(expression::literal::LiteralType::I8(-8)),
+            "test_literal('byte:-8')",
+        ),
+        (
+            scalar_type(r#type::Kind::I16(r#type::I16::default())),
+            literal(expression::literal::LiteralType::I16(-16)),
+            "test_literal('small_int:-16')",
+        ),
+        (
+            scalar_type(r#type::Kind::I32(r#type::I32::default())),
+            literal(expression::literal::LiteralType::I32(-32)),
+            "test_literal('int:-32')",
+        ),
+        (
+            i64_type(false),
+            literal(expression::literal::LiteralType::I64(-64)),
+            "test_literal('big_int:-64')",
+        ),
+        (
+            scalar_type(r#type::Kind::Fp32(r#type::Fp32::default())),
+            literal(expression::literal::LiteralType::Fp32(1.5)),
+            "test_literal('float:1.5')",
+        ),
+        (
+            scalar_type(r#type::Kind::Fp64(r#type::Fp64::default())),
+            literal(expression::literal::LiteralType::Fp64(f64::INFINITY)),
+            "test_literal('double:inf')",
+        ),
+        (
+            string_type(false),
+            literal(expression::literal::LiteralType::String(
+                "quote' slash\\ and $scalar$ delimiter".to_owned(),
+            )),
+            "test_literal('text:quote'' slash\\ and $scalar$ delimiter')",
+        ),
+        (
+            scalar_type(r#type::Kind::Binary(r#type::Binary::default())),
+            literal(expression::literal::LiteralType::Binary(vec![
+                0x00, 0xab, 0xff,
+            ])),
+            "test_literal('blob:00abff')",
+        ),
+        (
+            scalar_type(r#type::Kind::Date(r#type::Date::default())),
+            literal(expression::literal::LiteralType::Date(2)),
+            "test_literal('date:2')",
+        ),
+        (
+            Type {
+                kind: Some(r#type::Kind::PrecisionTime(r#type::PrecisionTime {
+                    precision: 6,
+                    nullability: required(),
+                    ..Default::default()
+                })),
+            },
+            literal(expression::literal::LiteralType::PrecisionTime(
+                expression::literal::PrecisionTime {
+                    precision: 6,
+                    value: 3,
+                },
+            )),
+            "test_literal('time:3')",
+        ),
+        (
+            Type {
+                kind: Some(r#type::Kind::PrecisionTimestamp(
+                    r#type::PrecisionTimestamp {
+                        precision: 6,
+                        nullability: required(),
+                        ..Default::default()
+                    },
+                )),
+            },
+            literal(expression::literal::LiteralType::PrecisionTimestamp(
+                expression::literal::PrecisionTimestamp {
+                    precision: 6,
+                    value: 9_007_199_254_740_993,
+                },
+            )),
+            "test_literal('timestamp:9007199254740993')",
+        ),
+        (
+            Type {
+                kind: Some(r#type::Kind::PrecisionTimestampTz(
+                    r#type::PrecisionTimestampTz {
+                        precision: 6,
+                        nullability: required(),
+                        ..Default::default()
+                    },
+                )),
+            },
+            literal(expression::literal::LiteralType::PrecisionTimestampTz(
+                expression::literal::PrecisionTimestamp {
+                    precision: 6,
+                    value: -9_007_199_254_740_993,
+                },
+            )),
+            "test_literal('timestamp_tz:-9007199254740993')",
+        ),
+        (
+            Type {
+                kind: Some(r#type::Kind::Decimal(r#type::Decimal {
+                    precision: 5,
+                    scale: 2,
+                    nullability: required(),
+                    ..Default::default()
+                })),
+            },
+            literal(expression::literal::LiteralType::Decimal(
+                expression::literal::Decimal {
+                    value: (-123_i128).to_le_bytes().to_vec(),
+                    precision: 5,
+                    scale: 2,
+                },
+            )),
+            "test_literal('decimal:-123,5,2')",
+        ),
+        (
+            string_type(true),
+            literal(expression::literal::LiteralType::Null(string_type(true))),
+            "test_literal('null:Text')",
+        ),
+    ];
+
+    for (data_type, value, expected) in cases {
+        let query = translate_literal_plan(data_type, value);
+        assert!(
+            query
+                .sql
+                .ends_with(&format!("WHERE (\"id_col\" = {expected})"))
+        );
+        assert!(!format!("{query:?}").contains("quote'"));
+    }
+}
+
+#[test]
 fn translates_duration_and_compound_interval_literals() {
     let duration = expression::Literal {
         literal_type: Some(expression::literal::LiteralType::IntervalDayToSecond(
@@ -286,19 +418,10 @@ fn translates_duration_and_compound_interval_literals() {
         },
         duration,
     );
-    let duration_parameters = duration_query.parameters.unwrap();
-    assert_eq!(
-        duration_parameters.schema().field(0).data_type(),
-        &DataType::Duration(TimeUnit::Microsecond)
-    );
-    assert_eq!(
-        duration_parameters
-            .column(0)
-            .as_any()
-            .downcast_ref::<DurationMicrosecondArray>()
-            .unwrap()
-            .value(0),
-        86_402_000_003
+    assert!(
+        duration_query
+            .sql
+            .ends_with("WHERE (\"id_col\" = test_literal('duration:86402000003'))")
     );
 
     let interval = expression::Literal {
@@ -330,25 +453,15 @@ fn translates_duration_and_compound_interval_literals() {
         },
         interval,
     );
-    let interval_parameters = interval_query.parameters.unwrap();
-    assert_eq!(
-        interval_parameters.schema().field(0).data_type(),
-        &DataType::Interval(IntervalUnit::MonthDayNano)
-    );
-    let value = interval_parameters
-        .column(0)
-        .as_any()
-        .downcast_ref::<IntervalMonthDayNanoArray>()
-        .unwrap()
-        .value(0);
-    assert_eq!(
-        (value.months, value.days, value.nanoseconds),
-        (14, 3, 4_000_000_005)
+    assert!(
+        interval_query
+            .sql
+            .ends_with("WHERE (\"id_col\" = test_literal('interval:14,3,4000000005'))")
     );
 }
 
 #[test]
-fn translates_extension_encoded_logical_literals_through_their_carrier() {
+fn translates_extension_encoded_logical_literals_with_their_declared_type() {
     let parameters = vec![
         string_type_parameter("uuid"),
         string_type_parameter("{}"),
@@ -383,10 +496,8 @@ fn translates_extension_encoded_logical_literals_through_their_carrier() {
     };
 
     let mut plan = requested_plan("equal:any1_any1", column(0));
-    plan.extension_uris.push(extension_uri(
-        LOGICAL_URI_ANCHOR,
-        "urn:scalardb:analytics:substrait:logical",
-    ));
+    plan.extension_uris
+        .push(extension_uri(LOGICAL_URI_ANCHOR, LOGICAL_TYPE_URI));
     plan.extensions.push(type_decl(
         LOGICAL_URI_ANCHOR,
         LOGICAL_TYPE_ANCHOR,
@@ -412,17 +523,9 @@ fn translates_extension_encoded_logical_literals_through_their_carrier() {
         .plan(&planner)
         .unwrap();
     let query = planner.result.take().unwrap().unwrap();
-    let parameters = query.parameters.unwrap();
-    assert_eq!(parameters.schema().field(0).data_type(), &DataType::Utf8);
-    assert_eq!(
-        parameters
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0),
-        "550e8400-e29b-41d4-a716-446655440000"
-    );
+    assert!(query.sql.ends_with(
+        "WHERE (\"id_col\" = test_logical('Uuid', test_literal('text:550e8400-e29b-41d4-a716-446655440000')))"
+    ));
 }
 
 #[test]
@@ -624,6 +727,28 @@ fn translate_literal_plan(
     planner.result.take().unwrap().unwrap()
 }
 
+fn literal(literal_type: expression::literal::LiteralType) -> expression::Literal {
+    expression::Literal {
+        literal_type: Some(literal_type),
+        ..Default::default()
+    }
+}
+
+fn scalar_type(mut kind: r#type::Kind) -> Type {
+    let nullability = required();
+    match &mut kind {
+        r#type::Kind::I8(value) => value.nullability = nullability,
+        r#type::Kind::I16(value) => value.nullability = nullability,
+        r#type::Kind::I32(value) => value.nullability = nullability,
+        r#type::Kind::Fp32(value) => value.nullability = nullability,
+        r#type::Kind::Fp64(value) => value.nullability = nullability,
+        r#type::Kind::Binary(value) => value.nullability = nullability,
+        r#type::Kind::Date(value) => value.nullability = nullability,
+        _ => panic!("test scalar type helper received an unsupported kind"),
+    }
+    Type { kind: Some(kind) }
+}
+
 fn assert_invalid_literal(data_type: Type, literal: expression::Literal) {
     let planner = TranslationPlanner::new();
     let mut plan = requested_plan("equal:any1_any1", column(0));
@@ -742,14 +867,8 @@ fn requested_plan(equal_name: &str, first_comparison_column: Expression) -> Plan
             ..Default::default()
         }),
         extension_uris: vec![
-            extension_uri(
-                COMPARISON_URI_ANCHOR,
-                "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_comparison.yaml",
-            ),
-            extension_uri(
-                BOOLEAN_URI_ANCHOR,
-                "https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_boolean.yaml",
-            ),
+            extension_uri(COMPARISON_URI_ANCHOR, COMPARISON_FUNCTIONS_URI),
+            extension_uri(BOOLEAN_URI_ANCHOR, BOOLEAN_FUNCTIONS_URI),
         ],
         extensions: vec![
             function_decl(COMPARISON_URI_ANCHOR, EQUAL, equal_name),

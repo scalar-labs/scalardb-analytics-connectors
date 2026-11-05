@@ -21,6 +21,20 @@ of the generated Substrait protobuf types. Its types exclude states that the
 accepted plan shape considers structurally invalid while preserving the
 semantics required by that shape.
 
+`LogicalExpression` is a connector-owned recursive expression model. Every
+node contains its Analytics type and nullability together with resolved scalar
+functions, field positions, or canonical literal values. Known operators use
+unary or binary nodes so their declared arity is represented by the model;
+only unsupported functions retain an unconstrained argument list. Any subtree
+can therefore move independently between remote and local filters during
+partial pushdown. Debug representations redact literal values.
+
+The SDK regenerates Substrait expressions from this model when a plan crosses
+the boundary. Keeping an original Substrait tree beside the semantic tree
+would either couple every movable subtree to the interchange representation or
+make partial pushdown lose the corresponding boundary payload. One encoder
+instead makes `LogicalPlan` the single representation transformed by planning.
+
 Within the SDK-supported profile, conversion between a validated Substrait plan
 and `LogicalPlan` is semantically lossless. Converting a validated plan to
 `LogicalPlan` and back preserves its query meaning and the metadata required to

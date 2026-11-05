@@ -38,7 +38,7 @@ offered plan. For example, partial `AVG(x)` pushdown may produce remote
 | Remote plan | The complete Substrait plan whose work is assigned to the Data Source. |
 | Local plan | The optional complete Substrait plan over `RemoteResult` that consumes the remote output and finishes the query in the Query Engine. It contains no independent Data Source read. |
 | Remote query generation | Translation of the remote plan into a Data Source-executable query. |
-| Executable query | Connector-owned representation of the generated remote query. It may contain SQL and parameters or another Data Source-specific payload, but no credentials or live resources. |
+| Executable query | Connector-owned representation of the generated remote query. A SQL Connector stores one complete non-parameterized SQL statement; another Connector may use another Data Source-specific payload. It contains no credentials or live resources. |
 | Planned pushdown | The result of pushdown planning: the remote plan, optional local plan, and generated executable query. It remains a proposal until the Query Engine adapter adopts it. |
 | Pushdown execution | Execution of an adopted planned pushdown, including query shipping, Data Source execution, and optional local-plan execution. |
 | Query shipping | The runtime action of sending the generated remote query to the Data Source for execution. |
@@ -130,9 +130,10 @@ schema. When a local plan exists, its `RemoteResult` extension leaf declares
 and consumes that schema. When no local plan exists, remote output is the final
 result.
 
-`ExecutableQuery` is Connector-owned. For a SQL Connector it can encode SQL,
-parameters, and type information; a non-SQL Connector can use another format.
-It contains no credentials, live connections, or process-local pointers.
+`ExecutableQuery` is Connector-owned. A SQL Connector encodes one complete
+non-parameterized SQL statement whose typed literals were already rendered by
+its dialect; a non-SQL Connector can use another format. It contains no
+credentials, live connections, or process-local pointers.
 
 ## Planning flow
 

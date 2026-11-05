@@ -25,7 +25,7 @@ details are decided in the implementation.
 | Data Source access | The narrow mechanism that reads a Data Source catalog and runs queries. `connector-adbc` provides ADBC access; a direct-access Connector implements the same boundary itself. |
 | Table reference | An unresolved non-empty table name path used by metadata requests. It is not a table binding and carries no proof that it belongs to an open Data Source or registered schema. |
 | Table binding | A non-secret opaque identity for one registered table. The Physical Catalog persists it and an adapter copies it into a Substrait `namedTable`; only the Connector interprets it. |
-| SQL dialect | Connector-owned representation rules for SQL identifiers and placeholders. It does not represent a Data Source, connection, table, or common SQL grammar. |
+| SQL dialect | Connector-owned representation rules for SQL identifiers and typed literals. It does not represent a Data Source, connection, table, or common SQL grammar. |
 | Connector definition | The data part of a connector crate, loaded at build time ([Connector definition](#connector-definition)) |
 | Connector trait | The Rust trait a connector implements in code. The connector SDK uses a connector only through this trait and its connector definition ([Connector trait](#connector-trait)). |
 | Data Source access trait | The Rust traits defined by `connector-sdk` that only read the Data Source catalog and run queries. `connector-adbc` implements them for ADBC access; a direct-access Connector implements them itself. |
@@ -189,10 +189,16 @@ wire format or an independent query language: it represents the SDK-supported
 semantic subset of Substrait without the structurally invalid states permitted
 by the generated protobuf model. Its `Read`, `Filter`, `Project`, and
 `RemoteResult` relation variants make required children and conditions
-non-optional. Expressions, schemas, extension declarations, version metadata,
-and dynamic parameter bindings remain Substrait payload types whose accepted
-shape is checked at planning boundaries, so the SDK does not define a parallel
-expression or type system. Planning rules transform trees, so `LogicalPlan` is
+non-optional. `LogicalExpression` is a recursive connector-owned model whose
+nodes retain their Analytics type, nullability, resolved operation, and
+operands. Known unary and binary operators carry operands in arity-specific
+nodes rather than an unchecked argument list. This lets planning move a
+subexpression independently during partial pushdown. Boundary conversion
+regenerates Substrait expressions from that model.
+Schemas, extension declarations, and version metadata likewise retain their
+Substrait payloads for lossless boundary conversion. Dynamic-
+parameter expressions and bindings are rejected at that boundary. Planning
+rules transform trees, so `LogicalPlan` is
 immutable through its public API. A rule chooses the next relation tree; the
 `LogicalPlan` construction operation, rather than the rule, owns maintaining
 plan-level derived state and stores the corresponding output schema.
@@ -290,9 +296,10 @@ RewriteRuleConnectorPlanner:
 
 SQL-family create_executable_query:
     connector-sql translates remote_plan using physical names from metadata
-        common visitor owns Read/Project/Filter, fixed SQL syntax, and Boolean/null-test structure
-        SqlDialect owns identifier and placeholder representation
-        Fragment finalizes SQL and typed Arrow parameters with the dialect
+        common visitor owns Read/Project/Filter and fixed SQL syntax
+        LogicalExpression exposes resolved functions, fields, and validated LiteralValue nodes
+        SqlDialect renders identifier and LiteralValue fragments
+        Fragment composes them with fixed syntax into one non-parameterized SQL statement
 
 Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner:
     metadata = load_metadata(offered_plan)
@@ -354,18 +361,22 @@ public connector API remains the language-neutral boundary; these internal
 interfaces keep source knowledge out of the SDK.
 
 For SQL-family Connectors, `connector-sql` traverses the validated remote
-`LogicalPlan` and its retained Substrait expressions directly. It does not
-construct another relational or expression tree. `load_metadata` creates one
+`LogicalPlan` and its `LogicalExpression` nodes. It does
+not interpret Substrait anchors or extension declarations. `load_metadata` creates one
 Connector-private metadata value containing the physical names and Data Source
 facts needed by the planning call. Rewrite rules and executable-query generation
 borrow that same value; no separate SQL metadata model is constructed.
 
 The common visitor owns explicit projection and aliases, the single-table
-`SELECT`/`FROM`/optional `WHERE` shape, Boolean composition, null tests, and
-depth-first parameter collection. It emits the profile's fixed SQL syntax
-directly; it does not mirror that syntax in a second token model. `SqlDialect`
-owns actual representation differences such as identifier quoting and
-placeholders. Connector rewrite rules use the concrete Data Source type,
+`SELECT`/`FROM`/optional `WHERE` shape, Boolean composition, and null tests. It
+emits the profile's fixed SQL syntax directly; it does not mirror that syntax
+in a second token model. `LogicalPlan` owns literal validation and
+canonicalization and stores a `LiteralValue` retaining typed null and
+logical-carrier information in each literal expression. Connector
+rewrites are revalidated when they construct a replacement plan root.
+`SqlDialect` owns actual representation differences such as identifier quoting
+and literal spelling and escaping. The result is one complete
+non-parameterized SQL statement. Connector rewrite rules use the concrete Data Source type,
 nullability, collation, version, and session facts in the shared metadata before
 leaving an expression in the remote plan. SQL translation renders that approved
 plan without repeating the semantic decision.
@@ -498,7 +509,7 @@ at build time. `connector-sdk` defines its format and validates it when loading.
 | Session | Setting queries run right after connecting, and the driver options or reader crate settings to fix |
 | Catalog | Queries that read namespaces, tables, columns, constraints, and identifiers, and the meaning of their result columns (SQL sources) |
 | Types | Per mapping rule, the Arrow type the Data Source access returns and the name of the building block that converts it to the Analytics type |
-| Dialect | Identifier quoting and parameter notation (SQL sources) |
+| Dialect | Identifier quoting and typed-literal spelling and escaping (SQL sources) |
 | Semantics | Guards that prove an operator preserves meaning for concrete Data Source types, nullability, collations, versions, and session facts; an unproved case remains local or is `Unsupported` |
 | Cancellation | With ADBC access, the means sent to the source when the driver's cancellation does not stop the query at the source |
 | Errors | The classification of Data Source-specific error codes into contract error kinds |

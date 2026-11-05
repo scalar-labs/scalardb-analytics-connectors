@@ -4,10 +4,9 @@ use analytics_types::AnalyticsSchema;
 use substrait::proto::{Plan, ProjectRel, ReadRel, RelRoot, plan_rel, read_rel, rel, rel_common};
 
 use super::{
-    LogicalPlan, LogicalRelation, TableBinding,
-    expressions::validate_filter_expression,
-    extensions::ExtensionRegistry,
-    schema::{apply_root_names, derive_project_schema, parse_schema},
+    LogicalExpression, LogicalPlan, LogicalRelation, TableBinding,
+    profile::PlanExtensions,
+    schema::{apply_root_names, derive_project_schema, parse_schema, project_field_position},
 };
 use crate::RequestError;
 
@@ -54,8 +53,7 @@ impl LogicalPlan {
             version: plan.version,
             extension_uris: plan.extension_uris,
             extensions: plan.extensions,
-            extension_registry: extensions,
-            parameter_bindings: plan.parameter_bindings,
+            resolved_extensions: extensions,
             relation: validated.relation,
             output_names,
             output_schema,
@@ -69,7 +67,7 @@ impl LogicalPlan {
 /// produced by the next pushdown stage passes through unchanged.
 fn validate_projection_pushdown(
     relation: &substrait::proto::Rel,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<ValidatedRelation, RequestError> {
     let Some(rel::RelType::Project(project)) = relation.rel_type.as_ref() else {
         return validate_filter_pushdown(relation, extensions);
@@ -80,10 +78,18 @@ fn validate_projection_pushdown(
         .ok_or_else(|| RequestError::invalid("the offered ProjectRel has no input"))?;
     let input = validate_filter_pushdown(input, extensions)?;
     let (output_schema, output_mapping) = validate_project_schema(project, &input.output_schema)?;
+    let expressions = project
+        .expressions
+        .iter()
+        .map(|expression| {
+            project_field_position(expression, "offered")?;
+            LogicalExpression::from_substrait(expression, &input.output_schema, extensions)
+        })
+        .collect::<Result<Vec<_>, RequestError>>()?;
     Ok(ValidatedRelation {
         relation: LogicalRelation::Project {
             input: Box::new(input.relation),
-            expressions: project.expressions.clone(),
+            expressions,
             output_mapping,
         },
         output_schema,
@@ -96,7 +102,7 @@ fn validate_projection_pushdown(
 /// its input read. Without a filter, the read schema passes through unchanged.
 fn validate_filter_pushdown(
     relation: &substrait::proto::Rel,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<ValidatedRelation, RequestError> {
     let Some(rel::RelType::Filter(filter)) = relation.rel_type.as_ref() else {
         return validate_read(relation, extensions);
@@ -115,11 +121,16 @@ fn validate_filter_pushdown(
         .as_deref()
         .ok_or_else(|| RequestError::invalid("the offered FilterRel has no input"))?;
     let input = validate_read(input, extensions)?;
-    validate_filter_expression(condition, &input.output_schema, extensions)?;
+    let condition = LogicalExpression::from_substrait(condition, &input.output_schema, extensions)?;
+    if condition.data_type != analytics_types::AnalyticsType::Boolean {
+        return Err(RequestError::invalid(
+            "a filter condition must produce a Boolean value",
+        ));
+    }
     Ok(ValidatedRelation {
         relation: LogicalRelation::Filter {
             input: Box::new(input.relation),
-            condition: condition.clone(),
+            condition,
         },
         output_schema: input.output_schema,
     })
@@ -128,7 +139,7 @@ fn validate_filter_pushdown(
 /// Validates the terminal read on which pushdown operations are requested.
 fn validate_read(
     relation: &substrait::proto::Rel,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<ValidatedRelation, RequestError> {
     let read = match relation.rel_type.as_ref() {
         Some(rel::RelType::Read(read)) => read.as_ref(),
@@ -188,7 +199,12 @@ fn validate_project_schema(
 ///
 /// The offered profile contains exactly one `RelRoot` and does not accept
 /// plan-level advanced extensions or expected extension type URLs.
-fn validate_plan_container(plan: &Plan) -> Result<(&RelRoot, ExtensionRegistry), RequestError> {
+fn validate_plan_container(plan: &Plan) -> Result<(&RelRoot, PlanExtensions), RequestError> {
+    if !plan.parameter_bindings.is_empty() {
+        return Err(RequestError::undeclared(
+            "dynamic parameter bindings are outside the pushdown request profile",
+        ));
+    }
     if plan.advanced_extensions.is_some() || !plan.expected_type_urls.is_empty() {
         return Err(RequestError::undeclared(
             "advanced offered plan extensions and expected type URLs are not accepted",
@@ -199,7 +215,7 @@ fn validate_plan_container(plan: &Plan) -> Result<(&RelRoot, ExtensionRegistry),
             "an offered plan must contain exactly one root relation",
         ));
     }
-    let extensions = ExtensionRegistry::new(&plan.extension_uris, &plan.extensions)?;
+    let extensions = PlanExtensions::new(&plan.extension_uris, &plan.extensions)?;
     let root = match plan.relations[0].rel_type.as_ref() {
         Some(plan_rel::RelType::Root(root)) => root,
         _ => {
@@ -217,7 +233,7 @@ fn validate_plan_container(plan: &Plan) -> Result<(&RelRoot, ExtensionRegistry),
 /// validation stages update it as operators are applied.
 fn validate_read_base(
     read: &ReadRel,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<ValidatedRelation, RequestError> {
     if read.common.is_some() || read.advanced_extension.is_some() {
         return Err(RequestError::undeclared(

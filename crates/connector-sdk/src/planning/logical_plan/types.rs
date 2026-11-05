@@ -6,7 +6,7 @@ use analytics_types::{
 use serde_json::Value;
 use substrait::proto::{Type, r#type};
 
-use super::{LOGICAL_TYPE_NAME, extensions::ExtensionRegistry};
+use super::profile::PlanExtensions;
 use crate::RequestError;
 
 /// Converts one Substrait type and its nullability to the Analytics type model.
@@ -17,7 +17,7 @@ use crate::RequestError;
 pub(super) fn parse_type<'a>(
     data_type: &Type,
     names: &mut impl Iterator<Item = &'a String>,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<(AnalyticsType, bool), RequestError> {
     let kind = data_type
         .kind
@@ -131,14 +131,9 @@ fn parse_nullability(nullability: i32) -> Result<bool, RequestError> {
 fn parse_logical_type<'a>(
     data_type: &r#type::UserDefined,
     names: &mut impl Iterator<Item = &'a String>,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<(AnalyticsType, bool), RequestError> {
-    if extensions
-        .types
-        .get(&data_type.type_reference)
-        .map(String::as_str)
-        != Some(LOGICAL_TYPE_NAME)
-    {
+    if !extensions.is_logical_type(data_type.type_reference) {
         return Err(RequestError::undeclared(
             "user-defined types must reference the declared logical type",
         ));
@@ -275,4 +270,174 @@ fn next_name<'a>(names: &mut impl Iterator<Item = &'a String>) -> Result<String,
         return Err(RequestError::invalid("schema field names may not be empty"));
     }
     Ok(name.clone())
+}
+
+/// Encodes a connector-owned Analytics type for the Substrait boundary.
+pub(super) fn encode_type(
+    data_type: &AnalyticsType,
+    nullable: bool,
+    extensions: &PlanExtensions,
+) -> Type {
+    let nullability = if nullable {
+        r#type::Nullability::Nullable as i32
+    } else {
+        r#type::Nullability::Required as i32
+    };
+    let kind = match data_type {
+        AnalyticsType::Boolean => r#type::Kind::Bool(r#type::Boolean {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Byte => r#type::Kind::I8(r#type::I8 {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::SmallInt => r#type::Kind::I16(r#type::I16 {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Int => r#type::Kind::I32(r#type::I32 {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::BigInt => r#type::Kind::I64(r#type::I64 {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Float => r#type::Kind::Fp32(r#type::Fp32 {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Double => r#type::Kind::Fp64(r#type::Fp64 {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Decimal(decimal) => r#type::Kind::Decimal(r#type::Decimal {
+            precision: i32::from(decimal.precision()),
+            scale: i32::from(decimal.scale()),
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Text => r#type::Kind::String(r#type::String {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Blob => r#type::Kind::Binary(r#type::Binary {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Date => r#type::Kind::Date(r#type::Date {
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Time => r#type::Kind::PrecisionTime(r#type::PrecisionTime {
+            precision: 6,
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Timestamp => r#type::Kind::PrecisionTimestamp(r#type::PrecisionTimestamp {
+            precision: 6,
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::TimestampTz => {
+            r#type::Kind::PrecisionTimestampTz(r#type::PrecisionTimestampTz {
+                precision: 6,
+                nullability,
+                ..Default::default()
+            })
+        }
+        AnalyticsType::Duration => r#type::Kind::IntervalDay(r#type::IntervalDay {
+            precision: Some(6),
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Interval => r#type::Kind::IntervalCompound(r#type::IntervalCompound {
+            precision: 9,
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Array(array) => r#type::Kind::List(Box::new(r#type::List {
+            r#type: Some(Box::new(encode_type(
+                array.element_type(),
+                array.is_element_nullable(),
+                extensions,
+            ))),
+            nullability,
+            ..Default::default()
+        })),
+        AnalyticsType::Map(map) => r#type::Kind::Map(Box::new(r#type::Map {
+            key: Some(Box::new(encode_type(map.key_type(), false, extensions))),
+            value: Some(Box::new(encode_type(
+                map.value_type(),
+                map.is_value_nullable(),
+                extensions,
+            ))),
+            nullability,
+            ..Default::default()
+        })),
+        AnalyticsType::Struct(struct_type) => r#type::Kind::Struct(r#type::Struct {
+            types: struct_type
+                .fields()
+                .iter()
+                .map(|field| encode_type(field.data_type(), field.is_nullable(), extensions))
+                .collect(),
+            nullability,
+            ..Default::default()
+        }),
+        AnalyticsType::Uuid => {
+            logical_type("uuid", "{}", AnalyticsType::Text, nullability, extensions)
+        }
+        AnalyticsType::Json => {
+            logical_type("json", "{}", AnalyticsType::Text, nullability, extensions)
+        }
+        AnalyticsType::Year => logical_type(
+            "year",
+            "{}",
+            AnalyticsType::SmallInt,
+            nullability,
+            extensions,
+        ),
+        AnalyticsType::TimeWithTimeZone => {
+            logical_type("timetz", "{}", AnalyticsType::Text, nullability, extensions)
+        }
+        AnalyticsType::Enum(enum_type) => logical_type(
+            "enum",
+            &serde_json::json!({ "members": enum_type.members() }).to_string(),
+            AnalyticsType::Text,
+            nullability,
+            extensions,
+        ),
+        _ => unreachable!("the Analytics type is outside the accepted Substrait profile"),
+    };
+    Type { kind: Some(kind) }
+}
+
+fn logical_type(
+    name: &str,
+    parameters: &str,
+    carrier: AnalyticsType,
+    nullability: i32,
+    extensions: &PlanExtensions,
+) -> r#type::Kind {
+    r#type::Kind::UserDefined(r#type::UserDefined {
+        type_reference: extensions.logical_type_anchor(),
+        type_parameters: vec![
+            string_type_parameter(name),
+            string_type_parameter(parameters),
+            r#type::Parameter {
+                parameter: Some(r#type::parameter::Parameter::DataType(encode_type(
+                    &carrier, false, extensions,
+                ))),
+            },
+        ],
+        nullability,
+        ..Default::default()
+    })
+}
+
+fn string_type_parameter(value: &str) -> r#type::Parameter {
+    r#type::Parameter {
+        parameter: Some(r#type::parameter::Parameter::String(value.to_owned())),
+    }
 }

@@ -5,7 +5,11 @@ use ::substrait::proto::Plan;
 use super::{ConnectorPlanner, LogicalPlan, PlanningError, PushdownResult};
 
 /// One complete pushdown region supplied by a Query Engine adapter.
-#[derive(Clone, Debug)]
+///
+/// This type intentionally does not implement `Debug`: the unvalidated raw
+/// Substrait plan may contain literal values. Validation converts it to the
+/// redaction-aware [`LogicalPlan`] used for internal diagnostics.
+#[derive(Clone)]
 pub struct PushdownRequest {
     /// Complete Substrait region offered for one atomic pushdown decision.
     pub offered_plan: Plan,

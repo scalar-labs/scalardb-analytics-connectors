@@ -22,16 +22,11 @@ use crate::error::{classify_error, stream_fallback_error};
 ///
 /// The first read prepares an ADBC statement and reader before reading the first
 /// batch. Later reads use the same reader and statement.
-pub fn query(
-    connection: ManagedConnection,
-    sql: impl Into<String>,
-    parameters: Option<RecordBatch>,
-) -> AdbcQueryStream {
+pub fn query(connection: ManagedConnection, sql: impl Into<String>) -> AdbcQueryStream {
     AdbcQueryStream {
         state: Arc::new(Mutex::new(QueryState::Pending(QueryRequest {
             connection,
             sql: sql.into(),
-            parameters,
         }))),
     }
 }
@@ -78,13 +73,11 @@ enum QueryPreparation {
 struct QueryRequest {
     connection: ManagedConnection,
     sql: String,
-    parameters: Option<RecordBatch>,
 }
 
 /// Owns the statement and query arguments used to create the result reader.
 struct ReaderCreation {
     sql: String,
-    parameters: Option<RecordBatch>,
     statement: StatementResources,
 }
 
@@ -255,7 +248,6 @@ fn prepare_statement_and_read(
                 state,
                 ReaderCreation {
                     sql: request.sql,
-                    parameters: request.parameters,
                     statement: StatementResources {
                         cancel_handle,
                         statement,
@@ -285,15 +277,6 @@ fn prepare_reader_and_read(
     }
     if let Err(error) = check_reader_creation(state) {
         return Poll::Ready(Some(Err(classify_adbc_error(error))));
-    }
-
-    if let Some(parameters) = creation.parameters.take() {
-        if let Err(error) = creation.statement.statement.bind(parameters) {
-            return finish_operation(state, is_creating_reader, classify_adbc_error(error));
-        }
-        if let Err(error) = check_reader_creation(state) {
-            return Poll::Ready(Some(Err(classify_adbc_error(error))));
-        }
     }
 
     let reader = match creation.statement.statement.execute() {

@@ -15,7 +15,9 @@ pub use connector_planner::{
     RewriteRuleConnectorPlanner,
 };
 pub use logical_plan::{
-    FunctionDeclaration, LogicalPlan, LogicalRelation, ScalarFunction, TableBinding,
+    BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, LOGICAL_TYPE_URI,
+    LiteralValue, LogicalExpression, LogicalExpressionKind, LogicalPlan, LogicalRelation,
+    REMOTE_RESULT_TYPE_URL, TableBinding, UnaryOperator,
 };
 pub use planned_pushdown::{ExecutableQuery, PlannedPushdown};
 pub use pushdown_request::PushdownRequest;

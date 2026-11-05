@@ -3,8 +3,32 @@
 use analytics_types::{AnalyticsField, AnalyticsSchema, AnalyticsType};
 use substrait::proto::{Expression, NamedStruct};
 
-use super::{LogicalRelation, extensions::ExtensionRegistry, types::parse_type};
+use super::{
+    LogicalExpression, LogicalExpressionKind, LogicalRelation, profile::PlanExtensions,
+    types::parse_type,
+};
 use crate::RequestError;
+
+pub(super) trait ExpressionRef {
+    fn field_position(&self, plan_kind: &str) -> Result<usize, RequestError>;
+}
+
+impl ExpressionRef for Expression {
+    fn field_position(&self, plan_kind: &str) -> Result<usize, RequestError> {
+        project_field_position(self, plan_kind)
+    }
+}
+
+impl ExpressionRef for LogicalExpression {
+    fn field_position(&self, plan_kind: &str) -> Result<usize, RequestError> {
+        match &self.kind {
+            LogicalExpressionKind::Field { position } => Ok(*position),
+            _ => Err(RequestError::undeclared(format!(
+                "only direct field selections are accepted in a {plan_kind} ProjectRel"
+            ))),
+        }
+    }
+}
 
 /// Derives the schema produced by a relation tree before root output names are applied.
 ///
@@ -16,7 +40,15 @@ fn derive_relation_output_schema(
     match relation {
         LogicalRelation::Read { base_schema, .. } => Ok(base_schema.clone()),
         LogicalRelation::RemoteResult { output_schema, .. } => Ok(output_schema.clone()),
-        LogicalRelation::Filter { input, .. } => derive_relation_output_schema(input),
+        LogicalRelation::Filter { input, condition } => {
+            let input_schema = derive_relation_output_schema(input)?;
+            if condition.data_type != AnalyticsType::Boolean {
+                return Err(RequestError::invalid(
+                    "a filter condition must produce a Boolean value",
+                ));
+            }
+            Ok(input_schema)
+        }
         LogicalRelation::Project {
             input,
             expressions,
@@ -54,7 +86,7 @@ pub(super) fn derive_output_field_positions(
             let input_positions = derive_output_field_positions(input)?;
             let mut project_positions = input_positions.clone();
             for expression in expressions {
-                let position = direct_field_position(expression, "logical")?;
+                let position = expression.field_position("logical")?;
                 project_positions.push(input_positions[position]);
             }
             output_mapping
@@ -76,13 +108,13 @@ pub(super) fn derive_output_field_positions(
 /// mapping selects the final positions, matching Substrait project semantics.
 pub(super) fn derive_project_schema(
     input_schema: &AnalyticsSchema,
-    expressions: &[Expression],
+    expressions: &[impl ExpressionRef],
     output_mapping: &[i32],
     plan_kind: &str,
 ) -> Result<AnalyticsSchema, RequestError> {
     let mut project_fields = input_schema.fields().to_vec();
     for expression in expressions {
-        let position = direct_field_position(expression, plan_kind)?;
+        let position = expression.field_position(plan_kind)?;
         project_fields.push(
             input_schema
                 .fields()
@@ -112,7 +144,10 @@ pub(super) fn derive_project_schema(
 }
 
 /// Extracts the top-level input position from an accepted project expression.
-fn direct_field_position(expression: &Expression, plan_kind: &str) -> Result<usize, RequestError> {
+pub(super) fn project_field_position(
+    expression: &Expression,
+    plan_kind: &str,
+) -> Result<usize, RequestError> {
     let Some(substrait::proto::expression::RexType::Selection(selection)) =
         expression.rex_type.as_ref()
     else {
@@ -158,7 +193,7 @@ fn direct_field_position(expression: &Expression, plan_kind: &str) -> Result<usi
 /// recursively converted.
 pub(super) fn parse_schema(
     schema: &NamedStruct,
-    extensions: &ExtensionRegistry,
+    extensions: &PlanExtensions,
 ) -> Result<AnalyticsSchema, RequestError> {
     let struct_type = schema
         .r#struct

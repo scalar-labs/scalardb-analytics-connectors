@@ -7,7 +7,11 @@ use super::{LogicalPlan, LogicalRelation, PlanningError};
 use crate::{RequestError, TableBinding};
 
 /// Connector-owned, serializable instructions for executing one remote query.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// This type intentionally does not implement `Debug`: its opaque payload may
+/// contain SQL text, literal values, credentials, or other Connector-private
+/// execution data.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExecutableQuery {
     /// Connector-defined payload format identifier.
     pub format: String,
@@ -40,7 +44,12 @@ impl ExecutableQuery {
 ///
 /// The Query Engine adapter decides whether it can lower and atomically adopt
 /// this proposal.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// This type intentionally does not implement `Debug`: it contains raw
+/// Substrait boundary plans and an opaque [`ExecutableQuery`]. Inspect the
+/// validated `LogicalPlan` before boundary conversion when diagnostics need a
+/// redacted plan representation.
+#[derive(Clone, PartialEq)]
 pub struct PlannedPushdown {
     /// Complete Substrait plan implemented by the executable remote query.
     pub remote_plan: Plan,

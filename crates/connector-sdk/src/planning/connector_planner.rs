@@ -10,7 +10,11 @@ use crate::RequestError;
 /// The adapter adopts a planned result only after it can map the remote output
 /// and lower the complete local plan. Rejecting a proposal leaves native state
 /// unchanged and does not prevent the adapter from trying another request.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// This type intentionally does not implement `Debug` because a planned result
+/// contains a [`PlannedPushdown`] with raw boundary plans and opaque execution
+/// instructions.
+#[derive(Clone, PartialEq)]
 pub enum PushdownResult {
     /// A complete decomposition and executable remote query proposed to the adapter.
     Planned { pushdown: Box<PlannedPushdown> },
@@ -19,7 +23,10 @@ pub enum PushdownResult {
 }
 
 /// Result of compiling a rewritten remote plan.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// This type intentionally does not implement `Debug` because its executable
+/// variant contains opaque Connector-owned instructions.
+#[derive(Clone, PartialEq)]
 pub enum ExecutableQueryResult {
     /// The remote plan can be executed with these instructions.
     Executable(ExecutableQuery),

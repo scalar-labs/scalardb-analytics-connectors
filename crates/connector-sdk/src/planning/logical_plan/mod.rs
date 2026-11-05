@@ -1,52 +1,27 @@
 //! Logical plans and their Substrait planning boundary.
 
-mod expressions;
-mod extensions;
+mod expression;
+mod literal;
+mod profile;
 mod schema;
 mod types;
 mod validation;
 
 use analytics_types::AnalyticsSchema;
-use prost::Message;
-use prost_types::Any;
 use substrait::proto::{
-    DynamicParameterBinding, Expression, ExtensionLeafRel, FilterRel, NamedStruct, Plan, PlanRel,
-    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, Type, Version,
+    ExtensionLeafRel, FilterRel, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelCommon,
+    RelRoot, Version,
     extensions::{SimpleExtensionDeclaration, SimpleExtensionUri},
     plan_rel, read_rel, rel, rel_common,
 };
 
 use crate::RequestError;
 
-/// One declared scalar function with its URI anchor resolved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FunctionDeclaration<'a> {
-    pub uri: &'a str,
-    pub name: &'a str,
-}
-
-/// A scalar function in the initial SQL translation profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScalarFunction {
-    Equal,
-    NotEqual,
-    LessThan,
-    LessThanOrEqual,
-    GreaterThan,
-    GreaterThanOrEqual,
-    And,
-    Or,
-    Not,
-    IsNull,
-    IsNotNull,
-    Unknown,
-}
-
-/// Substrait extension type used to encode a remote result consumed by a local plan.
-pub(crate) const REMOTE_RESULT_TYPE_URL: &str =
-    "urn:scalardb:analytics:substrait:remote-result-schema:v1";
-pub(super) const LOGICAL_TYPE_NAME: &str = "logical";
-pub(super) const LOGICAL_URI: &str = "urn:scalardb:analytics:substrait:logical";
+pub use expression::{BinaryOperator, LogicalExpression, LogicalExpressionKind, UnaryOperator};
+pub use literal::LiteralValue;
+pub use profile::{
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, LOGICAL_TYPE_URI, REMOTE_RESULT_TYPE_URL,
+};
 
 /// An opaque table identifier carried by a Substrait `NamedTable`.
 ///
@@ -77,13 +52,14 @@ impl TableBinding {
 ///
 /// Its relation tree represents the SDK-supported semantic profile of
 /// Substrait without protobuf-only invalid states such as missing relation
-/// variants, inputs, or filter conditions. Expressions, schemas, and extension
-/// declarations remain Substrait payload types, with their accepted shape
-/// checked at the planning boundaries, so the internal model does not define a
-/// second expression or type language. Planning is a sequence of tree
-/// transformations, so a plan is immutable after construction. A transform
-/// chooses the replacement tree; constructing the replacement `LogicalPlan`
-/// owns deriving and retaining the plan-level schema invariants.
+/// variants, inputs, or filter conditions. [`LogicalExpression`] is the
+/// connector-owned, typed expression model used by planning and translation;
+/// Substrait expressions are regenerated when a plan crosses the boundary.
+/// Schemas and extension declarations retain their boundary payloads.
+/// Planning is a sequence of tree transformations,
+/// so a plan is immutable after construction. A transform chooses the replacement
+/// tree; constructing the replacement `LogicalPlan` owns deriving and retaining
+/// the plan-level schema invariants.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogicalPlan {
     /// Substrait producer/version metadata preserved across planning.
@@ -93,9 +69,7 @@ pub struct LogicalPlan {
     /// Function and type declarations referenced by plan payloads.
     extensions: Vec<SimpleExtensionDeclaration>,
     /// Validated indexes reused by planning and translation.
-    extension_registry: extensions::ExtensionRegistry,
-    /// Dynamic parameter values preserved for the remote or local plan.
-    parameter_bindings: Vec<DynamicParameterBinding>,
+    resolved_extensions: profile::PlanExtensions,
     /// Strictly typed relational operator tree rewritten by Connector rules.
     relation: LogicalRelation,
     /// Optional names applied to the complete plan's output schema.
@@ -124,12 +98,12 @@ pub enum LogicalRelation {
     /// Applies a predicate without changing its input schema.
     Filter {
         input: Box<LogicalRelation>,
-        condition: Expression,
+        condition: LogicalExpression,
     },
     /// Computes expressions and selects output positions using Substrait emit semantics.
     Project {
         input: Box<LogicalRelation>,
-        expressions: Vec<Expression>,
+        expressions: Vec<LogicalExpression>,
         output_mapping: Vec<i32>,
     },
     /// Consumes the remote plan's output as the leaf of a local plan.
@@ -144,11 +118,8 @@ pub enum LogicalRelation {
 /// Encodes an internal logical plan as the Substrait boundary representation.
 impl From<LogicalPlan> for Plan {
     fn from(plan: LogicalPlan) -> Self {
-        let expected_type_urls = if plan.relation.contains_remote_result() {
-            vec![REMOTE_RESULT_TYPE_URL.to_owned()]
-        } else {
-            Vec::new()
-        };
+        let expected_type_urls =
+            profile::remote_result_expected_type_urls(plan.relation.contains_remote_result());
 
         Self {
             version: plan.version,
@@ -156,13 +127,13 @@ impl From<LogicalPlan> for Plan {
             extensions: plan.extensions,
             relations: vec![PlanRel {
                 rel_type: Some(plan_rel::RelType::Root(RelRoot {
-                    input: Some(plan.relation.into()),
+                    input: Some(plan.relation.into_substrait(&plan.resolved_extensions)),
                     names: plan.output_names,
                 })),
             }],
             advanced_extensions: None,
             expected_type_urls,
-            parameter_bindings: plan.parameter_bindings,
+            parameter_bindings: Vec::new(),
         }
     }
 }
@@ -178,10 +149,6 @@ impl LogicalPlan {
 
     pub fn extensions(&self) -> &[SimpleExtensionDeclaration] {
         &self.extensions
-    }
-
-    pub fn parameter_bindings(&self) -> &[DynamicParameterBinding] {
-        &self.parameter_bindings
     }
 
     pub fn relation(&self) -> &LogicalRelation {
@@ -202,29 +169,6 @@ impl LogicalPlan {
             .expect("a constructed logical plan has valid field lineage")
     }
 
-    /// Resolves one declared scalar-function anchor to its URI and signature.
-    pub fn function_declaration(&self, anchor: u32) -> Option<FunctionDeclaration<'_>> {
-        let function = self.extension_registry.functions.get(&anchor)?;
-        Some(FunctionDeclaration {
-            uri: &function.uri,
-            name: &function.name,
-        })
-    }
-
-    /// Resolves and classifies one declared scalar function.
-    pub fn scalar_function(&self, anchor: u32) -> Option<ScalarFunction> {
-        self.function_declaration(anchor)
-            .map(expressions::classify_function)
-    }
-
-    /// Resolves a scalar Substrait type through this plan's validated declarations.
-    pub fn analytics_type(
-        &self,
-        data_type: &Type,
-    ) -> Result<(analytics_types::AnalyticsType, bool), RequestError> {
-        expressions::parse_scalar_type(data_type, &self.extension_registry)
-    }
-
     /// Returns a plan with replacement producer/version metadata.
     pub fn with_version(self, version: Option<Version>) -> Self {
         Self { version, ..self }
@@ -239,7 +183,7 @@ impl LogicalPlan {
     /// causes an assertion failure.
     pub fn with_root(self, relation: LogicalRelation, output_names: Vec<String>) -> Self {
         let output_schema = schema::derive_output_schema(&relation, &output_names)
-            .expect("a Connector-produced logical plan must have a derivable output schema");
+            .expect("a Connector-produced logical plan must remain valid and derivable");
         Self {
             relation,
             output_names,
@@ -275,10 +219,10 @@ impl LogicalRelation {
     }
 }
 
-/// Encodes one valid internal relation as its Substrait relation node.
-impl From<LogicalRelation> for Rel {
-    fn from(relation: LogicalRelation) -> Self {
-        let rel_type = match relation {
+impl LogicalRelation {
+    /// Encodes one valid internal relation as its Substrait relation node.
+    fn into_substrait(self, extensions: &profile::PlanExtensions) -> Rel {
+        let rel_type = match self {
             LogicalRelation::Read {
                 substrait_schema,
                 table_binding,
@@ -293,8 +237,8 @@ impl From<LogicalRelation> for Rel {
             })),
             LogicalRelation::Filter { input, condition } => {
                 rel::RelType::Filter(Box::new(FilterRel {
-                    input: Some(Box::new((*input).into())),
-                    condition: Some(Box::new(condition)),
+                    input: Some(Box::new((*input).into_substrait(extensions))),
+                    condition: Some(Box::new(condition.into_substrait(extensions))),
                     ..Default::default()
                 }))
             }
@@ -309,21 +253,21 @@ impl From<LogicalRelation> for Rel {
                     })),
                     ..Default::default()
                 }),
-                input: Some(Box::new((*input).into())),
-                expressions,
+                input: Some(Box::new((*input).into_substrait(extensions))),
+                expressions: expressions
+                    .into_iter()
+                    .map(|expression| expression.into_substrait(extensions))
+                    .collect(),
                 ..Default::default()
             })),
             LogicalRelation::RemoteResult {
                 substrait_schema, ..
             } => rel::RelType::ExtensionLeaf(ExtensionLeafRel {
-                detail: Some(Any {
-                    type_url: REMOTE_RESULT_TYPE_URL.to_owned(),
-                    value: substrait_schema.encode_to_vec(),
-                }),
+                detail: Some(profile::remote_result_detail(substrait_schema)),
                 ..Default::default()
             }),
         };
-        Self {
+        Rel {
             rel_type: Some(rel_type),
         }
     }

@@ -1021,6 +1021,12 @@ Engine. `PushdownRequest` carries the offered plan. `PlannedPushdown` carries
 the resulting remote and optional local plans beside the Connector-owned
 executable payload.
 
+The request is non-parameterized. The adapter resolves every native runtime
+parameter to a Substrait literal before offering the plan. Dynamic-parameter
+expressions and plan-level `parameter_bindings` are outside the accepted
+profile. The rationale is in
+[Resolve pushdown parameters before the connector](design/resolve-pushdown-parameters-before-the-connector.md).
+
 Offered and remote plans use the same explicit logical-operator shape. Their
 role differs by placement: the offered plan describes the requested region,
 while the remote plan describes the operators selected for Data Source
@@ -1118,12 +1124,16 @@ The shared contract does not define a second filter language or require AND,
 CNF, DNF, or another normal form. A filter remains a Substrait expression tree,
 including nested expressions and disjunctions. The initial shared validation
 profile resolves declared function anchors through the pinned comparison and
-Boolean extension URIs, checks direct base-schema field positions, typed scalar
-literals, signatures, arity, and Boolean predicate results, and preserves the
-validated Substrait expressions in `LogicalPlan`. A declared function outside
-the initial SQL mapping remains structurally valid but produces `Unsupported`
-during SQL translation. Connector rewrite rules use the metadata loaded for the
-planning call to decide whether each concrete expression has the required
+Boolean extension URIs, resolves direct base-schema field positions, typed
+scalar literals, function result types, and arity into `LogicalExpression`, and
+checks that a filter condition has a Boolean result. It does not independently
+type-check a Query Engine-produced expression tree. Substrait expressions are
+regenerated from the connector-owned model when a plan crosses the boundary.
+A declared function outside the initial mapping remains structurally valid but
+is marked as preventing pushdown, so the containing operator remains in the
+local plan. SQL translation also reports `Unsupported` if such an expression is
+presented in a remote plan. Connector rewrite rules use the metadata loaded for
+the planning call to decide whether each concrete expression has the required
 meaning for the Data Source and session before it remains in the remote plan.
 
 For example, `Text` comparisons can depend on Data Source type, collation, character
