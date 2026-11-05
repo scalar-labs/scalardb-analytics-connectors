@@ -1,14 +1,17 @@
 use std::{
     cell::RefCell,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll, Waker},
 };
 
 use connector_sdk::{
-    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, ExecutableQuery,
-    LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation, PlanningError, PushdownRequest, PushdownResult,
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, CancellationToken, ConnectorPlanner,
+    ErrorKind, ExecutableQuery, ExecutionContext, ExecutionProvenance, LOGICAL_TYPE_URI,
+    LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError, PushdownRequest, PushdownResult,
+    execute_planned,
 };
-use connector_sql::{RenderedQuery, TranslationError, execute, translate};
+use connector_sql::{RenderedQuery, SqlExecutor, TranslationError, translate};
 use futures_core::Stream;
 use substrait::proto::{
     Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
@@ -21,7 +24,7 @@ mod support;
 
 use support::{
     TestDialect,
-    adbc::{Event, Fixture, FixtureExecution, batch},
+    adbc::{Event, Fixture, FixtureExecution},
 };
 
 const COMPARISON_URI_ANCHOR: u32 = 1;
@@ -76,6 +79,40 @@ impl ConnectorPlanner for TranslationPlanner {
     }
 }
 
+struct ExecutableTranslationPlanner;
+
+impl ConnectorPlanner for ExecutableTranslationPlanner {
+    type Query = RenderedQuery;
+
+    fn plan(
+        &self,
+        logical_plan: &LogicalPlan,
+    ) -> Result<PushdownResult<RenderedQuery>, PlanningError> {
+        let rendered_query = translate(
+            logical_plan,
+            &["physical".to_owned(), "users".to_owned()],
+            &[
+                "id_col".to_owned(),
+                "name_col".to_owned(),
+                "score_col".to_owned(),
+            ],
+            TestDialect,
+        )
+        .expect("the execution fixture plan should translate");
+        let pushdown = PlannedPushdown::try_new(
+            logical_plan,
+            logical_plan.clone(),
+            None,
+            ExecutableQuery {
+                query: rendered_query,
+            },
+        )?;
+        Ok(PushdownResult::Planned {
+            pushdown: Box::new(pushdown),
+        })
+    }
+}
+
 #[test]
 fn translates_read() {
     let query = translate_success(read_plan());
@@ -88,19 +125,25 @@ fn translates_read() {
 
 #[test]
 fn translated_query_round_trips_through_adbc_execution() {
-    let rendered_query = translate_success(read_plan());
-    let sql = rendered_query.sql.clone();
-    let executable_query = ExecutableQuery {
-        query: rendered_query,
+    let PushdownResult::Planned { pushdown } = (PushdownRequest {
+        offered_plan: read_plan(),
+    })
+    .plan(&ExecutableTranslationPlanner)
+    .unwrap() else {
+        panic!("the translated query should be executable");
     };
-    let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
-    let mut stream = execute(connection, &executable_query);
+    let sql = pushdown.executable_query.query.sql.clone();
+    let batch =
+        arrow_array::RecordBatch::new_empty(Arc::new(pushdown.remote_output_schema.to_arrow()));
+    let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch.clone()]));
+    let executor = sql_executor(connection);
+    let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
     let mut context = Context::from_waker(Waker::noop());
 
     assert!(fixture.events().is_empty());
     assert_eq!(
         Stream::poll_next(Pin::new(&mut stream), &mut context),
-        Poll::Ready(Some(Ok(batch(&[1]))))
+        Poll::Ready(Some(Ok(batch)))
     );
     assert_eq!(
         fixture.events(),
@@ -114,13 +157,25 @@ fn translated_query_round_trips_through_adbc_execution() {
 
     drop(stream);
     let (_fixture, connection) = Fixture::install(FixtureExecution::Fail);
-    let mut stream = execute(connection, &executable_query);
+    let executor = sql_executor(connection);
+    let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
     let Poll::Ready(Some(Err(error))) = Stream::poll_next(Pin::new(&mut stream), &mut context)
     else {
         panic!("the translated query should preserve its ADBC execution error");
     };
     assert_eq!(error.kind(), ErrorKind::Internal);
     assert_eq!(error.data_source_message(), Some("fixture execute failure"));
+}
+
+fn sql_executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
+    SqlExecutor::new(
+        connection,
+        ExecutionProvenance::new("test-sql", "fixture", "1", None),
+    )
+}
+
+fn execution_context() -> ExecutionContext {
+    ExecutionContext::new(CancellationToken::default(), None)
 }
 
 #[test]

@@ -185,7 +185,8 @@ Connection settings passed by the caller cannot override fixed settings.
   Execution sends that generated query directly rather than retranslating the
   Substrait plan. The session's planner and executor share its concrete query
   type. For the shared SQL path, that type is `RenderedQuery`, whose SQL text
-  execution passes directly to ADBC. When work remains
+  `connector-sql::SqlExecutor` passes directly to ADBC through its
+  `ConnectorExecutor` implementation. When work remains
   local, the Connector returns a `local_plan` as part of its proposal. The
   Adapter adopts the proposal only if it can convert the complete local plan to
   native Query Engine work. The connector SDK does not apply a leftover

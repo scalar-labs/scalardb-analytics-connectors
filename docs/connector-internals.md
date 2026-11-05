@@ -302,7 +302,8 @@ SQL-family create_executable_query:
     ExecutableQuery<RenderedQuery> retains that typed result for execution
 
 SQL-family execution:
-    connector-sql passes the rendered statement to connector-adbc::query
+    connector-sql::SqlExecutor implements ConnectorExecutor<Query = RenderedQuery>
+    SqlExecutor passes the planned rendered statement to connector-adbc::query
     connector-adbc owns lazy statement creation, execution, streaming, cancellation,
         diagnostics, and resource release
 

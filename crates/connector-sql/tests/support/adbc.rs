@@ -13,8 +13,8 @@ use adbc_core::{
 };
 use adbc_driver_manager::{ManagedConnection, ManagedDriver};
 use adbc_ffi::FFI_AdbcDriverInitFunc;
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchReader};
-use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use arrow_array::{RecordBatch, RecordBatchReader};
+use arrow_schema::{ArrowError, Schema, SchemaRef};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -54,16 +54,6 @@ impl Fixture {
     pub(crate) fn events(&self) -> Vec<Event> {
         self.events.lock().unwrap().clone()
     }
-}
-
-pub(crate) fn batch(values: &[i64]) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-    let columns: Vec<ArrayRef> = vec![Arc::new(Int64Array::from(values.to_vec()))];
-    RecordBatch::try_new(schema, columns).unwrap()
 }
 
 #[derive(Clone)]

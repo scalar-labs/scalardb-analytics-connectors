@@ -120,6 +120,8 @@ handles.
 
 At execution, the Adapter passes the adopted `PlannedPushdown` to
 `ConnectorExecutor`. The executor sends its typed `ExecutableQuery<Q>` directly.
+SQL-family sessions use `connector-sql::SqlExecutor`, whose query type is
+`RenderedQuery` and whose execution delegates to the shared ADBC query path.
 For an adopted proposal, the Adapter then runs the local plan, if present, over
 the returned Arrow stream.
 

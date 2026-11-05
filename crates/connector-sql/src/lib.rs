@@ -9,8 +9,10 @@
 mod translation;
 
 use adbc_driver_manager::ManagedConnection;
-use connector_adbc::AdbcQueryStream;
-use connector_sdk::{ExecutableQuery, LiteralValue};
+use connector_sdk::{
+    ConnectorError, ConnectorExecutor, ExecutionContext, ExecutionOutput, ExecutionProvenance,
+    LiteralValue, PlannedPushdown, RecordBatchStream,
+};
 
 pub use translation::{TranslationError, translate};
 
@@ -141,13 +143,34 @@ impl std::fmt::Debug for RenderedQuery {
     }
 }
 
-/// Executes one SQL [`ExecutableQuery`] through the shared ADBC query path.
-///
-/// The SQL was rendered while creating the Connector-owned planning state, so
-/// execution only recovers that text and does not translate it again.
-pub fn execute(
+/// Executes SQL-family planned pushdowns through one ADBC connection.
+pub struct SqlExecutor {
     connection: ManagedConnection,
-    executable_query: &ExecutableQuery<RenderedQuery>,
-) -> AdbcQueryStream {
-    connector_adbc::query(connection, executable_query.query.sql.clone())
+    provenance: ExecutionProvenance,
+}
+
+impl SqlExecutor {
+    /// Binds the shared SQL execution path to a session connection and its identity.
+    pub fn new(connection: ManagedConnection, provenance: ExecutionProvenance) -> Self {
+        Self {
+            connection,
+            provenance,
+        }
+    }
+}
+
+impl ConnectorExecutor for SqlExecutor {
+    type Query = RenderedQuery;
+
+    fn execute(
+        &self,
+        pushdown: &PlannedPushdown<RenderedQuery>,
+        _context: &ExecutionContext,
+    ) -> Result<ExecutionOutput, ConnectorError> {
+        let stream: RecordBatchStream = Box::pin(connector_adbc::query(
+            self.connection.clone(),
+            pushdown.executable_query.query.sql.clone(),
+        ));
+        Ok(ExecutionOutput::new(stream, self.provenance.clone()))
+    }
 }
