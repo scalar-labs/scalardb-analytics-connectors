@@ -17,7 +17,10 @@ pub struct PushdownRequest {
 
 impl PushdownRequest {
     /// Validates this request and delegates planning to the Connector.
-    pub fn plan(self, planner: &impl ConnectorPlanner) -> Result<PushdownResult, PlanningError> {
+    pub fn plan<P>(self, planner: &P) -> Result<PushdownResult<P::Query>, PlanningError>
+    where
+        P: ConnectorPlanner,
+    {
         let offered_plan = LogicalPlan::validate(self.offered_plan)?;
         planner.plan(&offered_plan)
     }

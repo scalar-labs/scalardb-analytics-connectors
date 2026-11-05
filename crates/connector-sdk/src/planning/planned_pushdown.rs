@@ -4,40 +4,16 @@ use ::substrait::proto::Plan;
 use analytics_types::AnalyticsSchema;
 
 use super::{LogicalPlan, LogicalRelation, PlanningError};
-use crate::{RequestError, TableBinding};
+use crate::TableBinding;
 
-/// Connector-owned, serializable instructions for executing one remote query.
+/// Connector-owned instructions for executing one remote query.
 ///
-/// This type intentionally does not implement `Debug`: its opaque payload may
-/// contain SQL text, literal values, credentials, or other Connector-private
-/// execution data.
+/// This type intentionally does not implement `Debug`: the query may contain
+/// SQL text, literal values, or other Connector-private execution data.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ExecutableQuery {
-    /// Connector-defined payload format identifier.
-    pub format: String,
-    /// Connector-defined bytes dispatched during remote execution.
-    pub payload: Vec<u8>,
-}
-
-impl ExecutableQuery {
-    /// Creates executable instructions with a non-empty format and payload.
-    ///
-    /// The SDK treats both values as opaque Connector-owned data; it validates
-    /// only that execution can identify the format and has bytes to dispatch.
-    pub fn new(format: impl Into<String>, payload: Vec<u8>) -> Result<Self, RequestError> {
-        let format = format.into();
-        if format.is_empty() {
-            return Err(RequestError::invalid(
-                "an executable query format must be non-empty",
-            ));
-        }
-        if payload.is_empty() {
-            return Err(RequestError::invalid(
-                "an executable query payload must be non-empty",
-            ));
-        }
-        Ok(Self { format, payload })
-    }
+pub struct ExecutableQuery<Q> {
+    /// Connector-defined instructions dispatched during remote execution.
+    pub query: Q,
 }
 
 /// A proposed semantic decomposition into remote work followed by optional local work.
@@ -46,17 +22,17 @@ impl ExecutableQuery {
 /// this proposal.
 ///
 /// This type intentionally does not implement `Debug`: it contains raw
-/// Substrait boundary plans and an opaque [`ExecutableQuery`]. Inspect the
+/// Substrait boundary plans and a Connector-owned [`ExecutableQuery`]. Inspect the
 /// validated `LogicalPlan` before boundary conversion when diagnostics need a
 /// redacted plan representation.
 #[derive(Clone, PartialEq)]
-pub struct PlannedPushdown {
+pub struct PlannedPushdown<Q> {
     /// Complete Substrait plan implemented by the executable remote query.
     pub remote_plan: Plan,
     /// Remaining Substrait work for the Query Engine, when required.
     pub local_plan: Option<Plan>,
     /// Connector-owned instructions for executing `remote_plan`.
-    pub executable_query: ExecutableQuery,
+    pub executable_query: ExecutableQuery<Q>,
     /// Schema of the remote plan's terminal table read.
     pub remote_base_schema: AnalyticsSchema,
     /// Schema produced by remote execution and consumed by `local_plan`.
@@ -67,7 +43,7 @@ pub struct PlannedPushdown {
     pub output_schema: AnalyticsSchema,
 }
 
-impl PlannedPushdown {
+impl<Q> PlannedPushdown<Q> {
     /// Asserts the decomposition contract and constructs the boundary result.
     ///
     /// The internal remote and optional local plans are checked before they are
@@ -77,7 +53,7 @@ impl PlannedPushdown {
         offered_plan: &LogicalPlan,
         remote_plan: LogicalPlan,
         local_plan: Option<LogicalPlan>,
-        executable_query: ExecutableQuery,
+        executable_query: ExecutableQuery<Q>,
     ) -> Result<Self, PlanningError> {
         let remote_output_schema =
             Self::assert_decomposition_contract(offered_plan, &remote_plan, local_plan.as_ref());

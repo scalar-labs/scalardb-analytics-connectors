@@ -171,8 +171,8 @@ Connection settings passed by the caller cannot override fixed settings.
   defined by the connector contract and remains restricted from ordinary logs.
   `LogicalPlan` debug output redacts literal expressions. Raw pushdown requests,
   planned pushdowns, and executable queries intentionally do not implement
-  `Debug` because they contain literal-bearing boundary plans or opaque
-  executable payloads.
+  `Debug` because they contain literal-bearing boundary plans or
+  Connector-owned executable queries.
 - One read request becomes one query to the source. Splitting it into several
   queries would break the declaration that one request reads a single
   point-in-time state ([Consistency](connector-contract.md#consistency)).
@@ -183,10 +183,13 @@ Connection settings passed by the caller cannot override fixed settings.
   read no rows and are outside this rule.
 - Planning constructs the `ExecutableQuery` that implements the remote plan.
   Execution sends that generated query directly rather than retranslating the
-  Substrait plan. When work remains local, the Connector returns a `local_plan`
-  as part of its proposal. The Adapter adopts the proposal only if it can
-  convert the complete local plan to native Query Engine work. The connector
-  SDK does not apply a leftover expression after the source returns Arrow.
+  Substrait plan. The session's planner and executor share its concrete query
+  type. For the shared SQL path, that type is `RenderedQuery`, whose SQL text
+  execution passes directly to ADBC. When work remains
+  local, the Connector returns a `local_plan` as part of its proposal. The
+  Adapter adopts the proposal only if it can convert the complete local plan to
+  native Query Engine work. The connector SDK does not apply a leftover
+  expression after the source returns Arrow.
 - Limit, aggregation, sort, TopN, and join translation are not part of the
   initial implementation. Their planner rules stay `Unsupported` until their
   end-to-end semantics and execution paths exist.

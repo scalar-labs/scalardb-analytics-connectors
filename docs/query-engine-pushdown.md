@@ -113,14 +113,15 @@ Prefetching and caching are optional Connector implementation strategies. No
 
 ## Planning result and execution
 
-`PlannedPushdown` contains the remote and optional local plans plus the
-Connector-owned executable payload. It excludes credentials, connections, and
-process-local handles.
+`PlannedPushdown<Q>` contains the remote and optional local plans plus the
+Connector-owned executable query of type `Q`. The session's planner and executor
+share that type. It excludes credentials, connections, and process-local
+handles.
 
 At execution, the Adapter passes the adopted `PlannedPushdown` to
-`ConnectorExecutor`. The executor sends its `ExecutableQuery` directly. For an adopted
-proposal, the Adapter then runs the local plan, if present, over the returned
-Arrow stream.
+`ConnectorExecutor`. The executor sends its typed `ExecutableQuery<Q>` directly.
+For an adopted proposal, the Adapter then runs the local plan, if present, over
+the returned Arrow stream.
 
 The SDK does not re-prove semantic equivalence at execution time. Each
 Connector's finite rewrite rules and conformance tests own that guarantee.

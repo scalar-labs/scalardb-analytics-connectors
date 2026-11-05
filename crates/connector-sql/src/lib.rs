@@ -8,7 +8,9 @@
 
 mod translation;
 
-use connector_sdk::LiteralValue;
+use adbc_driver_manager::ManagedConnection;
+use connector_adbc::AdbcQueryStream;
+use connector_sdk::{ExecutableQuery, LiteralValue};
 
 pub use translation::{TranslationError, translate};
 
@@ -137,4 +139,15 @@ impl std::fmt::Debug for RenderedQuery {
             .field("sql_length", &self.sql.len())
             .finish()
     }
+}
+
+/// Executes one SQL [`ExecutableQuery`] through the shared ADBC query path.
+///
+/// The SQL was rendered while creating the Connector-owned planning state, so
+/// execution only recovers that text and does not translate it again.
+pub fn execute(
+    connection: ManagedConnection,
+    executable_query: &ExecutableQuery<RenderedQuery>,
+) -> AdbcQueryStream {
+    connector_adbc::query(connection, executable_query.query.sql.clone())
 }

@@ -15,9 +15,9 @@ use crate::RequestError;
 /// contains a [`PlannedPushdown`] with raw boundary plans and opaque execution
 /// instructions.
 #[derive(Clone, PartialEq)]
-pub enum PushdownResult {
+pub enum PushdownResult<Q> {
     /// A complete decomposition and executable remote query proposed to the adapter.
-    Planned { pushdown: Box<PlannedPushdown> },
+    Planned { pushdown: Box<PlannedPushdown<Q>> },
     /// The Connector cannot preserve the offered semantics for this request.
     Unsupported { reason: String },
 }
@@ -27,21 +27,24 @@ pub enum PushdownResult {
 /// This type intentionally does not implement `Debug` because its executable
 /// variant contains opaque Connector-owned instructions.
 #[derive(Clone, PartialEq)]
-pub enum ExecutableQueryResult {
+pub enum ExecutableQueryResult<Q> {
     /// The remote plan can be executed with these instructions.
-    Executable(ExecutableQuery),
+    Executable(ExecutableQuery<Q>),
     /// The Connector cannot preserve the remote plan's semantics.
     Unsupported { reason: String },
 }
 
-impl From<ExecutableQuery> for ExecutableQueryResult {
-    fn from(query: ExecutableQuery) -> Self {
+impl<Q> From<ExecutableQuery<Q>> for ExecutableQueryResult<Q> {
+    fn from(query: ExecutableQuery<Q>) -> Self {
         Self::Executable(query)
     }
 }
 
 /// Connector-owned planning for one complete pushdown request.
 pub trait ConnectorPlanner {
+    /// Connector-owned instructions shared with this Connector's executor.
+    type Query;
+
     /// Plans one complete request and constructs the directly executable
     /// remote query.
     ///
@@ -49,7 +52,10 @@ pub trait ConnectorPlanner {
     /// or capability I/O and may cache facts for subsequent requests. Each
     /// Connector is responsible for proving and testing the equivalence of the
     /// offered plan and its remote/local decomposition.
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError>;
+    fn plan(
+        &self,
+        offered_plan: &LogicalPlan,
+    ) -> Result<PushdownResult<Self::Query>, PlanningError>;
 }
 
 /// Connector planning implemented by an ordered set of semantic rewrite rules.
@@ -61,6 +67,8 @@ pub trait ConnectorPlanner {
 pub trait RewriteRuleConnectorPlanner {
     /// Connector-private facts shared by rewrite rules and query generation.
     type Metadata;
+    /// Connector-owned instructions shared with this Connector's executor.
+    type Query;
 
     /// Loads the Data Source facts required to plan this validated request.
     ///
@@ -75,14 +83,19 @@ pub trait RewriteRuleConnectorPlanner {
         &self,
         remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
-    ) -> Result<ExecutableQueryResult, PlanningError>;
+    ) -> Result<ExecutableQueryResult<Self::Query>, PlanningError>;
 }
 
 impl<T> ConnectorPlanner for T
 where
     T: RewriteRuleConnectorPlanner,
 {
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = T::Query;
+
+    fn plan(
+        &self,
+        offered_plan: &LogicalPlan,
+    ) -> Result<PushdownResult<Self::Query>, PlanningError> {
         let metadata = self.load_metadata(offered_plan)?;
         let query_plan = self.rewrite_rules().rewrite(
             QueryPlan::initial(offered_plan),

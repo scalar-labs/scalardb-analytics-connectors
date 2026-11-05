@@ -16,7 +16,9 @@ pub(crate) enum TestDecision {
 pub(crate) struct TestPlanner(pub(crate) TestDecision);
 
 impl ConnectorPlanner for TestPlanner {
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = String;
+
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult<String>, PlanningError> {
         connector_result(self.0, offered_plan)
     }
 }
@@ -24,7 +26,7 @@ impl ConnectorPlanner for TestPlanner {
 fn connector_result(
     decision: TestDecision,
     offered_plan: &LogicalPlan,
-) -> Result<PushdownResult, PlanningError> {
+) -> Result<PushdownResult<String>, PlanningError> {
     if matches!(decision, TestDecision::Unsupported) {
         return Ok(PushdownResult::Unsupported {
             reason: "the complete region is unsupported".to_owned(),
@@ -34,10 +36,9 @@ fn connector_result(
         offered_plan,
         pushed_remote_logical(offered_plan),
         None,
-        ExecutableQuery::new(
-            "test-query-v1",
-            b"SELECT user_id, external_id FROM users".to_vec(),
-        )?,
+        ExecutableQuery {
+            query: "SELECT user_id, external_id FROM users".to_owned(),
+        },
     )?;
     Ok(PushdownResult::Planned {
         pushdown: Box::new(pushdown),
@@ -45,7 +46,7 @@ fn connector_result(
 }
 
 #[allow(dead_code)]
-pub(crate) fn complete_pushdown(plan: Plan) -> PlannedPushdown {
+pub(crate) fn complete_pushdown(plan: Plan) -> PlannedPushdown<String> {
     let PushdownResult::Planned { pushdown } = (PushdownRequest { offered_plan: plan })
         .plan(&TestPlanner(TestDecision::Complete))
         .unwrap()

@@ -30,10 +30,9 @@ fn connector_returns_the_planned_pushdown_directly() {
     };
     assert_eq!(pushdown.remote_plan, pushed_remote(&plan));
     assert!(pushdown.local_plan.is_none());
-    assert_eq!(pushdown.executable_query.format, "test-query-v1");
     assert_eq!(
-        pushdown.executable_query.payload,
-        b"SELECT user_id, external_id FROM users"
+        pushdown.executable_query.query,
+        "SELECT user_id, external_id FROM users"
     );
     assert_eq!(
         pushdown.table_bindings[0].components(),
@@ -58,7 +57,9 @@ fn logical_expression_debug_output_redacts_literals() {
 struct DebugExpressionPlanner;
 
 impl ConnectorPlanner for DebugExpressionPlanner {
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = String;
+
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult<String>, PlanningError> {
         let LogicalRelation::Project { input, .. } = offered_plan.relation() else {
             unreachable!();
         };
@@ -91,6 +92,7 @@ struct UnsupportedQueryPlanner;
 
 impl RewriteRuleConnectorPlanner for UnsupportedQueryPlanner {
     type Metadata = ();
+    type Query = String;
 
     fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
         Ok(())
@@ -105,7 +107,7 @@ impl RewriteRuleConnectorPlanner for UnsupportedQueryPlanner {
         &self,
         _remote_plan: &LogicalPlan,
         _metadata: &Self::Metadata,
-    ) -> Result<ExecutableQueryResult, PlanningError> {
+    ) -> Result<ExecutableQueryResult<String>, PlanningError> {
         Ok(ExecutableQueryResult::Unsupported {
             reason: "remote semantics are not exact".to_owned(),
         })
@@ -301,7 +303,9 @@ fn transformed_plan_revalidates_filter_expressions() {
 struct InvalidTransformedFilterPlanner;
 
 impl ConnectorPlanner for InvalidTransformedFilterPlanner {
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = String;
+
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult<String>, PlanningError> {
         let LogicalRelation::Project {
             input,
             expressions,
@@ -343,7 +347,9 @@ impl ConnectorPlanner for InvalidTransformedFilterPlanner {
 struct MismatchedRemoteOutputPlanner;
 
 impl ConnectorPlanner for MismatchedRemoteOutputPlanner {
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = String;
+
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult<String>, PlanningError> {
         let mut remote = pushed_remote_logical(offered_plan);
         let LogicalRelation::Project { input, .. } = remote.relation().clone() else {
             unreachable!();
@@ -407,6 +413,7 @@ struct InitialPlanPlanner;
 
 impl RewriteRuleConnectorPlanner for InitialPlanPlanner {
     type Metadata = PlanningMetadata;
+    type Query = String;
 
     fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
         Ok(PlanningMetadata {
@@ -424,8 +431,11 @@ impl RewriteRuleConnectorPlanner for InitialPlanPlanner {
         &self,
         _remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
-    ) -> Result<ExecutableQueryResult, PlanningError> {
-        Ok(ExecutableQuery::new("test-query-v1", metadata.query.as_bytes().to_vec())?.into())
+    ) -> Result<ExecutableQueryResult<String>, PlanningError> {
+        Ok(ExecutableQuery {
+            query: metadata.query.to_owned(),
+        }
+        .into())
     }
 }
 
@@ -451,6 +461,7 @@ struct ComposedRulePlanner;
 
 impl RewriteRuleConnectorPlanner for ComposedRulePlanner {
     type Metadata = PlanningMetadata;
+    type Query = String;
 
     fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
         Ok(PlanningMetadata {
@@ -475,8 +486,11 @@ impl RewriteRuleConnectorPlanner for ComposedRulePlanner {
         &self,
         _remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
-    ) -> Result<ExecutableQueryResult, PlanningError> {
-        Ok(ExecutableQuery::new("test-query-v1", metadata.query.as_bytes().to_vec())?.into())
+    ) -> Result<ExecutableQueryResult<String>, PlanningError> {
+        Ok(ExecutableQuery {
+            query: metadata.query.to_owned(),
+        }
+        .into())
     }
 }
 
@@ -555,6 +569,7 @@ struct FailingRulePlanner;
 
 impl RewriteRuleConnectorPlanner for FailingRulePlanner {
     type Metadata = PlanningMetadata;
+    type Query = String;
 
     fn load_metadata(&self, _offered_plan: &LogicalPlan) -> Result<Self::Metadata, PlanningError> {
         Ok(PlanningMetadata {
@@ -576,7 +591,7 @@ impl RewriteRuleConnectorPlanner for FailingRulePlanner {
         &self,
         _remote_plan: &LogicalPlan,
         _metadata: &Self::Metadata,
-    ) -> Result<ExecutableQueryResult, PlanningError> {
+    ) -> Result<ExecutableQueryResult<String>, PlanningError> {
         unreachable!("the failing rule must stop the common planner flow")
     }
 }
@@ -609,7 +624,9 @@ fn local_plan_cannot_read_the_named_table_again() {
 struct LocalReadPlanner;
 
 impl ConnectorPlanner for LocalReadPlanner {
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = String;
+
+    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult<String>, PlanningError> {
         let local = offered_plan.clone();
         complete_result(
             offered_plan,
@@ -650,12 +667,14 @@ fn complete_result(
     remote: LogicalPlan,
     local: Option<LogicalPlan>,
     query: &str,
-) -> Result<PushdownResult, PlanningError> {
+) -> Result<PushdownResult<String>, PlanningError> {
     let pushdown = PlannedPushdown::try_new(
         offered_plan,
         remote,
         local,
-        ExecutableQuery::new("test-query-v1", query.as_bytes().to_vec())?,
+        ExecutableQuery {
+            query: query.to_owned(),
+        },
     )?;
     Ok(PushdownResult::Planned {
         pushdown: Box::new(pushdown),

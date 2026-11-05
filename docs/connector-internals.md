@@ -204,9 +204,8 @@ immutable through its public API. A rule chooses the next relation tree; the
 plan-level derived state and stores the corresponding output schema.
 
 ~~~text
-ExecutableQuery {
-    Connector-defined format
-    opaque serializable payload
+ExecutableQuery<ConnectorQuery> {
+    query: ConnectorQuery
 }
 
 PlannedPushdown {
@@ -292,14 +291,20 @@ ConnectorPlanner:
 RewriteRuleConnectorPlanner:
     load_metadata(offered_plan) -> Connector-private metadata
     rewrite_rules() -> RewriteRuleSet<Connector-private metadata>
-    create_executable_query(remote_plan, metadata) -> ExecutableQuery | Unsupported
+    create_executable_query(remote_plan, metadata) -> ExecutableQuery<ConnectorQuery> | Unsupported
 
 SQL-family create_executable_query:
     connector-sql translates remote_plan using physical names from metadata
         common visitor owns Read/Project/Filter and fixed SQL syntax
         LogicalExpression exposes resolved functions, fields, and validated LiteralValue nodes
         SqlDialect renders identifier and LiteralValue fragments
-        Fragment composes them with fixed syntax into one non-parameterized SQL statement
+        Fragment composes them into one RenderedQuery
+    ExecutableQuery<RenderedQuery> retains that typed result for execution
+
+SQL-family execution:
+    connector-sql passes the rendered statement to connector-adbc::query
+    connector-adbc owns lazy statement creation, execution, streaming, cancellation,
+        diagnostics, and resource release
 
 Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner:
     metadata = load_metadata(offered_plan)
@@ -379,7 +384,10 @@ and literal spelling and escaping. The result is one complete
 non-parameterized SQL statement. Connector rewrite rules use the concrete Data Source type,
 nullability, collation, version, and session facts in the shared metadata before
 leaving an expression in the remote plan. SQL translation renders that approved
-plan without repeating the semantic decision.
+plan without repeating the semantic decision. The resulting
+`ExecutableQuery<RenderedQuery>` retains that SQL-specific type through
+adoption. Execution sends its SQL text directly; it does not receive or
+reconstruct a `LogicalPlan`, planning metadata, dialect, or semantic policy.
 
 Data Source access interfaces sit below these public contracts. They read catalogs
 and execute Data Source queries returning Arrow streams; they do not expose native

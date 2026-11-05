@@ -1,10 +1,15 @@
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
 
 use connector_sdk::{
-    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, LOGICAL_TYPE_URI,
-    LogicalPlan, LogicalRelation, PlanningError, PushdownRequest, PushdownResult,
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, ExecutableQuery,
+    LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation, PlanningError, PushdownRequest, PushdownResult,
 };
-use connector_sql::{TranslationError, translate};
+use connector_sql::{RenderedQuery, TranslationError, execute, translate};
+use futures_core::Stream;
 use substrait::proto::{
     Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
     RelCommon, RelRoot, Type, Version, expression,
@@ -14,7 +19,10 @@ use substrait::proto::{
 
 mod support;
 
-use support::TestDialect;
+use support::{
+    TestDialect,
+    adbc::{Event, Fixture, FixtureExecution, batch},
+};
 
 const COMPARISON_URI_ANCHOR: u32 = 1;
 const BOOLEAN_URI_ANCHOR: u32 = 2;
@@ -35,7 +43,7 @@ const IS_NULL: u32 = 11;
 struct TranslationPlanner {
     relation: Vec<String>,
     columns: Vec<String>,
-    result: RefCell<Option<Result<connector_sql::RenderedQuery, TranslationError>>>,
+    result: RefCell<Option<Result<RenderedQuery, TranslationError>>>,
 }
 
 impl TranslationPlanner {
@@ -53,7 +61,9 @@ impl TranslationPlanner {
 }
 
 impl ConnectorPlanner for TranslationPlanner {
-    fn plan(&self, plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = RenderedQuery;
+
+    fn plan(&self, plan: &LogicalPlan) -> Result<PushdownResult<RenderedQuery>, PlanningError> {
         self.result.replace(Some(translate(
             plan,
             &self.relation,
@@ -74,6 +84,43 @@ fn translates_read() {
         query.sql,
         "SELECT \"id_col\" AS \"id\", \"name_col\" AS \"name\", \"score_col\" AS \"score\" FROM \"physical\".\"users\""
     );
+}
+
+#[test]
+fn translated_query_round_trips_through_adbc_execution() {
+    let rendered_query = translate_success(read_plan());
+    let sql = rendered_query.sql.clone();
+    let executable_query = ExecutableQuery {
+        query: rendered_query,
+    };
+    let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
+    let mut stream = execute(connection, &executable_query);
+    let mut context = Context::from_waker(Waker::noop());
+
+    assert!(fixture.events().is_empty());
+    assert_eq!(
+        Stream::poll_next(Pin::new(&mut stream), &mut context),
+        Poll::Ready(Some(Ok(batch(&[1]))))
+    );
+    assert_eq!(
+        fixture.events(),
+        vec![
+            Event::NewStatement,
+            Event::SetSql(sql),
+            Event::Execute,
+            Event::Pull,
+        ]
+    );
+
+    drop(stream);
+    let (_fixture, connection) = Fixture::install(FixtureExecution::Fail);
+    let mut stream = execute(connection, &executable_query);
+    let Poll::Ready(Some(Err(error))) = Stream::poll_next(Pin::new(&mut stream), &mut context)
+    else {
+        panic!("the translated query should preserve its ADBC execution error");
+    };
+    assert_eq!(error.kind(), ErrorKind::Internal);
+    assert_eq!(error.data_source_message(), Some("fixture execute failure"));
 }
 
 #[test]
@@ -194,7 +241,9 @@ fn exposes_an_unmapped_function_to_pushdown_planning() {
 struct UnsupportedFunctionPlanner;
 
 impl ConnectorPlanner for UnsupportedFunctionPlanner {
-    fn plan(&self, plan: &LogicalPlan) -> Result<PushdownResult, PlanningError> {
+    type Query = RenderedQuery;
+
+    fn plan(&self, plan: &LogicalPlan) -> Result<PushdownResult<RenderedQuery>, PlanningError> {
         let LogicalRelation::Project { input, .. } = plan.relation() else {
             unreachable!();
         };
@@ -634,7 +683,7 @@ fn rejects_scalar_literals_that_do_not_fit_their_declared_type() {
     );
 }
 
-fn translate_success(plan: Plan) -> connector_sql::RenderedQuery {
+fn translate_success(plan: Plan) -> RenderedQuery {
     let planner = TranslationPlanner::new();
     PushdownRequest { offered_plan: plan }
         .plan(&planner)
@@ -701,10 +750,7 @@ fn remove_filter(plan: &mut Plan) {
     project.input = filter.input;
 }
 
-fn translate_literal_plan(
-    data_type: Type,
-    literal: expression::Literal,
-) -> connector_sql::RenderedQuery {
+fn translate_literal_plan(data_type: Type, literal: expression::Literal) -> RenderedQuery {
     let planner = TranslationPlanner::new();
     let mut plan = requested_plan("equal:any1_any1", column(0));
     read_base_schema_mut(&mut plan)

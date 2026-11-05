@@ -120,23 +120,29 @@ impl ExecutionOutput {
 
 /// Executes plans that have already passed connector planning.
 pub trait ConnectorExecutor: Send + Sync {
+    /// Connector-owned instructions shared with this Connector's planner.
+    type Query;
+
     /// Starts the already planned remote query and returns its unchecked stream.
     ///
     /// The SDK wraps the returned stream to enforce lifecycle and schema
     /// checks before batches are exposed to the caller.
     fn execute(
         &self,
-        pushdown: &PlannedPushdown,
+        pushdown: &PlannedPushdown<Self::Query>,
         context: &ExecutionContext,
     ) -> Result<ExecutionOutput, ConnectorError>;
 }
 
 /// Starts execution and installs the shared lifecycle and schema boundary.
-pub fn execute_planned(
-    executor: &impl ConnectorExecutor,
-    pushdown: &PlannedPushdown,
+pub fn execute_planned<E>(
+    executor: &E,
+    pushdown: &PlannedPushdown<E::Query>,
     context: ExecutionContext,
-) -> Result<ExecutionStream, ConnectorError> {
+) -> Result<ExecutionStream, ConnectorError>
+where
+    E: ConnectorExecutor,
+{
     context.check_active()?;
     let output = executor.execute(pushdown, &context)?;
     Ok(ExecutionStream {

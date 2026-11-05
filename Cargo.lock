@@ -263,8 +263,15 @@ dependencies = [
 name = "connector-sql"
 version = "0.1.0"
 dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "adbc_ffi",
  "analytics-types",
+ "arrow-array",
+ "arrow-schema",
+ "connector-adbc",
  "connector-sdk",
+ "futures-core",
  "substrait",
  "thiserror",
 ]

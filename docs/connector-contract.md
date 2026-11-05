@@ -818,10 +818,12 @@ The Connector then resolves opaque
 Data Source facts required by that complete region. The SDK applies the
 Connector-supplied semantic rewrite rules. The private metadata exists only
 during planning and does not cross the connector API. The result is a
-remote Substrait plan, an optional local Substrait plan, and an opaque
-`ExecutableQuery` for the remote plan. A successful request becomes a
-`PlannedPushdown`. It contains the remote output schema, opaque bindings, and
-executable payload. The local plan, when present, consumes that remote output through
+remote Substrait plan, an optional local Substrait plan, and a Connector-owned
+`ExecutableQuery<Q>` for the remote plan. The session's planner and executor
+share the concrete query type `Q`; the SDK does not serialize it into an opaque
+byte payload. A successful request becomes a `PlannedPushdown`. It contains the
+remote output schema, opaque bindings, and executable query. The local plan,
+when present, consumes that remote output through
 the reserved `ExtensionLeafRel(RemoteResult)` and must not independently read a
 named table.
 Credentials, secret values, open connections, and process-local pointers are
@@ -840,11 +842,12 @@ complete model is in [Boundary checks](pushdown-planning.md#boundary-checks).
 
 Remote execution accepts the adopted `PlannedPushdown`. Its Arrow stream must have
 exactly the remote plan's output column names, order, Analytics types, and
-nullability. Before adopting the result, the Adapter must be able to map that
-output and lower the complete local plan when present. If it cannot, it discards
-that proposal without changing native state. After adoption, the Query Engine
-executes the local plan when present. Row order is unspecified unless a future
-accepted rule explicitly guarantees ordering.
+nullability. It executes the retained opaque query directly and does not
+translate the remote plan again. Before adopting the result, the Adapter must be
+able to map that output and lower the complete local plan when present. If it
+cannot, it discards that proposal without changing native state. After adoption,
+the Query Engine executes the local plan when present. Row order is unspecified
+unless a future accepted rule explicitly guarantees ordering.
 
 ### Relation to table metadata and unsupported columns
 
@@ -1019,7 +1022,7 @@ A requested plan is passed as a decoded Substrait `Plan`. Substrait is a publish
 specification for expressing relational plans independently of any Query
 Engine. `PushdownRequest` carries the offered plan. `PlannedPushdown` carries
 the resulting remote and optional local plans beside the Connector-owned
-executable payload.
+executable query.
 
 The request is non-parameterized. The adapter resolves every native runtime
 parameter to a Substrait literal before offering the plan. Dynamic-parameter

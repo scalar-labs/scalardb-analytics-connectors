@@ -192,12 +192,14 @@ pub trait DataSource: Send + Sync {
 
 /// Session-scoped catalog, planning, and execution capabilities.
 pub trait DataSourceSession: Send + Sync {
+    /// Connector-owned instructions shared by this session's planner and executor.
+    type Query;
     /// Catalog implementation bound to this session.
     type Catalog: CatalogReader;
     /// Pushdown planner bound to this session.
-    type Planner: ConnectorPlanner;
+    type Planner: ConnectorPlanner<Query = Self::Query>;
     /// Remote-query executor bound to this session.
-    type Executor: ConnectorExecutor;
+    type Executor: ConnectorExecutor<Query = Self::Query>;
 
     /// Returns the session-scoped catalog reader.
     fn catalog(&self) -> &Self::Catalog;

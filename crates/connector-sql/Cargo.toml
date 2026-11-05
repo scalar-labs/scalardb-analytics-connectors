@@ -8,10 +8,19 @@ repository.workspace = true
 description = "Shared processing for SQL-family connectors"
 
 [dependencies]
+adbc_driver_manager.workspace = true
 analytics-types.workspace = true
+connector-adbc.workspace = true
 connector-sdk.workspace = true
 substrait.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+adbc_core.workspace = true
+adbc_ffi.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+futures-core.workspace = true
 
 [lib]
 path = "src/lib.rs"

@@ -52,7 +52,7 @@ expressions and plan-level bindings. `LogicalPlan` has no parameter-binding
 state. SQL dialects own typed-literal spelling and escaping, and ADBC execution
 receives SQL without a parameter batch.
 
-Because literal values appear in generated SQL, executable payloads and
+Because literal values appear in generated SQL, executable queries and
 literal-bearing boundary plans are treated as sensitive and remain absent from
 ordinary logs and connector-composed errors. Their public boundary types do not
 implement `Debug`; the internal `LogicalPlan` debug representation redacts

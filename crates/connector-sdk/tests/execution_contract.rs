@@ -76,13 +76,14 @@ struct BatchExecutor {
 }
 
 impl ConnectorExecutor for BatchExecutor {
+    type Query = String;
+
     fn execute(
         &self,
-        pushdown: &PlannedPushdown,
+        pushdown: &PlannedPushdown<String>,
         _context: &ExecutionContext,
     ) -> Result<ExecutionOutput, ConnectorError> {
-        assert_eq!(pushdown.executable_query.format, "test-query-v1");
-        assert!(!pushdown.executable_query.payload.is_empty());
+        assert!(!pushdown.executable_query.query.is_empty());
         let stream: RecordBatchStream = Box::pin(OneBatchStream(Some(Ok(self.batch.clone()))));
         Ok(ExecutionOutput::new(
             stream,

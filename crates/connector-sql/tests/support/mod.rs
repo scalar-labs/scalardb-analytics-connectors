@@ -3,6 +3,8 @@ use std::fmt::Write;
 use connector_sdk::LiteralValue;
 use connector_sql::SqlDialect;
 
+pub(crate) mod adbc;
+
 /// A diagnostic dialect that makes values received from `LogicalPlan` visible
 /// without claiming the spelling rules of any supported Data Source.
 pub(crate) struct TestDialect;

@@ -38,7 +38,7 @@ offered plan. For example, partial `AVG(x)` pushdown may produce remote
 | Remote plan | The complete Substrait plan whose work is assigned to the Data Source. |
 | Local plan | The optional complete Substrait plan over `RemoteResult` that consumes the remote output and finishes the query in the Query Engine. It contains no independent Data Source read. |
 | Remote query generation | Translation of the remote plan into a Data Source-executable query. |
-| Executable query | Connector-owned representation of the generated remote query. A SQL Connector stores one complete non-parameterized SQL statement; another Connector may use another Data Source-specific payload. It contains no credentials or live resources. |
+| Executable query | Connector-owned representation of the generated remote query. Its type is shared by the session's planner and executor. A SQL Connector uses one complete non-parameterized SQL statement; another Connector may use another Data Source-specific type. It contains no credentials or live resources. |
 | Planned pushdown | The result of pushdown planning: the remote plan, optional local plan, and generated executable query. It remains a proposal until the Query Engine adapter adopts it. |
 | Pushdown execution | Execution of an adopted planned pushdown, including query shipping, Data Source execution, and optional local-plan execution. |
 | Query shipping | The runtime action of sending the generated remote query to the Data Source for execution. |
@@ -104,7 +104,7 @@ QueryPlan {
 PlannedPushdown {
     remote_plan: Substrait Plan
     local_plan: optional Substrait Plan
-    executable_query: ExecutableQuery
+    executable_query: ExecutableQuery<ConnectorQuery>
 }
 ~~~
 
@@ -130,10 +130,12 @@ schema. When a local plan exists, its `RemoteResult` extension leaf declares
 and consumes that schema. When no local plan exists, remote output is the final
 result.
 
-`ExecutableQuery` is Connector-owned. A SQL Connector encodes one complete
+`ExecutableQuery<Q>` is Connector-owned. `Q` remains a concrete type shared by
+the session's planner and executor; the SDK does not erase it into a byte
+payload. A SQL Connector uses `RenderedQuery`, which contains one complete
 non-parameterized SQL statement whose typed literals were already rendered by
-its dialect; a non-SQL Connector can use another format. It contains no
-credentials, live connections, or process-local pointers.
+its dialect. It contains no credentials, live connections, or process-local
+pointers.
 
 ## Planning flow
 
@@ -154,6 +156,12 @@ native region
 local plan is not a Connector planning error and does not invalidate other
 requests. An Adapter may discard that result, retain the original native plan,
 or use an adoptable result from another complete request.
+
+After adoption, a SQL Connector passes the rendered statement to the shared
+ADBC query path. Execution does not receive the logical plan, planning metadata,
+dialect, or semantic policy and therefore cannot repeat SQL translation. The
+ADBC path remains responsible for lazy first pull, batches, cancellation,
+diagnostics, and resource release.
 
 Catalog and capability I/O is allowed during Connector planning. The required
 facts are only known after the offered plan is available. Prefetching and caches
@@ -280,9 +288,10 @@ prove that a rewrite is semantically equivalent to the offered plan.
 decoding, and serialized-size limits belong to a concrete transport or
 persistence boundary rather than the planning API.
 
-`ExecutableQuery` is generated and owned by the trusted Connector. Its payload
-is not subject to a shared SDK size limit. A persistence or Adapter boundary
-with its own size limit validates that limit locally.
+`ExecutableQuery<Q>` is generated and owned by the trusted Connector. The SDK
+does not serialize or impose a shared size limit on `Q`. A persistence or
+Adapter boundary that needs serialization or a size limit defines and validates
+that representation locally.
 
 Boundary checks do not create a second domain result such as a
 `ConnectorPlanningResult` that is converted into `PlannedPushdown`; they inspect
