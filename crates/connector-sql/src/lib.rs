@@ -8,10 +8,12 @@
 
 mod translation;
 
+use std::sync::Arc;
+
 use adbc_driver_manager::ManagedConnection;
 use connector_sdk::{
-    ConnectorError, ConnectorExecutor, ExecutionContext, ExecutionOutput, LiteralValue,
-    PlannedPushdown, RecordBatchStream,
+    ConnectorError, ConnectorExecutor, ExecutionOutput, LiteralValue, PlannedPushdown,
+    RecordBatchStream,
 };
 
 pub use translation::{TranslationError, translate};
@@ -161,12 +163,13 @@ impl ConnectorExecutor for SqlExecutor {
     fn execute(
         &self,
         pushdown: &PlannedPushdown<RenderedQuery>,
-        _context: &ExecutionContext,
     ) -> Result<ExecutionOutput, ConnectorError> {
-        let stream: RecordBatchStream = Box::pin(connector_adbc::query(
+        let query = connector_adbc::query(
             self.connection.clone(),
             pushdown.executable_query.query.sql.clone(),
-        ));
-        Ok(ExecutionOutput::new(stream))
+        );
+        let cancel = Arc::new(query.cancel_handle());
+        let stream: RecordBatchStream = Box::pin(query);
+        Ok(ExecutionOutput::new(stream, cancel))
     }
 }

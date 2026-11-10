@@ -6,9 +6,9 @@ use std::{
 };
 
 use connector_sdk::{
-    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, CancellationToken, ConnectorPlanner,
-    ErrorKind, ExecutableQuery, ExecutionContext, LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation,
-    PlannedPushdown, PlanningError, PushdownRequest, PushdownResult, execute_planned,
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, ExecutableQuery,
+    LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError,
+    PushdownRequest, PushdownResult, execute_planned,
 };
 use connector_sql::{RenderedQuery, SqlExecutor, TranslationError, translate};
 use futures_core::Stream;
@@ -136,7 +136,7 @@ fn translated_query_round_trips_through_adbc_execution() {
         arrow_array::RecordBatch::new_empty(Arc::new(pushdown.remote_output_schema.to_arrow()));
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch.clone()]));
     let executor = sql_executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
+    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
     let mut context = Context::from_waker(Waker::noop());
 
     assert!(fixture.events().is_empty());
@@ -157,7 +157,7 @@ fn translated_query_round_trips_through_adbc_execution() {
     drop(stream);
     let (_fixture, connection) = Fixture::install(FixtureExecution::Fail);
     let executor = sql_executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
+    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
     let Poll::Ready(Some(Err(error))) = Stream::poll_next(Pin::new(&mut stream), &mut context)
     else {
         panic!("the translated query should preserve its ADBC execution error");
@@ -168,10 +168,6 @@ fn translated_query_round_trips_through_adbc_execution() {
 
 fn sql_executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
     SqlExecutor::new(connection)
-}
-
-fn execution_context() -> ExecutionContext {
-    ExecutionContext::new(CancellationToken::default(), None)
 }
 
 #[test]

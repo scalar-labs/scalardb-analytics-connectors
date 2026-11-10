@@ -9,7 +9,7 @@ mod planning;
 
 pub use error::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind, RequestError};
 pub use execution::{
-    CancellationToken, ConnectorExecutor, ExecutionContext, ExecutionOutput, ExecutionStream,
+    ConnectorExecutor, ExecutionCancel, ExecutionCancelHandle, ExecutionOutput, ExecutionStream,
     RecordBatchStream, execute_planned,
 };
 pub use metadata::{

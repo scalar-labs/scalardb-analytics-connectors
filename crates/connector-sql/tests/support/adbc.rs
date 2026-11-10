@@ -1,6 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, Condvar, LazyLock, Mutex},
 };
 
 use adbc_core::{
@@ -22,31 +22,41 @@ pub(crate) enum Event {
     SetSql(String),
     Execute,
     Pull,
+    Cancel,
 }
 
 #[derive(Clone)]
 pub(crate) struct Fixture {
     events: Arc<Mutex<Vec<Event>>>,
+    gate: Arc<ExecuteGate>,
 }
 
+#[allow(dead_code)]
 pub(crate) enum FixtureExecution {
     Batches(Vec<RecordBatch>),
     Fail,
+    /// `execute` blocks at the source until the statement is cancelled.
+    BlockUntilCancelled,
 }
 
 impl Fixture {
     pub(crate) fn install(execution: FixtureExecution) -> (Self, ManagedConnection) {
         let fixture = Self {
             events: Arc::new(Mutex::new(Vec::new())),
+            gate: Arc::new(ExecuteGate::default()),
         };
-        let (batches, fail_execute) = match execution {
-            FixtureExecution::Batches(batches) => (batches, false),
-            FixtureExecution::Fail => (Vec::new(), true),
+        let (batches, execute) = match execution {
+            FixtureExecution::Batches(batches) => (batches, ExecuteBehavior::Succeed),
+            FixtureExecution::Fail => (Vec::new(), ExecuteBehavior::Fail),
+            FixtureExecution::BlockUntilCancelled => {
+                (Vec::new(), ExecuteBehavior::BlockUntilCancelled)
+            }
         };
         *FIXTURE.lock().unwrap() = Some(FixturePlan {
             events: Arc::clone(&fixture.events),
+            gate: Arc::clone(&fixture.gate),
             batches,
-            fail_execute,
+            execute,
         });
         (fixture, managed_connection())
     }
@@ -54,13 +64,46 @@ impl Fixture {
     pub(crate) fn events(&self) -> Vec<Event> {
         self.events.lock().unwrap().clone()
     }
+
+    /// Waits until a blocking `execute` has started at the source.
+    #[allow(dead_code)]
+    pub(crate) fn wait_until_executing(&self) {
+        let state = self.gate.state.lock().unwrap();
+        drop(
+            self.gate
+                .changed
+                .wait_while(state, |state| !state.executing)
+                .unwrap(),
+        );
+    }
 }
 
 #[derive(Clone)]
 struct FixturePlan {
     events: Arc<Mutex<Vec<Event>>>,
+    gate: Arc<ExecuteGate>,
     batches: Vec<RecordBatch>,
-    fail_execute: bool,
+    execute: ExecuteBehavior,
+}
+
+#[derive(Clone, Copy)]
+enum ExecuteBehavior {
+    Succeed,
+    Fail,
+    BlockUntilCancelled,
+}
+
+/// Coordinates a blocking `execute` with the test thread and statement cancellation.
+#[derive(Default)]
+struct ExecuteGate {
+    state: Mutex<GateState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    executing: bool,
+    cancelled: bool,
 }
 
 static FIXTURE: LazyLock<Mutex<Option<FixturePlan>>> = LazyLock::new(|| Mutex::new(None));
@@ -271,7 +314,10 @@ impl Optionable for FixtureStatement {
 
 impl Statement for FixtureStatement {
     fn get_cancel_handle(&self) -> Box<dyn CancelHandle> {
-        Box::new(FixtureCancelHandle)
+        Box::new(FixtureCancelHandle {
+            events: Arc::clone(&self.plan.events),
+            gate: Arc::clone(&self.plan.gate),
+        })
     }
 
     fn bind(&mut self, _batch: RecordBatch) -> Result<()> {
@@ -284,11 +330,30 @@ impl Statement for FixtureStatement {
 
     fn execute(&mut self) -> Result<Box<dyn RecordBatchReader + Send + 'static>> {
         self.plan.events.lock().unwrap().push(Event::Execute);
-        if self.plan.fail_execute {
-            return Err(Error::with_message_and_status(
-                "fixture execute failure",
-                Status::Internal,
-            ));
+        match self.plan.execute {
+            ExecuteBehavior::Succeed => {}
+            ExecuteBehavior::Fail => {
+                return Err(Error::with_message_and_status(
+                    "fixture execute failure",
+                    Status::Internal,
+                ));
+            }
+            ExecuteBehavior::BlockUntilCancelled => {
+                let mut state = self.plan.gate.state.lock().unwrap();
+                state.executing = true;
+                self.plan.gate.changed.notify_all();
+                drop(
+                    self.plan
+                        .gate
+                        .changed
+                        .wait_while(state, |state| !state.cancelled)
+                        .unwrap(),
+                );
+                return Err(Error::with_message_and_status(
+                    "fixture execute cancelled",
+                    Status::Cancelled,
+                ));
+            }
         }
         let schema = self
             .plan
@@ -358,10 +423,17 @@ impl RecordBatchReader for FixtureReader {
     }
 }
 
-struct FixtureCancelHandle;
+/// Records statement cancellation and releases a blocked `execute`.
+struct FixtureCancelHandle {
+    events: Arc<Mutex<Vec<Event>>>,
+    gate: Arc<ExecuteGate>,
+}
 
 impl CancelHandle for FixtureCancelHandle {
     fn try_cancel(&self) -> Result<()> {
+        self.events.lock().unwrap().push(Event::Cancel);
+        self.gate.state.lock().unwrap().cancelled = true;
+        self.gate.changed.notify_all();
         Ok(())
     }
 }

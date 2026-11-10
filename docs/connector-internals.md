@@ -315,7 +315,14 @@ Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner
     return PlannedPushdown
 
 ConnectorExecutor:
-    execute(planned_pushdown, execution_context) -> ExecutionOutput
+    execute(planned_pushdown) -> ExecutionOutput { stream, ExecutionCancel }
+
+Connector SDK execute_planned(executor, planned_pushdown, deadline):
+    output = executor.execute(planned_pushdown)
+    return ExecutionStream, which hands out ExecutionCancelHandle
+        cancel() / expire() records cancellation / timeout, first wins,
+            then calls the connector's ExecutionCancel
+        a pull after a recorded stop returns that stop's error
 ~~~
 
 Connector planning runs after the SDK has produced a `LogicalPlan`, because
@@ -583,7 +590,7 @@ and does not call Data Source access. Read and metadata Data Source access is
 called from the caller's thread inside a stream pull; planning resolution may
 also call it from `plan_pushdown`. At the first pull, the connector SDK translates the
 request, calls `read_catalog` or `execute`, stores the returned execution and its
-`CancelHandle` in the operation, and then pulls its stream. A direct-access
+cancel handle in the operation, and then pulls its stream. A direct-access
 implementation that uses an asynchronous reader crate keeps that runtime inside
 the implementation and waits for results within the trait call; the runtime
 never leaves the trait.
@@ -633,8 +640,9 @@ functions (creating connections). The `Connector` trait is also `Send + Sync`.
 Cancellation propagates in this order:
 
 1. The caller cancels an operation from any thread.
-2. The connector SDK calls `cancel` on that operation's execution
-   `CancelHandle`.
+2. The caller's `ExecutionCancelHandle` records cancellation and calls the
+   `ExecutionCancel` the connector returned with that execution
+   (`ExecutionOutput`).
 3. The implementation stops the work for its form of Data Source access:
    - **ADBC access:** at the first pull, `connector-adbc` creates one statement
      for the execution and obtains its driver-manager `CancelHandle` before
@@ -646,36 +654,38 @@ Cancellation propagates in this order:
      directly or substitute connection-wide cancellation. Between driver
      calls, cancellation is recorded locally and the connector does not issue
      an unnecessary native cancellation callback.
-   - **Direct access:** the implementation uses that execution's
-     `CancelHandle` to stop file reads and source calls in progress.
-4. The stream's next pull returns `cancellation`.
+     `connector-sql`'s `SqlExecutor` returns the query's
+     `AdbcQueryCancelHandle` as that execution's `ExecutionCancel`.
+   - **Direct access:** the implementation's `ExecutionCancel` stops file
+     reads and source calls in progress.
+4. The pull in progress, or the stream's next pull, returns `cancellation`,
+   whatever the source returned after being cancelled.
 
 An operation cancelled before its first pull only records
 the cancellation flag; that call returns `cancellation` without sending a
 query.
 
-A `CancelHandle` is created per execution and stops only that execution. It is
+An `ExecutionCancel` is created per execution and stops only that execution. It is
 not per session so that a late cancellation of a finished operation cannot stop
 the next operation on the same session. `cancel` on a finished execution's
 handle does nothing. Other synchronization details between execution and
 cancellation are left to the implementation.
 
 For timeouts, the library's watcher thread finds operations past their deadline
-and stops them the same way, returning `timeout`. The deadline counts from the
-first pull, when the query is sent
-([Cancellation and timeouts](connector-contract.md#cancellation-and-timeouts)).
-When a source has a query time limit, such as PostgreSQL `statement_timeout` or
-MySQL `max_execution_time`, the connector also sets it to match the deadline.
-The connector's own deadline stops operations even when the source limit does
-not take effect. Whichever fires first, the result is `timeout` if the deadline
-has passed.
+and stops them the same way through `ExecutionCancelHandle::expire`, so the
+result is `timeout`. The deadline counts from the first pull, when the query is
+sent ([Cancellation and timeouts](connector-contract.md#cancellation-and-timeouts)).
+The SDK also checks the deadline whenever a pull starts, but it does not run a
+timer per execution; stopping a pull that is blocked at the source is the
+watcher's job. Connectors do not set source query time limits, such as
+PostgreSQL `statement_timeout`, because cancellation already stops the query at
+the source ([Data Source access rules](connector-contract.md#data-source-access-rules)).
 
 For cancellation and timeouts, a direct-access implementation ensures that:
 
-- `cancel` returns without blocking from any thread;
-- after `cancel`, pulls of that execution's stream promptly end with
-  `cancellation`, and pending source calls are stopped; and
-- when the source API has a call time limit, it is set to match the deadline.
+- `cancel` returns without blocking from any thread; and
+- after `cancel`, pending source calls are stopped promptly, so the blocked
+  pull returns.
 
 ### Cleanup
 

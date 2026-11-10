@@ -8,8 +8,8 @@ use analytics_types::{AnalyticsField, AnalyticsSchema, AnalyticsType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use connector_sdk::{
-    CancellationToken, ConnectorError, ErrorKind, ExecutableQuery, ExecutionContext,
-    ExecutionStream, PlannedPushdown, execute_planned,
+    ConnectorError, ErrorKind, ExecutableQuery, ExecutionCancelHandle, ExecutionStream,
+    PlannedPushdown, execute_planned,
 };
 use connector_sql::{RenderedQuery, SqlExecutor};
 use futures_core::Stream;
@@ -24,6 +24,8 @@ use adbc::{Event, Fixture, FixtureExecution};
 fn public_sql_executable_query_path() {
     round_trips_sql_and_delegates_the_lazy_batch_stream();
     preserves_execution_scoped_cancellation();
+    cancellation_stops_a_query_blocked_at_the_source();
+    expiry_stops_a_query_blocked_at_the_source();
     preserves_adbc_execution_diagnostics();
 }
 
@@ -37,7 +39,7 @@ fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
         batch(&[30]),
     ]));
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
+    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
 
     assert!(fixture.events().is_empty());
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[10, 20])))));
@@ -60,15 +62,9 @@ fn preserves_execution_scoped_cancellation() {
     let pushdown = planned_query("select value");
     let (cancelled_fixture, cancelled_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
-    let cancellation = CancellationToken::default();
     let cancelled_executor = executor(cancelled_connection);
-    let mut cancelled = execute_planned(
-        &cancelled_executor,
-        &pushdown,
-        ExecutionContext::new(cancellation.clone(), None),
-    )
-    .unwrap();
-    cancellation.cancel();
+    let mut cancelled = execute_planned(&cancelled_executor, &pushdown, None).unwrap();
+    cancelled.cancel_handle().cancel().unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut cancelled) else {
         panic!("the cancelled execution should return an error");
@@ -79,7 +75,7 @@ fn preserves_execution_scoped_cancellation() {
     let (next_fixture, next_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[2])]));
     let next_executor = executor(next_connection);
-    let mut next = execute_planned(&next_executor, &pushdown, execution_context()).unwrap();
+    let mut next = execute_planned(&next_executor, &pushdown, None).unwrap();
     assert_eq!(pull(&mut next), Poll::Ready(Some(Ok(batch(&[2])))));
     assert_eq!(
         next_fixture.events(),
@@ -92,11 +88,52 @@ fn preserves_execution_scoped_cancellation() {
     );
 }
 
+fn cancellation_stops_a_query_blocked_at_the_source() {
+    let error = stop_blocked_query(ExecutionCancelHandle::cancel);
+    assert_eq!(error.kind(), ErrorKind::Cancellation);
+}
+
+fn expiry_stops_a_query_blocked_at_the_source() {
+    let error = stop_blocked_query(ExecutionCancelHandle::expire);
+    assert_eq!(error.kind(), ErrorKind::Timeout);
+}
+
+/// Blocks the first pull in the source's `execute`, stops it from the test
+/// thread, and returns the error that the blocked pull ends with.
+fn stop_blocked_query(
+    stop: impl FnOnce(&ExecutionCancelHandle) -> Result<(), ConnectorError>,
+) -> ConnectorError {
+    let pushdown = planned_query("select slow");
+    let (fixture, connection) = Fixture::install(FixtureExecution::BlockUntilCancelled);
+    let executor = executor(connection);
+    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
+    let handle = stream.cancel_handle();
+
+    let puller = std::thread::spawn(move || pull(&mut stream));
+    fixture.wait_until_executing();
+    stop(&handle).unwrap();
+    let result = puller.join().unwrap();
+
+    assert_eq!(
+        fixture.events(),
+        vec![
+            Event::NewStatement,
+            Event::SetSql("select slow".to_owned()),
+            Event::Execute,
+            Event::Cancel,
+        ]
+    );
+    let Poll::Ready(Some(Err(error))) = result else {
+        panic!("the blocked pull should end with the stop error");
+    };
+    error
+}
+
 fn preserves_adbc_execution_diagnostics() {
     let pushdown = planned_query("select broken");
     let (fixture, connection) = Fixture::install(FixtureExecution::Fail);
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
+    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("the first pull should return the ADBC execution error");
@@ -143,10 +180,6 @@ fn planned_query(sql: &str) -> PlannedPushdown<RenderedQuery> {
 
 fn executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
     SqlExecutor::new(connection)
-}
-
-fn execution_context() -> ExecutionContext {
-    ExecutionContext::new(CancellationToken::default(), None)
 }
 
 fn batch(values: &[i64]) -> RecordBatch {

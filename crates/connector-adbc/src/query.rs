@@ -13,7 +13,7 @@ use adbc_core::{
 use adbc_driver_manager::{ManagedConnection, ManagedStatement};
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::ArrowError;
-use connector_sdk::ConnectorError;
+use connector_sdk::{ConnectorError, ExecutionCancel};
 use futures_core::Stream;
 
 use crate::error::{classify_error, stream_fallback_error};
@@ -191,6 +191,12 @@ impl AdbcQueryCancelHandle {
 impl CancelHandle for AdbcQueryCancelHandle {
     fn try_cancel(&self) -> Result<(), Error> {
         AdbcQueryCancelHandle::try_cancel(self)
+    }
+}
+
+impl ExecutionCancel for AdbcQueryCancelHandle {
+    fn cancel(&self) -> Result<(), ConnectorError> {
+        self.try_cancel().map_err(classify_adbc_error)
     }
 }
 
