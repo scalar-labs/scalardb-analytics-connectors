@@ -157,7 +157,7 @@ as follows:
 
 | Contract element | Connector SDK | Connector |
 | --- | --- | --- |
-| Metadata retrieval | The table metadata model and its states, the deterministic order of columns and constraints, deriving completeness, cancellation and deadlines of catalog reads, and the retrieval info model | Catalog queries and reading, the source metadata type, the type mapping and unsupported reasons, how constraints and identifiers are read, and rules for detecting missing information |
+| Metadata retrieval | The table metadata model and its states, the deterministic order of columns and constraints, deriving completeness, comparing a stored result with a newer retrieval, cancellation and deadlines of catalog reads, and the retrieval info model | Catalog queries and reading, the source metadata type, the type mapping and unsupported reasons, how constraints and identifiers are read, and rules for detecting missing information |
 | Data read | Offered Substrait validation and `LogicalPlan` conversion, initial `QueryPlan` construction, application of the Connector-supplied rule set, decomposition-contract assertions, cancellation, and deadlines | Obtaining current Data Source/session facts, supplying remote/local rewrite rules, generating and executing remote queries, guaranteeing rewrite semantics, and converting source output |
 | Calling conventions | Cancellation and timeouts, the error structure, and credential handling; with ADBC access, loading and version-checking the ADBC driver (`connector-adbc`) | Mapping connection options to driver options, fixed settings, and classifying Data Source-specific error codes; with direct access, reading the Data Source |
 
@@ -435,14 +435,17 @@ pub trait CatalogReader: Send + Sync {
         -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
 }
 
-/// Serialized as the source metadata JSON document; the connector decides its shape.
-pub trait SourceTableMetadata: serde::Serialize + Send + 'static {
+/// Serialized as the source metadata JSON document; the connector decides its
+/// shape. A stored document is restored to this type to compare it.
+pub trait SourceTableMetadata:
+    serde::Serialize + serde::de::DeserializeOwned + PartialEq + Send + 'static
+{
     /// The connector applies its type mapping here.
     fn to_table_metadata(&self) -> TableMetadata;
 }
 
 pub enum TableRecord<T> {
-    Read(T),
+    Read { metadata: T, read_at: SystemTime },
     NotFound { table: TableReference },
     Unavailable { table: TableReference, reason: String },
 }
@@ -456,7 +459,6 @@ pub struct TableMetadata {
     columns: Vec<Column>,                  // name, ordinal, nullable, source_id, ty
     columns_may_be_hidden: bool,
     constraints: Reported<Vec<Constraint>>,
-    read_at: SystemTime,
 }
 
 pub enum ColumnType {
@@ -486,6 +488,20 @@ read table metadata is complete is derived from its values
 `columns_may_be_hidden` makes it incomplete, while `NotOffered` does not. An
 Analytics type cannot be stated without the Data Source type it was mapped
 from.
+
+Source metadata and table metadata hold only what the source states, so equal
+source state gives equal values. The retrieval time is retrieval info, not
+content, and travels beside them in `TableRecord::Read`.
+
+Comparing two retrievals of one table follows the same split. Table metadata
+has one shape for every connector, so the SDK compares it without any
+connector: `TableMetadata::compare` compares two reads, and
+`TableRecord<TableMetadata>::compare` adds the table states
+([Comparing table metadata](connector-contract.md#comparing-table-metadata)).
+Source metadata has the connector's shape, so only that connector's type can
+restore a stored document. Two restored values are the same exactly when they
+are equal, and what changed is found by comparing the table metadata derived
+from both.
 
 Retrieval info is assembled from each table's `read_at`, the connector's name
 and version in its `ConnectorDescriptor`, and the session's
@@ -781,7 +797,7 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | --- | --- |
 | [Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access) | `connector-api`, the connector traits, `connector-adbc` ([ADBC driver handling](#adbc-driver-handling)), and direct-access connector implementations |
 | [Calling conventions](connector-contract.md#calling-conventions) | The connector SDK's runtime (unit management, session lease, cancellation, timeouts) and its error structure |
-| [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and source metadata type with its type mapping, and the connector SDK's table metadata model and source-read boundary |
+| [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and source metadata type with its type mapping, and the connector SDK's table metadata model, its comparison, and the source-read boundary |
 | [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema and lifecycle checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |
 | [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header |

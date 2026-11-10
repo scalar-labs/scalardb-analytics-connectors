@@ -11,13 +11,13 @@ use std::{
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    CatalogReader, Column, ColumnType, ConnectorError, Constraint, ConstraintKind, ErrorKind,
-    ExecutionCancel, ExecutionOutput, Listed, NameFilter, NamespacePath, Reported, SourceStream,
-    SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
-    UniqueKind, UnsupportedReason, start_source_read,
+    CatalogReader, Column, ColumnAttribute, ColumnChange, ColumnType, ConnectorError, Constraint,
+    ConstraintKind, Difference, ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter,
+    NamespacePath, Reported, SourceStream, SourceTableMetadata, TableEntry, TableKind,
+    TableMetadata, TableRecord, TableReference, UniqueKind, UnsupportedReason, start_source_read,
 };
 use futures_core::Stream;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[test]
 fn table_metadata_order_does_not_depend_on_the_source_order() {
@@ -111,12 +111,42 @@ fn source_metadata_is_a_connector_defined_json_document() {
 }
 
 #[test]
+fn stored_source_metadata_is_compared_through_the_connector_type() {
+    let stored = serde_json::to_string(&source_table()).unwrap();
+    let mut changed = source_table();
+    changed.columns[4].not_null = true;
+
+    let restored: FakeTable = serde_json::from_str(&stored).unwrap();
+
+    assert_eq!(restored, source_table());
+    assert_ne!(restored, changed);
+    let changes = restored
+        .to_table_metadata()
+        .compare(&changed.to_table_metadata());
+    let attributes: Vec<_> = changes
+        .columns
+        .iter()
+        .map(|change| match change {
+            ColumnChange::Changed { attributes, .. } => attributes.as_slice(),
+            other => panic!("the column stays matched: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        attributes,
+        vec![[Difference::Changed(ColumnAttribute::Nullable)].as_slice()]
+    );
+}
+
+#[test]
 fn table_records_stream_through_a_source_read() {
     let reader = FakeReader::default();
     let tables = [table_reference("orders"), table_reference("missing")];
     let mut stream = start_source_read(None, || reader.read_tables(&tables)).unwrap();
 
-    let Poll::Ready(Some(Ok(TableRecord::Read(table)))) = pull(&mut stream) else {
+    let Poll::Ready(Some(Ok(TableRecord::Read {
+        metadata: table, ..
+    }))) = pull(&mut stream)
+    else {
         panic!("the first table was read");
     };
     assert_eq!(
@@ -171,34 +201,32 @@ fn catalog_reads_stop_on_cancel_and_expiry() {
 }
 
 /// A PostgreSQL-like catalog row set for one table, owned by the test connector.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct FakeTable {
     name: String,
-    relkind: &'static str,
+    relkind: String,
     oid: Option<u32>,
     oid_readable: bool,
     catalog_hides_columns: bool,
     columns: Vec<FakeColumn>,
     constraints_offered: bool,
     constraints: Vec<FakeConstraint>,
-    #[serde(skip)]
-    read_at: SystemTime,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct FakeColumn {
-    name: &'static str,
+    name: String,
     attnum: u32,
     not_null: bool,
-    data_type: Option<&'static str>,
+    data_type: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct FakeConstraint {
-    name: &'static str,
+    name: String,
     contype: char,
-    columns: Vec<&'static str>,
-    expression: Option<&'static str>,
+    columns: Vec<String>,
+    expression: Option<String>,
 }
 
 impl SourceTableMetadata for FakeTable {
@@ -218,7 +246,7 @@ impl SourceTableMetadata for FakeTable {
                 ordinal: column.attnum,
                 nullable: !column.not_null,
                 source_id: Reported::Value(column.attnum.to_string()),
-                ty: map_type(column.data_type),
+                ty: map_type(column.data_type.as_deref()),
             })
             .collect();
         let constraints = if self.constraints_offered {
@@ -228,7 +256,7 @@ impl SourceTableMetadata for FakeTable {
         };
         TableMetadata::new(
             table_reference(&self.name),
-            match self.relkind {
+            match self.relkind.as_str() {
                 "r" => TableKind::Table,
                 "v" => TableKind::View,
                 other => TableKind::Other(other.to_owned()),
@@ -237,7 +265,6 @@ impl SourceTableMetadata for FakeTable {
             columns,
             self.catalog_hides_columns,
             constraints,
-            self.read_at,
         )
     }
 }
@@ -269,11 +296,7 @@ fn map_type(data_type: Option<&str>) -> ColumnType {
 }
 
 fn to_constraint(constraint: &FakeConstraint) -> Constraint {
-    let columns = constraint
-        .columns
-        .iter()
-        .map(|&name| name.to_owned())
-        .collect();
+    let columns = constraint.columns.clone();
     let kind = match constraint.contype {
         'p' => ConstraintKind::PrimaryKey { columns },
         'u' => ConstraintKind::Unique {
@@ -282,26 +305,26 @@ fn to_constraint(constraint: &FakeConstraint) -> Constraint {
             condition: None,
         },
         _ => ConstraintKind::Check {
-            expression: constraint.expression.unwrap_or_default().to_owned(),
+            expression: constraint.expression.clone().unwrap_or_default(),
         },
     };
     Constraint {
-        name: constraint.name.to_owned(),
+        name: constraint.name.clone(),
         enforced: true,
         kind,
     }
 }
 
 fn source_table() -> FakeTable {
-    let column = |name, attnum, data_type| FakeColumn {
-        name,
+    let column = |name: &str, attnum, data_type: &str| FakeColumn {
+        name: name.to_owned(),
         attnum,
         not_null: attnum == 1,
-        data_type: Some(data_type),
+        data_type: Some(data_type.to_owned()),
     };
     FakeTable {
         name: "orders".to_owned(),
-        relkind: "r",
+        relkind: "r".to_owned(),
         oid: Some(16384),
         oid_readable: true,
         catalog_hides_columns: false,
@@ -315,25 +338,24 @@ fn source_table() -> FakeTable {
         constraints_offered: true,
         constraints: vec![
             FakeConstraint {
-                name: "orders_total_check",
+                name: "orders_total_check".to_owned(),
                 contype: 'c',
                 columns: vec![],
-                expression: Some("total > 0"),
+                expression: Some("total > 0".to_owned()),
             },
             FakeConstraint {
-                name: "orders_code_key",
+                name: "orders_code_key".to_owned(),
                 contype: 'u',
-                columns: vec!["code"],
+                columns: vec!["code".to_owned()],
                 expression: None,
             },
             FakeConstraint {
-                name: "orders_pkey",
+                name: "orders_pkey".to_owned(),
                 contype: 'p',
-                columns: vec!["id"],
+                columns: vec!["id".to_owned()],
                 expression: None,
             },
         ],
-        read_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
     }
 }
 
@@ -387,7 +409,10 @@ impl CatalogReader for FakeReader {
         _tables: &[TableReference],
     ) -> Result<ExecutionOutput<TableRecord<FakeTable>>, ConnectorError> {
         Ok(self.output(vec![
-            TableRecord::Read(source_table()),
+            TableRecord::Read {
+                metadata: source_table(),
+                read_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            },
             TableRecord::NotFound {
                 table: table_reference("missing"),
             },

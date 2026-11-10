@@ -26,9 +26,11 @@ pub use lifecycle::{
     OptionValueType, SecretString,
 };
 pub use metadata::{
-    CatalogReader, Column, ColumnType, Constraint, ConstraintKind, Listed, NameFilter,
-    NamespacePath, Reported, SourceTableMetadata, TableEntry, TableKind, TableMetadata,
-    TableRecord, TableReference, UniqueKind, UnsupportedReason,
+    CatalogReader, Column, ColumnAttribute, ColumnChange, ColumnType, Completeness, Constraint,
+    ConstraintChange, ConstraintChanges, ConstraintKind, Difference, Listed, NameFilter,
+    NamespacePath, Reported, Side, SourceTableMetadata, TableAttribute, TableChanges,
+    TableComparison, TableEntry, TableKind, TableMetadata, TableRecord, TableReference, TableState,
+    UniqueKind, UnsupportedReason,
 };
 pub use planning::{
     BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, ConnectorPlanner,

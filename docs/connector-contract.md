@@ -348,9 +348,12 @@ from the source's catalog and decides an Analytics type for each column.
 
 This section does not define:
 
-- the stability of Physical Catalog resource identifiers, versioning of stored
-  table metadata, change notification, or delivery to the Semantic Catalog;
-  these belong to the Physical Catalog's own input and reference contracts;
+- the stability of Physical Catalog resource identifiers, how receivers
+  persist and version the table metadata they store, change notification, or
+  delivery to the Semantic Catalog; these belong to the Physical Catalog's own
+  input and reference contracts. How stored metadata is compared with a newer
+  retrieval is defined here
+  ([Comparing table metadata](#comparing-table-metadata));
 - reading rows, which is [Data read](#data-read) and
   [Read request representation](#read-request-representation);
 - how the connector SDK and connectors are built, which is
@@ -462,9 +465,10 @@ or an Iceberg table UUID and field ID.
 
 A connector returns one only when the source provides it and it is readable
 with the retrieval privileges. It is the source's own value, never a value
-synthesized by the connector. How it determines Physical Catalog resource
-identifiers, and how renames, drops, and re-creations are distinguished,
-belongs to the Physical Catalog's contracts.
+synthesized by the connector. Comparison uses it to tell a rename from a drop
+and re-creation ([Comparing table metadata](#comparing-table-metadata)). How it
+determines Physical Catalog resource identifiers belongs to the Physical
+Catalog's contracts.
 
 ### Retrieval info and determinism
 
@@ -475,11 +479,9 @@ columns. Values that change without a change at the source, such as the
 retrieval time, are not part of the content and are carried separately as
 retrieval info.
 
-A receiver that needs to detect changes, such as the Semantic Catalog, stores
-the table metadata or source metadata it based its decisions on and compares it
-with newly retrieved metadata. Names and source identifiers identify the same
-table, column, and constraint across retrievals. This contract defines no
-digest or schema version for that comparison.
+Determinism lets a receiver detect changes by comparing the metadata it stored
+with newly retrieved metadata. The library performs that comparison
+([Comparing table metadata](#comparing-table-metadata)).
 
 The same table can receive different Analytics types from a different
 connector, connector version, or ADBC driver or driver version. A different
@@ -522,6 +524,90 @@ distinct from incomplete. Incomplete
 table metadata asserts nothing about its missing items. The Physical Catalog
 never infers a drop or a change from incomplete table metadata; a dropped table
 is inferred only from "does not exist", never from "could not be read".
+
+### Comparing table metadata
+
+A receiver that needs to detect changes stores the metadata it based its
+decisions on and later passes it, with a newly retrieved one, to the library's
+comparison. Each receiver stores what it uses: the Physical Catalog stores
+table metadata, and the Semantic Catalog stores source metadata. One set of
+rules serves every receiver, so the same source change is reported as the same
+change whoever asks. If each receiver compared on its own, differences in how
+it matched items, which values it ignored, and how it read incomplete metadata
+would turn one change into different changes.
+
+Callers store metadata in the output format of the
+[Connector API](#connector-api); this contract defines no other storage format,
+digest, or schema version. Storing it and choosing which stored table pairs
+with which new one belong to the caller. Neither comparison needs a data
+source or session.
+
+The two comparisons differ in what they depend on:
+
+- **Table metadata** has one shape for every Connector, so its comparison
+  depends on no Connector. It reports item by item what changed, as below.
+- **Source metadata** has the shape its connector defines, so its comparison
+  depends on that connector. Each side is a table's state with, when the table
+  was read, its source metadata document. When either side does not exist or
+  could not be read, only the states are returned, by the same rules as for
+  table metadata. Otherwise the producing connector restores both documents to
+  its own source metadata type; they are the same exactly when the restored
+  values are equal, and what changed is reported by comparing the table
+  metadata the connector derives from both. A connector that cannot restore a
+  stored document, for example after it changed the document's shape, rejects
+  the comparison as an `invalid request`.
+
+Retrieval info, such as the retrieval time and the producer, is never part of
+either comparison: it changes without a change at the source. A caller that
+needs to know whether the producer changed compares the retrieval info itself.
+
+Within a table metadata pair, items are matched as follows:
+
+- Columns are matched by source identifier when both sides have one, and
+  otherwise by name. A column with the same source identifier and a different
+  name is a changed column whose name changed: a rename. A column with the same
+  name and different source identifiers is one removed and one added column: a
+  drop and re-creation.
+- Constraints are matched by kind and name.
+- The table's own name and source identifier are compared as items. Different
+  source identifiers on both sides mean the table was dropped and re-created.
+
+Table metadata comparison returns, per pair:
+
+| Part | Result |
+| --- | --- |
+| Table state | The state of each side: complete, incomplete, "could not be read", or "does not exist" ([Missing information](#missing-information)) |
+| Table | Whether the name, kind, and source identifier changed or are unknown |
+| Columns | Each added, removed, changed, or unknown column; a changed column carries both versions and names each attribute that changed or is unknown: name, ordinal, nullability, Data Source type, Analytics type or unsupported reason, and source identifier |
+| Constraints | Each added, removed, or changed constraint, with both versions of a changed one, or that the constraints are unknown |
+
+Unchanged items are not listed.
+
+Table metadata comparison never reports a change it cannot observe, following
+[Missing information](#missing-information):
+
+- When either side is "could not be read" or "does not exist", only the table
+  states are returned. A drop is indicated only by "does not exist" on the new
+  side.
+- An item that is missing on either side, or "not offered" on only one side, is
+  unknown, never added, removed, or changed. An item "not offered" on both sides
+  is unchanged. When constraints are unknown, no constraint is listed.
+- A column whose Data Source type is unread on either side has its Data Source
+  type and Analytics type unknown; its other attributes are still compared.
+- A column present on only one side is unknown rather than added or removed
+  when the other side may have hidden columns, or when an unmatched column on
+  the other side cannot be told apart by source identifier, because the two may
+  be one renamed column.
+- When either side may have hidden columns, an ordinal difference is unknown,
+  because a hidden column shifts the ordinals after it.
+
+Comparison accepts only table metadata in this library's output schema, and
+only source metadata documents the producing connector can restore. Metadata
+stored before a library update that changed either cannot be compared.
+[Compatibility and versions](#compatibility-and-versions) defines no version
+skew, and stored metadata is the one place where output outlives a library
+update; rules for comparing across library versions will be added when a
+caller must keep comparing across such an update.
 
 ### Data Source types
 
@@ -1119,6 +1205,18 @@ The connector API has these functions:
     from bytes.
 - **Encode and restore a remote execution** as opaque bytes for another process
   ([Read request](#read-request)).
+- **Compare table metadata.** Input: two Arrow arrays of table metadata with
+  the same length; the tables at the same position form a pair. Output: an
+  Arrow array with one comparison result per pair
+  ([Comparing table metadata](#comparing-table-metadata)). It needs no
+  Connector, data source, or session. Arrays of different lengths, or rows not
+  in the table metadata output schema, are an `invalid request`.
+- **Compare source metadata.** Input: a Connector and two sides of one table,
+  each its state with, when it was read, its source metadata document. Output:
+  the states, and when both were read, whether they are the same and the
+  comparison of the table metadata the connector derives from them. It needs
+  no data source or session. A document the connector cannot restore is an
+  `invalid request`.
 - **Cancel an operation**, from any thread.
 - **Retrieve an operation's error**, in the structure of
   [Errors in the API](#errors-in-the-api), after a pull ends with an error.
@@ -1155,7 +1253,10 @@ request kind has a fixed output schema,
 so its stream can return the schema before the source is queried. Table
 metadata output has one row per table, with columns and constraints as nested
 columns and the source metadata as a JSON text column. A table that does not
-exist or could not be read has no source metadata.
+exist or could not be read has no source metadata. The table metadata
+comparison output is likewise the items of
+[Comparing table metadata](#comparing-table-metadata) laid out as columns, with
+a fixed schema.
 
 Namespaces are returned as sequences of names with no fixed depth. For sources
 with catalogs, the first element is the catalog.

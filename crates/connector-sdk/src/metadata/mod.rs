@@ -5,9 +5,14 @@
 //! metadata). From it, the connector derives the source-independent
 //! [`TableMetadata`] that the Physical Catalog registers.
 
+mod comparison;
 mod listing;
 mod table;
 
+pub use comparison::{
+    ColumnAttribute, ColumnChange, Completeness, ConstraintChange, ConstraintChanges, Difference,
+    Side, TableAttribute, TableChanges, TableComparison, TableState,
+};
 pub use listing::{Listed, NameFilter, NamespacePath, TableEntry};
 pub use table::{
     Column, ColumnType, Constraint, ConstraintKind, Reported, SourceTableMetadata, TableKind,

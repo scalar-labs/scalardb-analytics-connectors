@@ -392,7 +392,7 @@ impl Drop for TestStream {
 pub struct TestCatalog;
 
 /// Never constructed: the test catalog reads no tables.
-#[derive(serde::Serialize)]
+#[derive(PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NoTable;
 
 impl SourceTableMetadata for NoTable {

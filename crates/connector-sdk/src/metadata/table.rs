@@ -10,8 +10,17 @@ use crate::RequestError;
 ///
 /// The Semantic Catalog receives it serialized as JSON (source metadata), whose
 /// shape the connector decides. Like table metadata, it is deterministic: the
-/// same source state produces the same document.
-pub trait SourceTableMetadata: serde::Serialize + Send + 'static {
+/// same source state produces the same value and document. It holds only what
+/// the source states; the retrieval time travels beside it in
+/// [`TableRecord::Read`].
+///
+/// Only the connector knows this shape, so comparing source metadata depends on
+/// the connector: a stored document is restored to this type, two values are
+/// the same exactly when they are equal, and what changed is found by
+/// comparing the table metadata derived from both.
+pub trait SourceTableMetadata:
+    serde::Serialize + serde::de::DeserializeOwned + PartialEq + Send + 'static
+{
     /// Derives the source-independent table metadata from this source metadata.
     ///
     /// The connector applies its type mapping here, so the result is a subset
@@ -23,7 +32,13 @@ pub trait SourceTableMetadata: serde::Serialize + Send + 'static {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableRecord<T> {
     /// The table exists and was read, completely or not.
-    Read(T),
+    Read {
+        metadata: T,
+        /// When the connector read this table's catalog. It is retrieval info,
+        /// not content: it changes without a change at the source, so
+        /// comparisons do not use it.
+        read_at: SystemTime,
+    },
     /// The connector confirmed that the table does not exist.
     NotFound { table: TableReference },
     /// The table could not be read, for example for lack of privilege; this
@@ -75,7 +90,6 @@ pub struct TableMetadata {
     columns: Vec<Column>,
     columns_may_be_hidden: bool,
     constraints: Reported<Vec<Constraint>>,
-    read_at: SystemTime,
 }
 
 impl TableMetadata {
@@ -83,8 +97,7 @@ impl TableMetadata {
     /// kind, name, and columns.
     ///
     /// `columns_may_be_hidden` is true when the catalog silently omits columns
-    /// without privilege and the read could not rule that out. `read_at` is the
-    /// time the connector read this table's catalog.
+    /// without privilege and the read could not rule that out.
     pub fn new(
         table: TableReference,
         kind: TableKind,
@@ -92,7 +105,6 @@ impl TableMetadata {
         mut columns: Vec<Column>,
         columns_may_be_hidden: bool,
         mut constraints: Reported<Vec<Constraint>>,
-        read_at: SystemTime,
     ) -> Self {
         columns.sort_by_key(|column| column.ordinal);
         if let Reported::Value(constraints) = &mut constraints {
@@ -105,7 +117,6 @@ impl TableMetadata {
             columns,
             columns_may_be_hidden,
             constraints,
-            read_at,
         }
     }
 
@@ -144,10 +155,6 @@ impl TableMetadata {
     /// Constraints ordered by kind, name, and columns.
     pub fn constraints(&self) -> &Reported<Vec<Constraint>> {
         &self.constraints
-    }
-
-    pub fn read_at(&self) -> SystemTime {
-        self.read_at
     }
 }
 
