@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::ConnectorError;
+use crate::{Component, ConnectorError};
 
 use super::{Library, SessionState, connector::DynDataSource, contain_panic, invalid_state};
 
@@ -15,14 +15,21 @@ use super::{Library, SessionState, connector::DynDataSource, contain_panic, inva
 /// when the handle is closed and every session using it is closed.
 pub struct DataSourceState {
     pub(super) library: Arc<Library>,
+    /// The name and version of the connector that opened it.
+    pub(super) connector: Component,
     inner: Box<dyn DynDataSource>,
     closed: AtomicBool,
 }
 
 impl DataSourceState {
-    pub(super) fn new(library: Arc<Library>, inner: Box<dyn DynDataSource>) -> Self {
+    pub(super) fn new(
+        library: Arc<Library>,
+        connector: Component,
+        inner: Box<dyn DynDataSource>,
+    ) -> Self {
         Self {
             library,
+            connector,
             inner,
             closed: AtomicBool::new(false),
         }

@@ -1248,7 +1248,8 @@ The complete responsibility and control flow are in
 [Pushdown planning](pushdown-planning.md).
 
 The Arrow schemas of the three metadata requests' inputs and outputs are the
-items of [Metadata retrieval](#metadata-retrieval) laid out as columns. Each
+items of [Metadata retrieval](#metadata-retrieval) laid out as columns
+([Metadata schemas](#metadata-schemas)). Each
 request kind has a fixed output schema,
 so its stream can return the schema before the source is queried. Table
 metadata output has one row per table, with columns and constraints as nested
@@ -1273,6 +1274,85 @@ disagree if the source changed between the calls.
 For sources without namespace and table hierarchies, such as files and object
 storage, the path hierarchy under the registered location maps to namespaces
 and files or table-format tables map to tables.
+
+### Metadata schemas
+
+The three metadata requests exchange these Arrow schemas. Every enumerated
+column is UTF-8 text with the values listed; a value outside them is a newer
+contract. A name path, such as a namespace or a table, is `list<utf8>` with
+non-null names. A nullable column is null when its row's state gives it no
+value.
+
+**Inputs.** A name filter of the namespace list or the table list is either
+absent, which matches every name, or a set of names, which matches exactly
+those names and may be empty. The tables of a table metadata request are Arrow
+rows with one non-null column `table` of type `list<utf8>`. A null table, a
+null or empty name, or another schema is an `invalid request`. The C functions
+pass a filter as a nullable pointer to an array of names and the tables as an
+`ArrowArrayStream` that the library takes and releases.
+
+**Namespace list.** One row per namespace or unreadable range.
+
+| Column | Type | Null | Content |
+| --- | --- | --- | --- |
+| `state` | utf8 | no | `listed` or `unreadable` |
+| `namespace` | name path | yes | The namespace, when `listed` |
+| `scope` | name path | yes | The range that could not be read, when `unreadable` |
+| `reason` | utf8 | yes | Why the range could not be read, when `unreadable` |
+
+**Table list.** One row per table or unreadable range.
+
+| Column | Type | Null | Content |
+| --- | --- | --- | --- |
+| `state` | utf8 | no | `listed` or `unreadable` |
+| `table` | name path | yes | The table, when `listed` |
+| `kind` | utf8 | yes | `table`, `view`, `external`, or `other`, when `listed` |
+| `source_kind` | utf8 | yes | The kind in the source's own term, when `kind` is `other` |
+| `scope` | name path | yes | The range that could not be read, when `unreadable` |
+| `reason` | utf8 | yes | Why the range could not be read, when `unreadable` |
+
+**Table metadata.** One row per requested table, in request order.
+
+| Column | Type | Null | Content |
+| --- | --- | --- | --- |
+| `state` | utf8 | no | `complete`, `incomplete`, `could_not_be_read`, or `does_not_exist` |
+| `table` | name path | no | The table |
+| `reason` | utf8 | yes | Why the table could not be read, when `could_not_be_read` |
+| `kind` | utf8 | yes | As in the table list |
+| `source_kind` | utf8 | yes | As in the table list |
+| `source_id` | reported utf8 | yes | The table's source identifier |
+| `columns` | list of column | yes | The columns in ordinal order |
+| `columns_may_be_hidden` | bool | yes | Whether the catalog may have omitted columns without privilege |
+| `constraints` | reported list of constraint | yes | The constraints in kind, name, and columns order |
+| `source_metadata` | utf8 | yes | The source metadata JSON document |
+| `retrieval` | retrieval | no | Retrieval info |
+
+`kind`, `source_id`, `columns`, `columns_may_be_hidden`, `constraints`, and
+`source_metadata` are non-null exactly when the table was read (`complete` or
+`incomplete`). The nested types are:
+
+| Type | Fields |
+| --- | --- |
+| reported `T` | `state` (utf8, not null): `value`, `missing`, or `not_offered`; `value` (`T`): present when `value`; `reason` (utf8): why it is `missing` |
+| column | `name` (utf8, not null), `ordinal` (uint32, not null), `nullable` (bool, not null), `source_id` (reported utf8, not null), `type` (column type, not null) |
+| column type | `state` (utf8, not null): `mapped`, `unsupported`, or `unread`; `data_source_type` (utf8): present unless `unread`; `analytics_type` (binary): present when `mapped`; `unsupported_reason` (utf8): `not_mapped`, `mapping_not_implemented`, or `parameter_out_of_range` when `unsupported`; `unread_reason` (utf8): when `unread` |
+| constraint | `name` (utf8, not null), `enforced` (bool, not null), `kind` (utf8, not null): `primary_key`, `unique`, `foreign_key`, or `check`; `columns` (name list): absent for `check`; `unique_kind` (utf8): `constraint` or `index` for `unique`; `condition` (utf8): a partial index's condition; `referenced_table` (name path) and `referenced_columns` (name list) for `foreign_key`; `expression` (utf8) for `check` |
+| retrieval | `connector` (struct of `name` and `version`, not null), `adbc_driver` (struct of `name` and `version`): present only with ADBC access; `library_version` (utf8, not null); `read_at` (timestamp in microseconds, UTC): when the table was read |
+
+A column's `analytics_type` is the encapsulated Arrow IPC schema message
+(continuation marker, length, and flatbuffer, as an IPC stream begins) of a
+schema with one field: the column's Analytics type in its
+[Arrow encoding](analytics-types.md#arrow-encodings), including extension
+metadata, with an empty name and nullable. The column's own name and
+nullability are the other fields of the column. Analytics types are recursive,
+so no fixed set of columns can hold them, and their Arrow encoding is already
+the one representation receivers share; the Arrow libraries of every caller
+language read this message, as Arrow Flight carries schemas the same way. A
+text notation of Analytics types would be a second type language to define
+and keep in step.
+
+Retrieval info is repeated in each row rather than carried in the schema's
+metadata, which would make the schema differ by connector.
 
 ### Errors in the API
 

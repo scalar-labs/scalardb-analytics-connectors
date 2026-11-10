@@ -12,10 +12,12 @@ use std::{
 };
 
 use arrow_array::{
+    ArrayRef, RecordBatch, RecordBatchIterator, StructArray,
+    builder::{ListBuilder, StringBuilder},
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
     ffi_stream::FFI_ArrowArrayStream,
 };
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Field, Schema};
 use connector_api::abi::*;
 use connector_sdk::test_connector;
 use prost::Message;
@@ -208,10 +210,149 @@ impl Session {
         })
     }
 
+    /// Starts a namespace list; `None` lists every namespace.
+    pub fn namespace_list(
+        &self,
+        namespaces: Option<&[&str]>,
+        timeout_milliseconds: u64,
+    ) -> Result<Read, Error> {
+        let namespaces = NameFilter::new(namespaces);
+        // SAFETY: the handle and filter are live and the outputs are writable.
+        started(|operation, stream| unsafe {
+            scalardb_analytics_connector_namespace_list_start(
+                self.0,
+                namespaces.as_ptr(),
+                timeout_milliseconds,
+                operation,
+                stream,
+            )
+        })
+    }
+
+    /// Starts a table list; `None` matches every name.
+    pub fn table_list(
+        &self,
+        namespaces: Option<&[&str]>,
+        tables: Option<&[&str]>,
+    ) -> Result<Read, Error> {
+        let namespaces = NameFilter::new(namespaces);
+        let tables = NameFilter::new(tables);
+        // SAFETY: the handle and filters are live and the outputs are writable.
+        started(|operation, stream| unsafe {
+            scalardb_analytics_connector_table_list_start(
+                self.0,
+                namespaces.as_ptr(),
+                tables.as_ptr(),
+                0,
+                operation,
+                stream,
+            )
+        })
+    }
+
+    /// Starts a table metadata request for tables in `test.public`.
+    pub fn table_metadata(
+        &self,
+        tables: &[&str],
+        timeout_milliseconds: u64,
+    ) -> Result<Read, Error> {
+        self.table_metadata_from(table_input(tables), timeout_milliseconds)
+    }
+
+    /// Starts a table metadata request with `tables` as its Arrow input stream.
+    pub fn table_metadata_from(
+        &self,
+        mut tables: FFI_ArrowArrayStream,
+        timeout_milliseconds: u64,
+    ) -> Result<Read, Error> {
+        let result = started(|operation, stream| {
+            // SAFETY: the handle is live, the input stream is moved to the
+            // library, and the outputs are writable.
+            unsafe {
+                scalardb_analytics_connector_table_metadata_start(
+                    self.0,
+                    &mut tables,
+                    timeout_milliseconds,
+                    operation,
+                    stream,
+                )
+            }
+        });
+        assert!(
+            tables.release.is_none(),
+            "the library takes the input stream"
+        );
+        result
+    }
+
     pub fn close(self) {
         // SAFETY: the handle is open and not used again.
         unsafe { scalardb_analytics_connector_session_close(self.0) };
     }
+}
+
+/// Calls a start function with fresh outputs and wraps what it returned.
+fn started(
+    start: impl FnOnce(
+        *mut *mut ScalardbAnalyticsConnectorOperation,
+        *mut FFI_ArrowArrayStream,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+) -> Result<Read, Error> {
+    let mut operation = ptr::null_mut();
+    let mut stream = FFI_ArrowArrayStream::empty();
+    check(start(&mut operation, &mut stream))?;
+    Ok(Read {
+        operation: Operation(operation),
+        stream: Stream(stream),
+    })
+}
+
+/// A name filter as a C caller builds it; `None` is passed as a null pointer.
+pub struct NameFilter {
+    // The filter points into these; moving the vectors keeps their buffers.
+    _texts: Vec<CString>,
+    _pointers: Vec<*const std::ffi::c_char>,
+    filter: Option<ScalardbAnalyticsConnectorNameFilter>,
+}
+
+impl NameFilter {
+    pub fn new(names: Option<&[&str]>) -> Self {
+        let texts: Vec<CString> = names
+            .unwrap_or_default()
+            .iter()
+            .map(|name| text(name))
+            .collect();
+        let pointers: Vec<_> = texts.iter().map(|name| name.as_ptr()).collect();
+        let filter = names.map(|_| ScalardbAnalyticsConnectorNameFilter {
+            names: pointers.as_ptr(),
+            name_count: pointers.len(),
+        });
+        Self {
+            _texts: texts,
+            _pointers: pointers,
+            filter,
+        }
+    }
+
+    pub fn as_ptr(&self) -> *const ScalardbAnalyticsConnectorNameFilter {
+        self.filter.as_ref().map_or(ptr::null(), ptr::from_ref)
+    }
+}
+
+/// Exports the tables `test.public.<name>` as a table metadata input stream.
+pub fn table_input(tables: &[&str]) -> FFI_ArrowArrayStream {
+    let item = Arc::new(Field::new("item", DataType::Utf8, false));
+    let mut builder = ListBuilder::new(StringBuilder::new()).with_field(item);
+    for table in tables {
+        for name in ["test", "public", table] {
+            builder.values().append_value(name);
+        }
+        builder.append(true);
+    }
+    let column: ArrayRef = Arc::new(builder.finish());
+    let batch = RecordBatch::try_from_iter([("table", column)]).unwrap();
+    let schema = batch.schema();
+    FFI_ArrowArrayStream::new(Box::new(RecordBatchIterator::new([Ok(batch)], schema)))
 }
 
 pub struct PushdownResult(pub *mut ScalardbAnalyticsConnectorPushdownResult);
@@ -262,6 +403,7 @@ impl Drop for RemoteExecution {
     }
 }
 
+/// A started operation, a read or a metadata request, and its stream.
 pub struct Read {
     pub operation: Operation,
     pub stream: Stream,
@@ -316,6 +458,22 @@ impl Stream {
         let status = unsafe { (self.0.get_schema.unwrap())(&mut self.0, &mut schema) };
         assert_eq!(status, 0);
         Schema::try_from(&schema).unwrap()
+    }
+
+    /// Pulls the next batch and imports it; `None` at the end of the stream.
+    pub fn next_batch(&mut self) -> Option<RecordBatch> {
+        let schema = self.schema();
+        let mut array = FFI_ArrowArray::empty();
+        // SAFETY: the stream is live and the array output is writable.
+        let status = unsafe { (self.0.get_next.unwrap())(&mut self.0, &mut array) };
+        assert_eq!(status, 0, "the pull succeeds");
+        if array.is_released() {
+            return None;
+        }
+        let schema_ffi = FFI_ArrowSchema::try_from(&schema).unwrap();
+        // SAFETY: the library exported a valid array of the stream's schema.
+        let data = unsafe { arrow_array::ffi::from_ffi(array, &schema_ffi) }.unwrap();
+        Some(RecordBatch::from(StructArray::from(data)))
     }
 
     pub fn pull(&mut self) -> Pull {

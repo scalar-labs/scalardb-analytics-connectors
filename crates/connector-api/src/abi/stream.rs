@@ -1,4 +1,4 @@
-//! A read operation's results as an Arrow C stream.
+//! An operation's results as an Arrow C stream.
 
 use std::{
     io,
@@ -9,13 +9,13 @@ use std::{
 use arrow_array::{RecordBatch, RecordBatchReader, ffi_stream::FFI_ArrowArrayStream};
 use arrow_schema::{ArrowError, SchemaRef};
 
-use connector_sdk::runtime::ReadOperation;
+use connector_sdk::runtime::Operation;
 
 /// Exports the operation's results as an `ArrowArrayStream`.
 ///
 /// The stream holds no Data Source resources of its own: it pulls through the
-/// operation, and releasing it releases the operation's read.
-pub(super) fn export(operation: Arc<ReadOperation>) -> FFI_ArrowArrayStream {
+/// operation, and releasing it releases the operation's Data Source request.
+pub(super) fn export(operation: Arc<Operation>) -> FFI_ArrowArrayStream {
     let schema = operation.output_schema();
     FFI_ArrowArrayStream::new(Box::new(OperationReader {
         operation: Some(operation),
@@ -25,7 +25,7 @@ pub(super) fn export(operation: Arc<ReadOperation>) -> FFI_ArrowArrayStream {
 
 struct OperationReader {
     /// Present until the stream is released.
-    operation: Option<Arc<ReadOperation>>,
+    operation: Option<Arc<Operation>>,
     schema: SchemaRef,
 }
 

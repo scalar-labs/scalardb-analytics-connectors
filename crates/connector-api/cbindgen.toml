@@ -24,7 +24,8 @@ header = """
  *   U+0000 is complete only through `length`. Absent output text has a NULL
  *   `data`.
  * - Binary data, such as Substrait plans, carries a length and no terminator.
- * - The library copies every input during the call.
+ * - The library copies every input during the call, except an Arrow input
+ *   stream, which the caller moves to the library.
  * - A timeout of 0 milliseconds means no limit.
  */"""
 after_includes = """

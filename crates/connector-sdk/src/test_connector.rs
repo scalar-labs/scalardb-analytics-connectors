@@ -1,7 +1,8 @@
-//! An in-memory Connector that exercises the C ABI in this crate's tests.
+//! An in-memory Connector that exercises the runtime and the C ABI in tests.
 //!
 //! It is registered only with the `test-connector` feature and never ships in
-//! a product build. A plan's table binding selects what its read does:
+//! a product build. Its catalog is described on [`TestCatalog`]. A plan's
+//! table binding selects what its read does:
 //!
 //! | Binding | Read behavior |
 //! | --- | --- |
@@ -17,25 +18,27 @@
 //! Every plan's output columns must be 64-bit integers.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     pin::Pin,
     sync::{
         Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 
 use crate::{
-    CatalogReader, Component, ConnectionOptions, ConnectorDescriptor, ConnectorError,
-    ConnectorExecutor, ConnectorLibrary, ConnectorPlanner, DataSource, DataSourceAccess,
-    DataSourceSession, DiagnosticEntry, DiagnosticValue, ErrorKind, ExecutionCancel,
-    ExecutionOutput, LibrarySettings, Listed, LogicalPlan, LogicalRelation, NameFilter,
-    NamespacePath, OptionDescriptor, OptionValue, OptionValueType, PlannedPushdown, PlanningError,
-    PortableQuery, PushdownResult, SourceTableMetadata, TableEntry, TableMetadata, TableRecord,
-    TableReference,
+    CatalogReader, Column, ColumnType, Component, ConnectionOptions, ConnectorDescriptor,
+    ConnectorError, ConnectorExecutor, ConnectorLibrary, ConnectorPlanner, Constraint,
+    ConstraintKind, DataSource, DataSourceAccess, DataSourceSession, DiagnosticEntry,
+    DiagnosticValue, ErrorKind, ExecutionCancel, ExecutionOutput, LibrarySettings, Listed,
+    LogicalPlan, LogicalRelation, NameFilter, NamespacePath, OptionDescriptor, OptionValue,
+    OptionValueType, PlannedPushdown, PlanningError, PortableQuery, PushdownResult, Reported,
+    SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
+    UniqueKind, UnsupportedReason,
 };
+use analytics_types::{AnalyticsType, ArrayType, DecimalType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{Schema, SchemaRef};
 use futures_core::Stream;
@@ -126,7 +129,9 @@ impl DataSource for TestDataSource {
             executor: TestExecutor {
                 probe: Arc::clone(&self.probe),
             },
-            catalog: TestCatalog,
+            catalog: TestCatalog {
+                probe: Arc::clone(&self.probe),
+            },
         })
     }
 }
@@ -285,6 +290,37 @@ struct Stop {
     signal: Condvar,
 }
 
+impl Stop {
+    /// Blocks until the read is stopped and returns the source's error.
+    fn wait(&self) -> ConnectorError {
+        let mut stopped = self
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*stopped {
+            stopped = self
+                .signal
+                .wait(stopped)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        ConnectorError::new(ErrorKind::DataSource, false, "the test source stopped")
+    }
+}
+
+/// A Data Source error carrying a source code, a message, and diagnostics.
+fn source_failure() -> ConnectorError {
+    ConnectorError::new(ErrorKind::DataSource, true, "the test source failed")
+        .with_data_source_error(
+            Some("40001".to_owned()),
+            Some("could not serialize\0access".to_owned()),
+        )
+        .with_diagnostics([
+            DiagnosticEntry::new("vendor_code", DiagnosticValue::I32(-7)),
+            DiagnosticEntry::new("detail", DiagnosticValue::Utf8("first".to_owned())),
+            DiagnosticEntry::new("detail", DiagnosticValue::Bytes(vec![0, 1, 2])),
+        ])
+}
+
 struct TestCancel {
     probe: Arc<Probe>,
     stop: Arc<Stop>,
@@ -339,39 +375,8 @@ impl Stream for TestStream {
                 Poll::Ready(Some(Ok(batch)))
             }
             Behavior::Batches(_) => Poll::Ready(None),
-            Behavior::Block => {
-                let mut stopped = this
-                    .stop
-                    .stopped
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                while !*stopped {
-                    stopped = this
-                        .stop
-                        .signal
-                        .wait(stopped)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                Poll::Ready(Some(Err(ConnectorError::new(
-                    ErrorKind::DataSource,
-                    false,
-                    "the test source stopped",
-                ))))
-            }
-            Behavior::Fail => Poll::Ready(Some(Err(ConnectorError::new(
-                ErrorKind::DataSource,
-                true,
-                "the test source failed",
-            )
-            .with_data_source_error(
-                Some("40001".to_owned()),
-                Some("could not serialize\0access".to_owned()),
-            )
-            .with_diagnostics([
-                DiagnosticEntry::new("vendor_code", DiagnosticValue::I32(-7)),
-                DiagnosticEntry::new("detail", DiagnosticValue::Utf8("first".to_owned())),
-                DiagnosticEntry::new("detail", DiagnosticValue::Bytes(vec![0, 1, 2])),
-            ])))),
+            Behavior::Block => Poll::Ready(Some(Err(this.stop.wait()))),
+            Behavior::Fail => Poll::Ready(Some(Err(source_failure()))),
             Behavior::BreakConnection => Poll::Ready(Some(Err(ConnectorError::new(
                 ErrorKind::Connection,
                 true,
@@ -388,49 +393,367 @@ impl Drop for TestStream {
     }
 }
 
-/// The test Connector has no catalog; metadata requests are not part of its tests.
-pub struct TestCatalog;
+/// The test Data Source's catalog: a fixed fixture plus names that select a
+/// behavior.
+///
+/// Namespaces `["test", "public"]` and `["test", "sales"]` are listed, and
+/// `["test", "restricted"]` cannot be read. Filters match a namespace's last
+/// name. Tables:
+///
+/// | Table (last name) | Listed in | Table metadata request |
+/// | --- | --- | --- |
+/// | `orders` | `public`, as a table | Complete: every column type state and constraint kind |
+/// | `order_view` | `public`, as a view | Complete, with nothing offered beyond columns |
+/// | `events` | `sales`, as another kind | Incomplete: every item that can be missing is missing |
+/// | `missing` | — | Does not exist |
+/// | `secret` | — | Could not be read |
+///
+/// A name `block`, `fail`, or `panic` in a filter or a table metadata request
+/// makes the read, after the items before it, block until stopped, fail with
+/// a Data Source error, or panic.
+pub struct TestCatalog {
+    probe: Arc<Probe>,
+}
 
-/// Never constructed: the test catalog reads no tables.
-#[derive(PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct NoTable;
+/// The test source metadata: which fixture table was read.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TestTable {
+    pub table: Vec<String>,
+    pub fixture: TestFixture,
+}
 
-impl SourceTableMetadata for NoTable {
+/// The fixture tables that exist and can be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestFixture {
+    Orders,
+    OrderView,
+    Events,
+}
+
+impl SourceTableMetadata for TestTable {
     fn to_table_metadata(&self) -> TableMetadata {
-        unreachable!("the test catalog reads no tables")
+        let table = TableReference::new(self.table.clone()).expect("fixture names are non-empty");
+        match self.fixture {
+            TestFixture::Orders => orders(table),
+            TestFixture::OrderView => TableMetadata::new(
+                table,
+                TableKind::View,
+                Reported::NotOffered,
+                vec![column(
+                    "id",
+                    1,
+                    Reported::NotOffered,
+                    ColumnType::Mapped {
+                        data_source_type: "int8".to_owned(),
+                        analytics_type: AnalyticsType::BigInt,
+                    },
+                )],
+                false,
+                Reported::NotOffered,
+            ),
+            TestFixture::Events => TableMetadata::new(
+                table,
+                TableKind::Other("partitioned table".to_owned()),
+                Reported::Missing {
+                    reason: "the table identifier is not readable".to_owned(),
+                },
+                vec![column(
+                    "payload",
+                    1,
+                    Reported::Missing {
+                        reason: "the column identifier is not readable".to_owned(),
+                    },
+                    ColumnType::Unread {
+                        reason: "the column type is not readable".to_owned(),
+                    },
+                )],
+                true,
+                Reported::Missing {
+                    reason: "the constraints are not readable".to_owned(),
+                },
+            ),
+        }
     }
 }
 
+fn column(name: &str, ordinal: u32, source_id: Reported<String>, ty: ColumnType) -> Column {
+    Column {
+        name: name.to_owned(),
+        ordinal,
+        nullable: ordinal != 1,
+        source_id,
+        ty,
+    }
+}
+
+fn names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+fn orders(table: TableReference) -> TableMetadata {
+    let mapped = |data_source_type: &str, analytics_type| ColumnType::Mapped {
+        data_source_type: data_source_type.to_owned(),
+        analytics_type,
+    };
+    let id = |value: &str| Reported::Value(value.to_owned());
+    TableMetadata::new(
+        table,
+        TableKind::Table,
+        id("16384"),
+        vec![
+            column("id", 1, id("1"), mapped("int8", AnalyticsType::BigInt)),
+            column(
+                "amount",
+                2,
+                id("2"),
+                mapped(
+                    "numeric(10,2)",
+                    AnalyticsType::Decimal(DecimalType::new(10, 2).expect("a valid decimal")),
+                ),
+            ),
+            column("reference", 3, id("3"), mapped("uuid", AnalyticsType::Uuid)),
+            column(
+                "tags",
+                4,
+                id("4"),
+                mapped(
+                    "_text",
+                    AnalyticsType::Array(ArrayType::new(AnalyticsType::Text, true)),
+                ),
+            ),
+            column(
+                "area",
+                5,
+                id("5"),
+                ColumnType::Unsupported {
+                    data_source_type: "geometry".to_owned(),
+                    reason: UnsupportedReason::NotMapped,
+                },
+            ),
+        ],
+        false,
+        Reported::Value(vec![
+            Constraint {
+                name: "orders_pkey".to_owned(),
+                enforced: true,
+                kind: ConstraintKind::PrimaryKey {
+                    columns: names(&["id"]),
+                },
+            },
+            Constraint {
+                name: "orders_reference_key".to_owned(),
+                enforced: true,
+                kind: ConstraintKind::Unique {
+                    columns: names(&["reference"]),
+                    kind: UniqueKind::Index,
+                    condition: Some("(amount > 0)".to_owned()),
+                },
+            },
+            Constraint {
+                name: "orders_customer_fkey".to_owned(),
+                enforced: false,
+                kind: ConstraintKind::ForeignKey {
+                    columns: names(&["id"]),
+                    referenced_table: TableReference::new(names(&["test", "public", "customers"]))
+                        .expect("fixture names are non-empty"),
+                    referenced_columns: names(&["customer_id"]),
+                },
+            },
+            Constraint {
+                name: "orders_amount_check".to_owned(),
+                enforced: true,
+                kind: ConstraintKind::Check {
+                    expression: "(amount >= 0)".to_owned(),
+                },
+            },
+        ]),
+    )
+}
+
+/// One step of a catalog read.
+enum CatalogStep<T> {
+    Item(T),
+    Block,
+    Fail,
+    Panic,
+}
+
+/// The step a behavior name selects, if it is one.
+fn behavior_step<T>(name: &str) -> Option<CatalogStep<T>> {
+    match name {
+        "block" => Some(CatalogStep::Block),
+        "fail" => Some(CatalogStep::Fail),
+        "panic" => Some(CatalogStep::Panic),
+        _ => None,
+    }
+}
+
+fn matches(filter: &NameFilter, name: &str) -> bool {
+    filter.as_ref().is_none_or(|names| names.contains(name))
+}
+
+/// The behavior steps a filter selects, after the listed items.
+fn filter_steps<T>(filter: &NameFilter) -> impl Iterator<Item = CatalogStep<T>> + '_ {
+    filter
+        .iter()
+        .flatten()
+        .filter_map(|name| behavior_step(name))
+}
+
+impl TestCatalog {
+    fn read<T: Send + 'static>(
+        &self,
+        steps: impl IntoIterator<Item = CatalogStep<T>>,
+    ) -> ExecutionOutput<T> {
+        self.probe.sent.fetch_add(1, Ordering::SeqCst);
+        let stop = Arc::new(Stop::default());
+        let stream = CatalogStream {
+            steps: steps.into_iter().collect(),
+            probe: Arc::clone(&self.probe),
+            stop: Arc::clone(&stop),
+        };
+        let cancel = TestCancel {
+            probe: Arc::clone(&self.probe),
+            stop,
+        };
+        ExecutionOutput::new(Box::pin(stream), Arc::new(cancel))
+    }
+}
+
+const PUBLIC: [&str; 2] = ["test", "public"];
+const SALES: [&str; 2] = ["test", "sales"];
+const RESTRICTED: [&str; 2] = ["test", "restricted"];
+
 impl CatalogReader for TestCatalog {
-    type Table = NoTable;
+    type Table = TestTable;
 
     fn list_namespaces(
         &self,
-        _filter: &NameFilter,
+        filter: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError> {
-        Err(no_catalog())
+        let mut steps: Vec<_> = [PUBLIC, SALES]
+            .into_iter()
+            .filter(|namespace| matches(filter, namespace[1]))
+            .map(|namespace| {
+                CatalogStep::Item(Listed::Item(NamespacePath {
+                    names: names(&namespace),
+                }))
+            })
+            .collect();
+        if matches(filter, RESTRICTED[1]) {
+            steps.push(CatalogStep::Item(Listed::Unreadable {
+                scope: NamespacePath {
+                    names: names(&RESTRICTED),
+                },
+                reason: "permission denied for the namespace".to_owned(),
+            }));
+        }
+        steps.extend(filter_steps(filter));
+        Ok(self.read(steps))
     }
 
     fn list_tables(
         &self,
-        _namespaces: &NameFilter,
-        _tables: &NameFilter,
+        namespaces: &NameFilter,
+        tables: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError> {
-        Err(no_catalog())
+        let fixture = [
+            (PUBLIC, "orders", TableKind::Table),
+            (PUBLIC, "order_view", TableKind::View),
+            (
+                SALES,
+                "events",
+                TableKind::Other("partitioned table".to_owned()),
+            ),
+        ];
+        let mut steps: Vec<_> = fixture
+            .into_iter()
+            .filter(|(namespace, name, _)| {
+                matches(namespaces, namespace[1]) && matches(tables, name)
+            })
+            .map(|(namespace, name, kind)| {
+                let mut path = names(&namespace);
+                path.push(name.to_owned());
+                CatalogStep::Item(Listed::Item(TableEntry {
+                    table: TableReference::new(path).expect("fixture names are non-empty"),
+                    kind,
+                }))
+            })
+            .collect();
+        if matches(namespaces, RESTRICTED[1]) {
+            steps.push(CatalogStep::Item(Listed::Unreadable {
+                scope: NamespacePath {
+                    names: names(&RESTRICTED),
+                },
+                reason: "permission denied for the namespace".to_owned(),
+            }));
+        }
+        steps.extend(filter_steps(namespaces));
+        steps.extend(filter_steps(tables));
+        Ok(self.read(steps))
     }
 
     fn read_tables(
         &self,
-        _tables: &[TableReference],
-    ) -> Result<ExecutionOutput<TableRecord<NoTable>>, ConnectorError> {
-        Err(no_catalog())
+        tables: &[TableReference],
+    ) -> Result<ExecutionOutput<TableRecord<TestTable>>, ConnectorError> {
+        let steps: Vec<_> = tables
+            .iter()
+            .map(|table| {
+                let name = table.names().last().map_or("", String::as_str);
+                let read = |fixture| TableRecord::Read {
+                    metadata: TestTable {
+                        table: table.names().to_vec(),
+                        fixture,
+                    },
+                    read_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+                };
+                behavior_step(name).unwrap_or_else(|| {
+                    CatalogStep::Item(match name {
+                        "orders" => read(TestFixture::Orders),
+                        "order_view" => read(TestFixture::OrderView),
+                        "events" => read(TestFixture::Events),
+                        "secret" => TableRecord::Unavailable {
+                            table: table.clone(),
+                            reason: "permission denied for the table".to_owned(),
+                        },
+                        _ => TableRecord::NotFound {
+                            table: table.clone(),
+                        },
+                    })
+                })
+            })
+            .collect();
+        Ok(self.read(steps))
     }
 }
 
-fn no_catalog() -> ConnectorError {
-    ConnectorError::new(
-        ErrorKind::InvalidRequest,
-        false,
-        "the test connector has no catalog",
-    )
+/// A catalog read's items, produced one per pull.
+struct CatalogStream<T> {
+    steps: VecDeque<CatalogStep<T>>,
+    probe: Arc<Probe>,
+    stop: Arc<Stop>,
+}
+
+impl<T> Unpin for CatalogStream<T> {}
+
+impl<T> Stream for CatalogStream<T> {
+    type Item = Result<T, ConnectorError>;
+
+    fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        Poll::Ready(this.steps.pop_front().map(|step| match step {
+            CatalogStep::Item(item) => Ok(item),
+            CatalogStep::Block => Err(this.stop.wait()),
+            CatalogStep::Fail => Err(source_failure()),
+            CatalogStep::Panic => panic!("the test connector panicked in a catalog read"),
+        }))
+    }
+}
+
+impl<T> Drop for CatalogStream<T> {
+    fn drop(&mut self) {
+        self.probe.released.fetch_add(1, Ordering::SeqCst);
+    }
 }

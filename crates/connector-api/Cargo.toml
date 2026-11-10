@@ -24,6 +24,8 @@ connector-postgresql = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [dev-dependencies]
+analytics-types.workspace = true
+arrow-ipc.workspace = true
 cbindgen.workspace = true
 connector-api = { path = ".", features = ["test-connector"] }
 prost.workspace = true

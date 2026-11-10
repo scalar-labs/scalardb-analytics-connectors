@@ -1,9 +1,9 @@
-//! One read operation: lazy start, pulls, cancellation, and its error.
+//! One operation, a read or a metadata request: lazy start, pulls,
+//! cancellation, and its error.
 
 use std::{
     mem,
     panic::{self, AssertUnwindSafe},
-    pin::Pin,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -13,69 +13,86 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{ConnectorError, ErrorKind, ExecutionCancelHandle, ExecutionStream};
+use crate::{ConnectorError, ErrorKind, ExecutionCancelHandle, RecordBatchStream};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use futures_core::Stream;
 
 use super::{
-    SessionState, SharedRemoteExecution, invalid_state, lock, panic_error, session::SessionLease,
-    watcher::WatchRegistration,
+    MetadataRequest, SessionState, SharedRemoteExecution, invalid_state, lock, panic_error,
+    session::SessionLease, watcher::WatchRegistration,
 };
 
-/// The Data Source resources of a read.
+/// What an operation asks of the Data Source.
+pub(super) enum OperationRequest {
+    /// Reads the rows of a planned remote execution.
+    Read(SharedRemoteExecution),
+    /// Reads the catalog for one metadata request.
+    Metadata(MetadataRequest),
+}
+
+/// The batches of a started operation and the means of stopping it.
+pub(super) struct StartedStream {
+    pub(super) batches: RecordBatchStream,
+    pub(super) cancel: ExecutionCancelHandle,
+}
+
+/// The Data Source resources of an operation.
 ///
 /// The session lease is held from the start of the operation until its stream
 /// ends, is released, or the operation is closed.
-enum ReadState {
+enum OperationState {
     /// Started but not yet pulled; nothing was sent to the Data Source.
     Pending(SessionLease),
     Running {
-        stream: ExecutionStream,
+        stream: RecordBatchStream,
         _lease: SessionLease,
-        /// Present when the read has a timeout.
+        /// Present when the operation has a timeout.
         _deadline: Option<WatchRegistration>,
     },
     /// Ended, released, or closed; every Data Source resource is released.
     Finished,
 }
 
-/// What a cancellation does in each phase of the read.
+/// What a cancellation does in each phase of the operation.
 enum CancelState {
     /// Nothing was sent yet; a cancellation is only recorded.
     Pending,
-    /// Cancelled before the read started; starting it returns `cancellation`.
+    /// Cancelled before the request was sent; starting it returns `cancellation`.
     Requested,
     Running(ExecutionCancelHandle),
     Finished,
 }
 
-/// One read operation, shared by its handle and its result stream.
-pub struct ReadOperation {
+/// One operation, shared by its handle and its result stream.
+///
+/// Reads and metadata requests follow the same rules: the request is sent at
+/// the first pull, the session runs no other operation until the stream ends
+/// or is released, and cancellation, the timeout, and panics are handled alike.
+pub struct Operation {
     session: Arc<SessionState>,
-    remote: SharedRemoteExecution,
+    request: OperationRequest,
     timeout: Option<Duration>,
     closed: AtomicBool,
     /// Held during a pull; the caller never pulls from several threads at once.
-    read: Mutex<ReadState>,
+    state: Mutex<OperationState>,
     /// Separate from `read` so that cancellation never waits for a blocked pull.
     cancel: Mutex<CancelState>,
     /// The first error a pull returned, kept until the operation is closed.
     error: OnceLock<ConnectorError>,
 }
 
-impl ReadOperation {
+impl Operation {
     pub(super) fn new(
         lease: SessionLease,
-        remote: SharedRemoteExecution,
+        request: OperationRequest,
         timeout: Option<Duration>,
     ) -> Self {
         Self {
             session: Arc::clone(&lease.session),
-            remote,
+            request,
             timeout,
             closed: AtomicBool::new(false),
-            read: Mutex::new(ReadState::Pending(lease)),
+            state: Mutex::new(OperationState::Pending(lease)),
             cancel: Mutex::new(CancelState::Pending),
             error: OnceLock::new(),
         }
@@ -83,7 +100,10 @@ impl ReadOperation {
 
     /// Returns the schema of every batch, known before the Data Source is queried.
     pub fn output_schema(&self) -> SchemaRef {
-        self.remote.output_schema()
+        match &self.request {
+            OperationRequest::Read(remote) => remote.output_schema(),
+            OperationRequest::Metadata(request) => request.output_schema(),
+        }
     }
 
     /// Returns the error that ended the operation's stream, if any.
@@ -101,8 +121,8 @@ impl ReadOperation {
 
     /// Pulls the next batch; `None` means the stream ended.
     ///
-    /// The first pull sends the query. A panic in the connector becomes an
-    /// `internal` error, releases the read, and marks the session unusable.
+    /// The first pull sends the request. A panic in the connector becomes an
+    /// `internal` error, releases the operation, and marks the session unusable.
     pub fn pull(&self) -> Result<Option<RecordBatch>, ConnectorError> {
         match panic::catch_unwind(AssertUnwindSafe(|| self.pull_contained())) {
             Ok(result) => result,
@@ -115,18 +135,18 @@ impl ReadOperation {
     }
 
     fn pull_contained(&self) -> Result<Option<RecordBatch>, ConnectorError> {
-        let mut read = lock(&self.read);
+        let mut read = lock(&self.state);
         if let Err(error) = self.ensure_open() {
             self.finish(&mut read);
             return Err(self.record(error));
         }
-        if matches!(*read, ReadState::Pending(_)) {
+        if matches!(*read, OperationState::Pending(_)) {
             if let Err(error) = self.start(&mut read) {
                 self.finish(&mut read);
                 return Err(self.record(error));
             }
         }
-        let ReadState::Running { stream, .. } = &mut *read else {
+        let OperationState::Running { stream, .. } = &mut *read else {
             return Ok(None);
         };
         match next_blocking(stream).map(|item| self.session.observe(|| item)) {
@@ -142,10 +162,10 @@ impl ReadOperation {
         }
     }
 
-    /// Sends the query: starts execution, its deadline, and its cancellation.
-    fn start(&self, read: &mut ReadState) -> Result<(), ConnectorError> {
-        let ReadState::Pending(lease) = mem::replace(read, ReadState::Finished) else {
-            unreachable!("only a pending read starts");
+    /// Sends the request: starts it, its deadline, and its cancellation.
+    fn start(&self, read: &mut OperationState) -> Result<(), ConnectorError> {
+        let OperationState::Pending(lease) = mem::replace(read, OperationState::Finished) else {
+            unreachable!("only a pending operation starts");
         };
         if matches!(*lock(&self.cancel), CancelState::Requested) {
             return Err(ConnectorError::new(
@@ -155,10 +175,9 @@ impl ReadOperation {
             ));
         }
         let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
-        let stream = self
+        let StartedStream { batches, cancel } = self
             .session
-            .observe(|| self.session.inner.execute(&self.remote, deadline))?;
-        let cancel = stream.cancel_handle();
+            .observe(|| self.session.start(&self.request, deadline))?;
         let registration = deadline.map(|deadline| {
             self.session
                 .library()
@@ -167,14 +186,14 @@ impl ReadOperation {
         });
         let mut cancel_state = lock(&self.cancel);
         if matches!(*cancel_state, CancelState::Requested) {
-            // Cancelled while the execution started: the stop is recorded
+            // Cancelled while the request started: the stop is recorded
             // before the connector is asked to stop, so the next pull returns
             // `cancellation` whatever this call returns.
             let _ = cancel.cancel();
         }
         *cancel_state = CancelState::Running(cancel);
-        *read = ReadState::Running {
-            stream,
+        *read = OperationState::Running {
+            stream: batches,
             _lease: lease,
             _deadline: registration,
         };
@@ -198,12 +217,12 @@ impl ReadOperation {
         cancel.cancel()
     }
 
-    /// Releases the read: stops the Data Source query and returns the lease.
+    /// Releases the operation: stops the Data Source request and returns the lease.
     ///
     /// A panic while the connector releases its resources is contained here,
     /// because release runs from C callbacks that cannot unwind.
     pub fn release(&self) {
-        let read = mem::replace(&mut *lock(&self.read), ReadState::Finished);
+        let read = mem::replace(&mut *lock(&self.state), OperationState::Finished);
         *lock(&self.cancel) = CancelState::Finished;
         if panic::catch_unwind(AssertUnwindSafe(|| drop(read))).is_err() {
             self.session.mark_unusable();
@@ -216,8 +235,8 @@ impl ReadOperation {
         self.release();
     }
 
-    fn finish(&self, read: &mut ReadState) {
-        *read = ReadState::Finished;
+    fn finish(&self, read: &mut OperationState) {
+        *read = OperationState::Finished;
         *lock(&self.cancel) = CancelState::Finished;
     }
 
@@ -234,7 +253,7 @@ impl ReadOperation {
 ///
 /// Data Source access is synchronous; a stream that returns `Pending` wakes
 /// this thread when it can make progress.
-fn next_blocking(stream: &mut ExecutionStream) -> Option<Result<RecordBatch, ConnectorError>> {
+fn next_blocking(stream: &mut RecordBatchStream) -> Option<Result<RecordBatch, ConnectorError>> {
     struct ThreadWaker(Thread);
     impl Wake for ThreadWaker {
         fn wake(self: Arc<Self>) {
@@ -244,7 +263,7 @@ fn next_blocking(stream: &mut ExecutionStream) -> Option<Result<RecordBatch, Con
     let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
     let mut context = Context::from_waker(&waker);
     loop {
-        match Pin::new(&mut *stream).poll_next(&mut context) {
+        match stream.as_mut().poll_next(&mut context) {
             Poll::Ready(item) => return item,
             Poll::Pending => thread::park(),
         }

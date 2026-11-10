@@ -12,11 +12,19 @@ use std::{
 };
 
 use crate::{
-    ConnectionOptions, ConnectorError, ConnectorLibrary, DataSource, DataSourceSession, ErrorKind,
-    ExecutionStream, LibrarySettings, PlanningError, PortableQuery, PushdownRequest,
-    PushdownResult, RemoteExecution, RequestError, execute_planned,
+    CatalogReader, Component, ConnectionOptions, ConnectorError, ConnectorLibrary, DataSource,
+    DataSourceSession, ErrorKind, ExecutionStream, LibrarySettings, PlanningError, PortableQuery,
+    PushdownRequest, PushdownResult, RemoteExecution, RequestError, SourceStream, execute_planned,
+    start_source_read,
 };
+use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+
+use super::{
+    MetadataRequest,
+    metadata::{MetadataRows, Retrieval, namespace_row, table_entry_row, table_row},
+    operation::StartedStream,
+};
 use prost::Message;
 use substrait::proto::Plan;
 
@@ -109,6 +117,20 @@ pub(crate) trait DynSession: Send + Sync {
         remote: &SharedRemoteExecution,
         deadline: Option<Instant>,
     ) -> Result<ExecutionStream, ConnectorError>;
+
+    /// Starts the catalog read for a metadata request, with its items as rows.
+    ///
+    /// The connector's source metadata type is erased here: each read table
+    /// becomes its JSON document and derived table metadata.
+    fn start_metadata(
+        &self,
+        request: &MetadataRequest,
+        retrieval: Retrieval,
+        deadline: Option<Instant>,
+    ) -> Result<StartedStream, ConnectorError>;
+
+    /// Returns the ADBC driver the session reads through; `None` with direct access.
+    fn adbc_driver(&self) -> Option<Component>;
 }
 
 impl<S> DynSession for S
@@ -159,6 +181,44 @@ where
             typed_remote_execution::<S::Query>(remote)?,
             deadline,
         )
+    }
+
+    fn start_metadata(
+        &self,
+        request: &MetadataRequest,
+        retrieval: Retrieval,
+        deadline: Option<Instant>,
+    ) -> Result<StartedStream, ConnectorError> {
+        let catalog = self.catalog();
+        Ok(match request {
+            MetadataRequest::NamespaceList { namespaces } => rows(
+                start_source_read(deadline, || catalog.list_namespaces(namespaces))?,
+                namespace_row,
+            ),
+            MetadataRequest::TableList { namespaces, tables } => rows(
+                start_source_read(deadline, || catalog.list_tables(namespaces, tables))?,
+                table_entry_row,
+            ),
+            MetadataRequest::TableMetadata { tables } => rows(
+                start_source_read(deadline, || catalog.read_tables(tables))?,
+                move |record| table_row(record, &retrieval),
+            ),
+        })
+    }
+
+    fn adbc_driver(&self) -> Option<Component> {
+        DataSourceSession::adbc_driver(self)
+    }
+}
+
+/// Turns a started catalog read into a stream of one-row batches.
+fn rows<T: Send + 'static>(
+    items: SourceStream<T>,
+    row: impl Fn(T) -> Result<RecordBatch, ConnectorError> + Send + 'static,
+) -> StartedStream {
+    StartedStream {
+        cancel: items.cancel_handle(),
+        batches: Box::pin(MetadataRows::new(items, row)),
     }
 }
 

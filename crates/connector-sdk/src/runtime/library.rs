@@ -15,8 +15,8 @@ use super::{
     watcher::Watcher,
 };
 use crate::{
-    ConnectionOptions, ConnectorDescriptor, ConnectorError, ConnectorLibrary, DataSource,
-    DataSourceSession, ErrorKind, LibrarySettings, PortableQuery, SecretString,
+    Component, ConnectionOptions, ConnectorDescriptor, ConnectorError, ConnectorLibrary,
+    DataSource, DataSourceSession, ErrorKind, LibrarySettings, PortableQuery, SecretString,
 };
 
 /// One connector built into a library, registered before initialization.
@@ -48,15 +48,21 @@ impl BuiltInConnector {
 /// library is shut down still stop at their deadlines.
 pub struct Library {
     connectors: Vec<(ConnectorDescriptor, Box<dyn DynConnectorLibrary>)>,
+    /// The library version, reported in retrieval info.
+    pub(super) version: String,
     pub(super) watcher: Watcher,
     closed: AtomicBool,
 }
 
 impl Library {
     /// Creates every connector's process-level state and starts the watcher.
+    ///
+    /// `version` is the version of the library these connectors are built
+    /// into, as its static information states.
     pub fn initialize(
         connectors: &[BuiltInConnector],
         settings: &LibrarySettings,
+        version: &str,
     ) -> Result<Arc<Self>, ConnectorError> {
         let connectors = connectors
             .iter()
@@ -67,6 +73,7 @@ impl Library {
             .collect::<Result<_, ConnectorError>>()?;
         Ok(Arc::new(Self {
             connectors,
+            version: version.to_owned(),
             watcher: Watcher::start()?,
             closed: AtomicBool::new(false),
         }))
@@ -109,8 +116,13 @@ impl Library {
         let options = ConnectionOptions::parse(descriptor, options)?;
         let data_source =
             contain_panic(|| library.open_data_source(connector, options, connection_timeout))?;
+        let connector = Component {
+            name: descriptor.name.clone(),
+            version: descriptor.version.clone(),
+        };
         Ok(Arc::new(DataSourceState::new(
             Arc::clone(self),
+            connector,
             data_source,
         )))
     }

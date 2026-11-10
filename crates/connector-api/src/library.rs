@@ -18,7 +18,11 @@ pub(crate) fn initialize(settings: LibrarySettings) -> Result<(), ConnectorError
     if current.is_some() {
         return Err(invalid_state("the library is already initialized"));
     }
-    *current = Some(Library::initialize(built_in_connectors(), &settings)?);
+    *current = Some(Library::initialize(
+        built_in_connectors(),
+        &settings,
+        env!("CARGO_PKG_VERSION"),
+    )?);
     Ok(())
 }
 

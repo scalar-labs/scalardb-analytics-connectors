@@ -10,7 +10,7 @@ use std::{
 use connector_sdk::{
     ConnectorError, ErrorKind, LibrarySettings, SecretString,
     runtime::{
-        BuiltInConnector, DataSourceState, Library, PlanningOutcome, ReadOperation, SessionState,
+        BuiltInConnector, DataSourceState, Library, Operation, PlanningOutcome, SessionState,
         SharedRemoteExecution,
     },
     test_connector::{Probe, TestConnectorLibrary, probe},
@@ -24,6 +24,7 @@ fn library() -> Arc<Library> {
     Library::initialize(
         &[BuiltInConnector::of::<TestConnectorLibrary>()],
         &LibrarySettings::default(),
+        "0.0.0-test",
     )
     .unwrap()
 }
@@ -96,7 +97,7 @@ fn kind<T>(result: Result<T, ConnectorError>) -> ErrorKind {
 }
 
 /// Pulls until the read ends and returns the number of batches.
-fn pull_all(operation: &ReadOperation) -> Result<usize, ConnectorError> {
+fn pull_all(operation: &Operation) -> Result<usize, ConnectorError> {
     let mut batches = 0;
     while operation.pull()?.is_some() {
         batches += 1;

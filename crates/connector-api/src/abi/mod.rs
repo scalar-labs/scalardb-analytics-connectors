@@ -12,7 +12,8 @@
 //! - Output text is UTF-8 with a length and a NUL terminator after it; absent
 //!   output text has a null `data`.
 //! - Binary data, such as Substrait plans, carries a length and no terminator.
-//! - The library copies every input during the call.
+//! - The library copies every input during the call, except an Arrow input
+//!   stream, which the caller moves to the library.
 //! - A timeout of 0 milliseconds means no limit.
 
 mod error;
@@ -27,6 +28,7 @@ pub use error::{
 pub use text::ScalardbAnalyticsConnectorString;
 
 use std::{
+    collections::BTreeSet,
     ffi::c_char,
     panic::{self, AssertUnwindSafe},
     path::PathBuf,
@@ -35,12 +37,12 @@ use std::{
     time::Duration,
 };
 
-use arrow_array::ffi_stream::FFI_ArrowArrayStream;
+use arrow_array::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use connector_sdk::{
-    ConnectorError, ErrorKind, LibrarySettings,
+    ConnectorError, ErrorKind, LibrarySettings, NameFilter,
     runtime::{
-        DataSourceState, PlanningOutcome, ReadOperation, SessionState, SharedRemoteExecution,
-        panic_error,
+        DataSourceState, MetadataRequest, Operation, PlanningOutcome, SessionState,
+        SharedRemoteExecution, panic_error, read_table_input,
     },
 };
 
@@ -92,6 +94,16 @@ pub struct ScalardbAnalyticsConnectorOption {
     pub value: *const c_char,
 }
 
+/// A set of names matched exactly, without case folding or patterns.
+///
+/// A metadata request takes a pointer to one; a null pointer matches every
+/// name, and a filter with no names matches none.
+#[repr(C)]
+pub struct ScalardbAnalyticsConnectorNameFilter {
+    pub names: *const *const c_char,
+    pub name_count: usize,
+}
+
 /// An opened Data Source. It may be used from several threads at once.
 pub struct ScalardbAnalyticsConnectorDataSource {
     state: Arc<DataSourceState>,
@@ -114,9 +126,9 @@ pub struct ScalardbAnalyticsConnectorRemoteExecution {
     remote: SharedRemoteExecution,
 }
 
-/// A read operation. It may be cancelled from any thread.
+/// An operation: a read or a metadata request. It may be cancelled from any thread.
 pub struct ScalardbAnalyticsConnectorOperation {
-    operation: Arc<ReadOperation>,
+    operation: Arc<Operation>,
     /// The C view of the operation's error, built on first retrieval.
     error: OnceLock<Box<OwnedError>>,
 }
@@ -510,19 +522,200 @@ pub unsafe extern "C" fn scalardb_analytics_connector_read_start(
             remote_execution.remote.clone(),
             timeout(timeout_milliseconds),
         )?;
-        let stream = stream::export(Arc::clone(&operation));
-        let handle = Box::new(ScalardbAnalyticsConnectorOperation {
-            operation,
-            error: OnceLock::new(),
-        });
         // SAFETY: both output pointers are non-null and the caller passes
         // writable memory.
-        unsafe {
-            out_stream.write(stream);
-            out_operation.write(Box::into_raw(handle));
-        }
+        unsafe { write_operation(operation, out_operation, out_stream) };
         Ok(())
     })
+}
+
+/// Starts a namespace list and returns its operation and stream.
+///
+/// The stream's schema is fixed and returned before the Data Source is
+/// queried; each row is one namespace or one range that could not be read,
+/// as the contract's Connector API section lays out. `namespaces` is null to
+/// list every namespace. Busy sessions, the timeout, and the stream follow
+/// `scalardb_analytics_connector_read_start`.
+///
+/// # Safety
+///
+/// `session` is a live handle, `namespaces` is null or a valid filter, and
+/// `out_operation` and `out_stream` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list_start(
+    session: *const ScalardbAnalyticsConnectorSession,
+    namespaces: *const ScalardbAnalyticsConnectorNameFilter,
+    timeout_milliseconds: u64,
+    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        // SAFETY: the caller passes a valid filter or null.
+        let namespaces = unsafe { read_name_filter(namespaces, "the namespace filter") }?;
+        // SAFETY: forwarded from the caller.
+        unsafe {
+            start_metadata(
+                session,
+                MetadataRequest::NamespaceList { namespaces },
+                timeout_milliseconds,
+                out_operation,
+                out_stream,
+            )
+        }
+    })
+}
+
+/// Starts a table list across the matching namespaces and returns its
+/// operation and stream.
+///
+/// Each row is one table or one range that could not be read. A null filter
+/// matches every name. Otherwise as `scalardb_analytics_connector_namespace_list_start`.
+///
+/// # Safety
+///
+/// `session` is a live handle, `namespaces` and `tables` are null or valid
+/// filters, and `out_operation` and `out_stream` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_list_start(
+    session: *const ScalardbAnalyticsConnectorSession,
+    namespaces: *const ScalardbAnalyticsConnectorNameFilter,
+    tables: *const ScalardbAnalyticsConnectorNameFilter,
+    timeout_milliseconds: u64,
+    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        // SAFETY: the caller passes valid filters or null.
+        let (namespaces, tables) = unsafe {
+            (
+                read_name_filter(namespaces, "the namespace filter")?,
+                read_name_filter(tables, "the table filter")?,
+            )
+        };
+        // SAFETY: forwarded from the caller.
+        unsafe {
+            start_metadata(
+                session,
+                MetadataRequest::TableList { namespaces, tables },
+                timeout_milliseconds,
+                out_operation,
+                out_stream,
+            )
+        }
+    })
+}
+
+/// Starts a table metadata request and returns its operation and stream.
+///
+/// `tables` is an Arrow stream of the requested tables: one column `table` of
+/// type `list<utf8>`, each row a name path. The library reads it during the
+/// call and releases it, whether or not the call succeeds; malformed input
+/// returns `invalid request`. Each output row is one requested table: its
+/// state (complete, incomplete, could not be read, or does not exist), its
+/// table metadata, its source metadata as JSON, and retrieval info. Otherwise
+/// as `scalardb_analytics_connector_namespace_list_start`.
+///
+/// # Safety
+///
+/// `session` is a live handle, `tables` is a valid Arrow stream the caller
+/// moves to the library, and `out_operation` and `out_stream` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_start(
+    session: *const ScalardbAnalyticsConnectorSession,
+    tables: *mut FFI_ArrowArrayStream,
+    timeout_milliseconds: u64,
+    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        if tables.is_null() {
+            return Err(invalid_request("tables is null"));
+        }
+        // SAFETY: the caller moves a valid stream; it is taken before any
+        // other check so that the library always releases it.
+        let tables = unsafe { ArrowArrayStreamReader::from_raw(tables) }
+            .map_err(|error| invalid_request(&format!("the tables cannot be read: {error}")))?;
+        let tables = read_table_input(tables)?;
+        // SAFETY: forwarded from the caller.
+        unsafe {
+            start_metadata(
+                session,
+                MetadataRequest::TableMetadata { tables },
+                timeout_milliseconds,
+                out_operation,
+                out_stream,
+            )
+        }
+    })
+}
+
+/// Starts a metadata request on a session and writes its operation and stream.
+///
+/// # Safety
+///
+/// `session` is null or a live handle; non-null output pointers are writable.
+unsafe fn start_metadata(
+    session: *const ScalardbAnalyticsConnectorSession,
+    request: MetadataRequest,
+    timeout_milliseconds: u64,
+    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> Result<(), ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    let session = &unsafe { reference(session, "session") }?.state;
+    if out_operation.is_null() || out_stream.is_null() {
+        return Err(invalid_request("an output pointer is null"));
+    }
+    let operation = session.start_metadata(request, timeout(timeout_milliseconds))?;
+    // SAFETY: both output pointers are non-null and writable.
+    unsafe { write_operation(operation, out_operation, out_stream) };
+    Ok(())
+}
+
+/// Writes a started operation's handle and its exported result stream.
+///
+/// # Safety
+///
+/// Both output pointers are non-null and writable.
+unsafe fn write_operation(
+    operation: Arc<Operation>,
+    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) {
+    let stream = stream::export(Arc::clone(&operation));
+    let handle = Box::new(ScalardbAnalyticsConnectorOperation {
+        operation,
+        error: OnceLock::new(),
+    });
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        out_stream.write(stream);
+        out_operation.write(Box::into_raw(handle));
+    }
+}
+
+/// Reads a name filter; a null pointer is no filter.
+///
+/// # Safety
+///
+/// A non-null `filter` points to a filter whose `names` holds `name_count`
+/// NUL-terminated strings.
+unsafe fn read_name_filter(
+    filter: *const ScalardbAnalyticsConnectorNameFilter,
+    name: &str,
+) -> Result<NameFilter, ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    let Some(filter) = (unsafe { filter.as_ref() }) else {
+        return Ok(None);
+    };
+    // SAFETY: forwarded from the caller.
+    let names = unsafe { read_slice(filter.names, filter.name_count, name) }?;
+    names
+        .iter()
+        // SAFETY: forwarded from the caller.
+        .map(|&text| unsafe { read_text(text, "a name in a filter") })
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map(Some)
 }
 
 /// Cancels an operation. It may be called from any thread.

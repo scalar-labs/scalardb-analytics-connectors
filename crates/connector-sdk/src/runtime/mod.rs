@@ -2,9 +2,10 @@
 //!
 //! Connector implementations use the traits at the crate root; the connector
 //! API drives connectors only through this module. It owns the contract's
-//! units (library, Data Source, session, and read operation), their lifetimes,
-//! the one-operation-per-session lease, session usability, lazy reads,
-//! cancellation, timeouts, and panic containment. It knows nothing of any C
+//! units (library, Data Source, session, and operation), their lifetimes,
+//! the one-operation-per-session lease, session usability, lazy reads and
+//! metadata requests, cancellation, timeouts, and panic containment. It also
+//! lays out metadata as the contract's Arrow rows. It knows nothing of any C
 //! representation.
 //!
 //! Every unit is shared by reference counting. A child keeps its parent's state
@@ -14,6 +15,7 @@
 mod connector;
 mod data_source;
 mod library;
+mod metadata;
 mod operation;
 mod session;
 mod watcher;
@@ -21,7 +23,8 @@ mod watcher;
 pub use connector::{PlanningOutcome, SharedRemoteExecution};
 pub use data_source::DataSourceState;
 pub use library::{BuiltInConnector, Library};
-pub use operation::ReadOperation;
+pub use metadata::{MetadataRequest, read_table_input};
+pub use operation::Operation;
 pub use session::SessionState;
 
 use std::{

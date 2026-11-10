@@ -12,7 +12,8 @@
  *   U+0000 is complete only through `length`. Absent output text has a NULL
  *   `data`.
  * - Binary data, such as Substrait plans, carries a length and no terminator.
- * - The library copies every input during the call.
+ * - The library copies every input during the call, except an Arrow input
+ *   stream, which the caller moves to the library.
  * - A timeout of 0 milliseconds means no limit.
  */
 
@@ -113,7 +114,7 @@ typedef enum ScalardbAnalyticsConnectorDiagnosticType {
 // An opened Data Source. It may be used from several threads at once.
 typedef struct ScalardbAnalyticsConnectorDataSource ScalardbAnalyticsConnectorDataSource;
 
-// A read operation. It may be cancelled from any thread.
+// An operation: a read or a metadata request. It may be cancelled from any thread.
 typedef struct ScalardbAnalyticsConnectorOperation ScalardbAnalyticsConnectorOperation;
 
 // The result of planning one pushdown request.
@@ -202,6 +203,15 @@ typedef struct ScalardbAnalyticsConnectorOwnedBytes {
   uint8_t *data;
   size_t length;
 } ScalardbAnalyticsConnectorOwnedBytes;
+
+// A set of names matched exactly, without case folding or patterns.
+//
+// A metadata request takes a pointer to one; a null pointer matches every
+// name, and a filter with no names matches none.
+typedef struct ScalardbAnalyticsConnectorNameFilter {
+  const char *const *names;
+  size_t name_count;
+} ScalardbAnalyticsConnectorNameFilter;
 
 #ifdef __cplusplus
 extern "C" {
@@ -368,6 +378,61 @@ struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_read_start(
                                                                                 uint64_t timeout_milliseconds,
                                                                                 struct ScalardbAnalyticsConnectorOperation **out_operation,
                                                                                 struct ArrowArrayStream *out_stream);
+
+// Starts a namespace list and returns its operation and stream.
+//
+// The stream's schema is fixed and returned before the Data Source is
+// queried; each row is one namespace or one range that could not be read,
+// as the contract's Connector API section lays out. `namespaces` is null to
+// list every namespace. Busy sessions, the timeout, and the stream follow
+// `scalardb_analytics_connector_read_start`.
+//
+// # Safety
+//
+// `session` is a live handle, `namespaces` is null or a valid filter, and
+// `out_operation` and `out_stream` are writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_namespace_list_start(const struct ScalardbAnalyticsConnectorSession *session,
+                                                                                          const struct ScalardbAnalyticsConnectorNameFilter *namespaces,
+                                                                                          uint64_t timeout_milliseconds,
+                                                                                          struct ScalardbAnalyticsConnectorOperation **out_operation,
+                                                                                          struct ArrowArrayStream *out_stream);
+
+// Starts a table list across the matching namespaces and returns its
+// operation and stream.
+//
+// Each row is one table or one range that could not be read. A null filter
+// matches every name. Otherwise as `scalardb_analytics_connector_namespace_list_start`.
+//
+// # Safety
+//
+// `session` is a live handle, `namespaces` and `tables` are null or valid
+// filters, and `out_operation` and `out_stream` are writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_list_start(const struct ScalardbAnalyticsConnectorSession *session,
+                                                                                      const struct ScalardbAnalyticsConnectorNameFilter *namespaces,
+                                                                                      const struct ScalardbAnalyticsConnectorNameFilter *tables,
+                                                                                      uint64_t timeout_milliseconds,
+                                                                                      struct ScalardbAnalyticsConnectorOperation **out_operation,
+                                                                                      struct ArrowArrayStream *out_stream);
+
+// Starts a table metadata request and returns its operation and stream.
+//
+// `tables` is an Arrow stream of the requested tables: one column `table` of
+// type `list<utf8>`, each row a name path. The library reads it during the
+// call and releases it, whether or not the call succeeds; malformed input
+// returns `invalid request`. Each output row is one requested table: its
+// state (complete, incomplete, could not be read, or does not exist), its
+// table metadata, its source metadata as JSON, and retrieval info. Otherwise
+// as `scalardb_analytics_connector_namespace_list_start`.
+//
+// # Safety
+//
+// `session` is a live handle, `tables` is a valid Arrow stream the caller
+// moves to the library, and `out_operation` and `out_stream` are writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_metadata_start(const struct ScalardbAnalyticsConnectorSession *session,
+                                                                                          struct ArrowArrayStream *tables,
+                                                                                          uint64_t timeout_milliseconds,
+                                                                                          struct ScalardbAnalyticsConnectorOperation **out_operation,
+                                                                                          struct ArrowArrayStream *out_stream);
 
 // Cancels an operation. It may be called from any thread.
 //

@@ -6,14 +6,18 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{ConnectorError, ErrorKind};
 
 use super::{
-    DataSourceState, PlanningOutcome, ReadOperation, SharedRemoteExecution, connector::DynSession,
-    invalid_state, lock, panic_error,
+    DataSourceState, MetadataRequest, Operation, PlanningOutcome, SharedRemoteExecution,
+    connector::DynSession,
+    invalid_state, lock,
+    metadata::Retrieval,
+    operation::{OperationRequest, StartedStream},
+    panic_error,
 };
 
 /// Whether a session accepts requests.
@@ -142,10 +146,54 @@ impl SessionState {
         self: &Arc<Self>,
         remote: SharedRemoteExecution,
         timeout: Option<Duration>,
-    ) -> Result<Arc<ReadOperation>, ConnectorError> {
+    ) -> Result<Arc<Operation>, ConnectorError> {
         let lease = self.lease()?;
         self.inner.check_remote_execution(&remote)?;
-        Ok(Arc::new(ReadOperation::new(lease, remote, timeout)))
+        Ok(Arc::new(Operation::new(
+            lease,
+            OperationRequest::Read(remote),
+            timeout,
+        )))
+    }
+
+    /// Starts a metadata request; the catalog is read from the operation's
+    /// first pull.
+    pub fn start_metadata(
+        self: &Arc<Self>,
+        request: MetadataRequest,
+        timeout: Option<Duration>,
+    ) -> Result<Arc<Operation>, ConnectorError> {
+        let lease = self.lease()?;
+        Ok(Arc::new(Operation::new(
+            lease,
+            OperationRequest::Metadata(request),
+            timeout,
+        )))
+    }
+
+    /// Sends an operation's request to the connector.
+    pub(super) fn start(
+        &self,
+        request: &OperationRequest,
+        deadline: Option<Instant>,
+    ) -> Result<StartedStream, ConnectorError> {
+        match request {
+            OperationRequest::Read(remote) => {
+                let stream = self.inner.execute(remote, deadline)?;
+                Ok(StartedStream {
+                    cancel: stream.cancel_handle(),
+                    batches: Box::pin(stream),
+                })
+            }
+            OperationRequest::Metadata(request) => {
+                let retrieval = Retrieval {
+                    connector: self.data_source.connector.clone(),
+                    adbc_driver: self.inner.adbc_driver(),
+                    library_version: self.library().version.clone(),
+                };
+                self.inner.start_metadata(request, retrieval, deadline)
+            }
+        }
     }
 }
 

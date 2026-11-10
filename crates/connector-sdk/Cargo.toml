@@ -15,6 +15,10 @@ test-connector = ["serde/derive"]
 [dependencies]
 analytics-types.workspace = true
 arrow-array.workspace = true
+# Nested metadata rows are built from their offsets and validity.
+arrow-buffer.workspace = true
+# Metadata rows carry each column's Analytics type as an IPC-encoded Arrow schema.
+arrow-ipc.workspace = true
 # Remote executions carry their output schema as Arrow JSON across processes.
 arrow-schema = { workspace = true, features = ["serde"] }
 futures-core.workspace = true
