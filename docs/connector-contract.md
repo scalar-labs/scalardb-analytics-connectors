@@ -1070,8 +1070,9 @@ ownership and lifecycle model is in [Pushdown planning](pushdown-planning.md).
 ## Connector API
 
 This section maps the requests and errors above onto connector API functions and the shape of exchanged data.
-The exact C function names and structures are published in the C header with
-the first API implementation and versioned with the library.
+The exact C function names and structures are published in the C header
+`crates/connector-api/include/scalardb_analytics_connector.h`, which is
+generated from the library's declarations and versioned with the library.
 
 ### Format
 
@@ -1182,6 +1183,7 @@ Errors are returned as a structure with these items:
 | Retryable | Whether the request may be retried |
 | Message | Composed by the connector; contains no credentials, literals, or messages returned by the data source |
 | Data Source error code and message | As returned by the data source. The message may contain user data, so callers keep it out of ordinary logs. |
+| Diagnostics | Ordered entries of a key and a typed value (Boolean, integer, floating-point, UTF-8, or bytes) attached by the connector, such as a vendor code. Keys may repeat. They are details for people and restricted logs, kept out of ordinary logs like the Data Source message, and callers do not branch on them. |
 | Stale registration details | Per mismatched column, its name, the expected Analytics type and nullability, and the current Data Source type and nullability ([Schema check](#schema-check)); for missing tables or columns, their names |
 
 A failing function returns this structure. When a pull of a result stream fails,

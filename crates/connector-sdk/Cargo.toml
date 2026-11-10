@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Source-independent ScalarDB Analytics connector SDK"
 
+[features]
+default = []
+# An in-memory Connector that tests of the runtime and the connector API use.
+test-connector = ["serde/derive"]
+
 [dependencies]
 analytics-types.workspace = true
 arrow-array.workspace = true
@@ -22,8 +27,11 @@ serde.workspace = true
 serde_json.workspace = true
 substrait.workspace = true
 thiserror.workspace = true
+# Secret option values are erased when dropped.
+zeroize.workspace = true
 
 [dev-dependencies]
+connector-sdk = { path = ".", features = ["test-connector"] }
 serde = { workspace = true, features = ["derive"] }
 
 [lib]

@@ -69,11 +69,11 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads, cancellation, the timeout watcher, and panic containment | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: loading drivers through the ADBC driver manager and checking their versions, passing options, running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by SQL-standard SQLSTATE class ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
 | `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: running catalog queries and generating SQL from remote `LogicalPlan` values with Data Source-specific dialect and semantic rules | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its connector traits, written as Rust code and constant tables. A direct-access Connector also reads the Data Source itself. | Knowledge of other Connectors |
-| `connector-api` | The connector API's C ABI, registering Connectors and dispatching by Connector, managing the library, Data Sources, sessions, and operations, and assembling static information. It builds the library. | Knowledge of any particular Data Source |
+| `connector-api` | The connector API's C ABI and its header, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
 | `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
 | `conformance` | The runner that tests the contract through the connector API only, and per-Connector fixtures | Dependencies on Connector internals |
 
@@ -270,10 +270,12 @@ execution capabilities:
 
 ~~~text
 ConnectorLibrary:
-    open_data_source(data_source_config) -> DataSource
+    descriptor() -> ConnectorDescriptor            (available before initialization)
+    new(library_settings) -> ConnectorLibrary
+    open_data_source(connector, connection_options, connection_timeout) -> DataSource
 
 DataSource:
-    open_session(session_config) -> DataSourceSession
+    open_session() -> DataSourceSession
 
 DataSourceSession:
     catalog() -> CatalogReader
@@ -485,10 +487,11 @@ read table metadata is complete is derived from its values
 Analytics type cannot be stated without the Data Source type it was mapped
 from.
 
-Retrieval info is assembled from each table's `read_at` and the session's
-`DataSourceSession::implementation` (the connector and ADBC driver names and
-versions). The connector API adds the library version and converts table
-metadata and source metadata to the Arrow output.
+Retrieval info is assembled from each table's `read_at`, the connector's name
+and version in its `ConnectorDescriptor`, and the session's
+`DataSourceSession::adbc_driver` (the ADBC driver's name and version). The
+connector API adds the library version and converts table metadata and source
+metadata to the Arrow output.
 
 ## Connector behavior as code
 
@@ -508,23 +511,57 @@ against [Type mappings](type-mappings.md) and conformance expectations.
 
 ## Connector API implementation
 
-`connector-api` implements the [connector API functions](connector-contract.md#functions):
+The [connector API functions](connector-contract.md#functions) are
+implemented in two layers. `connector-sdk`'s `runtime` module implements the
+contract's units and calling conventions in Rust, and `connector-api` exposes
+them through the C ABI.
+
+`connector-api` owns what is specific to the C library:
 
 - **Registration:** connectors in the artifact are registered at build time
   and selected by features.
+- **The process-wide library:** one library is initialized per process; a
+  second initialization returns `invalid state`.
+- **Static information:** assembled from the registered connectors'
+  `ConnectorDescriptor` values.
+- **The C representation:** handles, error structures, text conventions, and
+  the Arrow C stream.
+
+The runtime owns the contract's semantics:
+
 - **Dispatch:** opening a data source selects the connector for the named
   Connector. That connector handles all sessions and operations on that data
   source.
-- **Static information:** assembled from the registered connectors'
-  `ConnectorDescriptor` values.
+- **Option validation:** the caller's options are checked against the
+  selected connector's descriptor before the connector sees them. An
+  undeclared, repeated, or missing required option, or a value of the wrong
+  form, is `invalid settings` naming the option. Every value is held in an
+  erasing secret type while it is checked, and the values of options marked
+  secret stay in that type.
 - **Unit management:** the library, data sources, sessions, operations, and
   result streams are managed as described in [Lifetimes](#lifetimes).
+- **Planning errors:** a Connector's planning failure carries a
+  `ConnectorError`, so `plan_pushdown` returns its kind, retryability, and
+  Data Source details unchanged.
+
+The SDK lifecycle traits have associated types that differ per connector.
+The runtime implements one object-safe counterpart of each trait for every
+SDK implementation and holds connectors only through those, so dispatch by
+Connector name needs no knowledge of a particular connector. A remote
+execution keeps its connector's query type behind the same boundary; a read
+of a remote execution planned by another connector is `invalid request`.
+
+The C functions and types are declared in `connector-api`'s `src/abi`, the
+only module that handles raw pointers. The published header is generated from it with
+cbindgen, and a test fails when the committed header differs from the
+generated one. Every C function contains panics; a function that fails returns
+an error the caller frees, and an operation's error is owned by the operation.
 
 ## Lifetimes
 
 | Unit | Created | Holds | Released |
 | --- | --- | --- | --- |
-| Library | At initialization | Settings, the ADBC driver manager (`connector-adbc`), and the timeout watcher thread | At shutdown. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
+| Library | At initialization | Settings, the ADBC driver manager (`connector-adbc`), and the timeout watcher thread | Closed at shutdown; its state, including the watcher, lives until its last Data Source, session, and operation are released, so running reads still stop at their deadlines. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
 | Data source | When opened | The selected connector, validated connection settings and credentials, and, with ADBC access, its ADBC database | When the data source and every session using it are closed |
 | Session | When opened | Its `DataSourceSession` (an ADBC connection with ADBC access), catalog reader, connector planner, executor, and optional planning-facts cache | When closed, releasing its cache and `DataSourceSession` |
 | Operation | When started: validates the request and takes a session lease | Data Source resources: the session lease and, after resolution or first pull, its execution/read state and `CancelHandle`; also cancellation, deadline, and error state | When closed, releasing every Data Source resource. Metadata/read resources are also released, and the lease returned, when the stream ends or is released. |
@@ -691,7 +728,9 @@ returned by Data Source access, so the session accepts the next request
 ([Requests and results](connector-contract.md#requests-and-results)).
 
 The connector API implementation never lets a Rust panic cross the C ABI. A
-panic becomes an `internal` error and marks the session unusable.
+panic becomes an `internal` error and marks the session unusable. A pull that
+fails with `connection` also marks the session unusable, because the
+connection broke partway and its state is unknown.
 
 ## ADBC driver handling
 
@@ -741,7 +780,7 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | Contract section | Implemented by |
 | --- | --- |
 | [Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access) | `connector-api`, the connector traits, `connector-adbc` ([ADBC driver handling](#adbc-driver-handling)), and direct-access connector implementations |
-| [Calling conventions](connector-contract.md#calling-conventions) | `connector-api` unit management and the connector SDK's cancellation, timeout, and error structure |
+| [Calling conventions](connector-contract.md#calling-conventions) | The connector SDK's runtime (unit management, session lease, cancellation, timeouts) and its error structure |
 | [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and source metadata type with its type mapping, and the connector SDK's table metadata model and source-read boundary |
 | [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema and lifecycle checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |

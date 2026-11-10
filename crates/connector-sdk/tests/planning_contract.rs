@@ -2,9 +2,9 @@ mod support;
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    ConnectorPlanner, ExecutableQueryResult, LogicalPlan, LogicalRelation, PlannedPushdown,
-    PlanningError, PushdownResult, QueryPlan, RequestError, RewriteContext, RewriteRule,
-    RewriteRuleConnectorPlanner, RewriteRuleSet,
+    ConnectorError, ConnectorPlanner, ErrorKind, ExecutableQueryResult, LogicalPlan,
+    LogicalRelation, PlannedPushdown, PlanningError, PushdownResult, QueryPlan, RequestError,
+    RewriteContext, RewriteRule, RewriteRuleConnectorPlanner, RewriteRuleSet,
 };
 use std::sync::OnceLock;
 use substrait::proto::{
@@ -555,7 +555,8 @@ fn rewrite_rule_error_stops_the_sequence() {
     let offered = requested_plan();
     assert!(matches!(
         request(offered).plan(&FailingRulePlanner),
-        Err(PlanningError::Connector { reason }) if reason.contains("catalog lookup")
+        Err(PlanningError::Connector(error))
+            if error.kind() == ErrorKind::Connection && error.safe_message().contains("catalog lookup")
     ));
 }
 
@@ -602,9 +603,11 @@ impl RewriteRule<PlanningMetadata> for FailingRule {
         _plan: QueryPlan,
         _context: RewriteContext<'_, PlanningMetadata>,
     ) -> Result<QueryPlan, PlanningError> {
-        Err(PlanningError::Connector {
-            reason: "catalog lookup failed".to_owned(),
-        })
+        Err(PlanningError::Connector(ConnectorError::new(
+            ErrorKind::Connection,
+            true,
+            "catalog lookup failed",
+        )))
     }
 }
 

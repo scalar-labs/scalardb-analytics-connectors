@@ -1,7 +1,7 @@
 //! Connector planning capabilities and the standard rule-based implementation.
 
 use super::{LogicalPlan, PlannedPushdown, QueryPlan, RewriteContext, RewriteRuleSet};
-use crate::RequestError;
+use crate::{ConnectorError, RequestError};
 
 /// A planning proposal consumed by the Query Engine adapter.
 ///
@@ -108,12 +108,15 @@ where
 }
 
 /// Failure at the shared planning boundary.
-#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq)]
 pub enum PlanningError {
     /// The externally offered plan does not satisfy the SDK input contract.
     #[error(transparent)]
     InvalidPlan(#[from] RequestError),
     /// Connector-specific metadata loading, rewriting, or query generation failed.
-    #[error("connector planning failed: {reason}")]
-    Connector { reason: String },
+    ///
+    /// The error keeps its kind, retryability, and Data Source details so that
+    /// the connector API returns them to the caller of `plan_pushdown`.
+    #[error(transparent)]
+    Connector(#[from] ConnectorError),
 }
