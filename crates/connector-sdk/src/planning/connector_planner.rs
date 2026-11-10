@@ -1,8 +1,6 @@
 //! Connector planning capabilities and the standard rule-based implementation.
 
-use super::{
-    ExecutableQuery, LogicalPlan, PlannedPushdown, QueryPlan, RewriteContext, RewriteRuleSet,
-};
+use super::{LogicalPlan, PlannedPushdown, QueryPlan, RewriteContext, RewriteRuleSet};
 use crate::RequestError;
 
 /// A planning proposal consumed by the Query Engine adapter.
@@ -29,15 +27,9 @@ pub enum PushdownResult<Q> {
 #[derive(Clone, PartialEq)]
 pub enum ExecutableQueryResult<Q> {
     /// The remote plan can be executed with these instructions.
-    Executable(ExecutableQuery<Q>),
+    Executable(Q),
     /// The Connector cannot preserve the remote plan's semantics.
     Unsupported { reason: String },
-}
-
-impl<Q> From<ExecutableQuery<Q>> for ExecutableQueryResult<Q> {
-    fn from(query: ExecutableQuery<Q>) -> Self {
-        Self::Executable(query)
-    }
 }
 
 /// Connector-owned planning for one complete pushdown request.
@@ -101,16 +93,14 @@ where
             QueryPlan::initial(offered_plan),
             RewriteContext::new(offered_plan, &metadata),
         )?;
-        let executable_query =
-            match self.create_executable_query(query_plan.remote_plan(), &metadata)? {
-                ExecutableQueryResult::Executable(query) => query,
-                ExecutableQueryResult::Unsupported { reason } => {
-                    return Ok(PushdownResult::Unsupported { reason });
-                }
-            };
+        let query = match self.create_executable_query(query_plan.remote_plan(), &metadata)? {
+            ExecutableQueryResult::Executable(query) => query,
+            ExecutableQueryResult::Unsupported { reason } => {
+                return Ok(PushdownResult::Unsupported { reason });
+            }
+        };
         let (remote_plan, local_plan) = query_plan.into_parts();
-        let pushdown =
-            PlannedPushdown::try_new(offered_plan, remote_plan, local_plan, executable_query)?;
+        let pushdown = PlannedPushdown::try_new(offered_plan, remote_plan, local_plan, query)?;
         Ok(PushdownResult::Planned {
             pushdown: Box::new(pushdown),
         })

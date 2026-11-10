@@ -6,9 +6,9 @@ use std::{
 };
 
 use connector_sdk::{
-    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, ExecutableQuery,
-    LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError,
-    PushdownRequest, PushdownResult, execute_planned,
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, LOGICAL_TYPE_URI,
+    LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError, PushdownRequest, PushdownResult,
+    execute_planned,
 };
 use connector_sql::{RenderedQuery, SqlExecutor, TranslationError, translate};
 use futures_core::Stream;
@@ -98,14 +98,8 @@ impl ConnectorPlanner for ExecutableTranslationPlanner {
             TestDialect,
         )
         .expect("the execution fixture plan should translate");
-        let pushdown = PlannedPushdown::try_new(
-            logical_plan,
-            logical_plan.clone(),
-            None,
-            ExecutableQuery {
-                query: rendered_query,
-            },
-        )?;
+        let pushdown =
+            PlannedPushdown::try_new(logical_plan, logical_plan.clone(), None, rendered_query)?;
         Ok(PushdownResult::Planned {
             pushdown: Box::new(pushdown),
         })
@@ -131,12 +125,12 @@ fn translated_query_round_trips_through_adbc_execution() {
     .unwrap() else {
         panic!("the translated query should be executable");
     };
-    let sql = pushdown.executable_query.query.sql.clone();
+    let sql = pushdown.remote.query.sql.clone();
     let batch =
-        arrow_array::RecordBatch::new_empty(Arc::new(pushdown.remote_output_schema.to_arrow()));
+        arrow_array::RecordBatch::new_empty(Arc::new(pushdown.remote.output_schema.to_arrow()));
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch.clone()]));
     let executor = sql_executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
+    let mut stream = execute_planned(&executor, &pushdown.remote, None).unwrap();
     let mut context = Context::from_waker(Waker::noop());
 
     assert!(fixture.events().is_empty());
@@ -157,7 +151,7 @@ fn translated_query_round_trips_through_adbc_execution() {
     drop(stream);
     let (_fixture, connection) = Fixture::install(FixtureExecution::Fail);
     let executor = sql_executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
+    let mut stream = execute_planned(&executor, &pushdown.remote, None).unwrap();
     let Poll::Ready(Some(Err(error))) = Stream::poll_next(Pin::new(&mut stream), &mut context)
     else {
         panic!("the translated query should preserve its ADBC execution error");

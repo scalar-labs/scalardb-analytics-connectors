@@ -197,16 +197,16 @@ immutable through its public API. A rule chooses the next relation tree; the
 plan-level derived state and stores the corresponding output schema.
 
 ~~~text
-ExecutableQuery<ConnectorQuery> {
-    query: ConnectorQuery
+RemoteExecution<ConnectorQuery> {
+    query: ConnectorQuery (PortableQuery)
+    output_schema: Analytics schema
 }
 
 PlannedPushdown {
     remote_plan: Substrait Plan
     local_plan: optional Substrait Plan
-    executable_query
+    remote: RemoteExecution<ConnectorQuery>
     base_schema: Analytics schema
-    remote_output_schema: Analytics schema
     final_output_schema: offered result schema
     table_bindings: opaque identifiers from NamedTable
 }
@@ -286,7 +286,7 @@ ConnectorPlanner:
 RewriteRuleConnectorPlanner:
     load_metadata(offered_plan) -> Connector-private metadata
     rewrite_rules() -> RewriteRuleSet<Connector-private metadata>
-    create_executable_query(remote_plan, metadata) -> ExecutableQuery<ConnectorQuery> | Unsupported
+    create_executable_query(remote_plan, metadata) -> ConnectorQuery | Unsupported
 
 SQL-family create_executable_query:
     connector-sql translates remote_plan using physical names from metadata
@@ -294,7 +294,7 @@ SQL-family create_executable_query:
         LogicalExpression exposes resolved functions, fields, and validated LiteralValue nodes
         SqlDialect renders identifier and LiteralValue fragments
         Fragment composes them into one RenderedQuery
-    ExecutableQuery<RenderedQuery> retains that typed result for execution
+    RenderedQuery is retained as the typed query of the RemoteExecution
 
 SQL-family execution:
     connector-sql::SqlExecutor implements ConnectorExecutor<Query = RenderedQuery>
@@ -309,16 +309,16 @@ Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner
         query_plan = rule.rewrite(query_plan, metadata)
         unchanged query_plan -> no-op and continue
         error -> stop with error
-    executable_query = create_executable_query(query_plan.remote_plan, metadata)
+    query = create_executable_query(query_plan.remote_plan, metadata)
     unsupported -> return Unsupported without constructing a pushdown
     convert the remote/local LogicalPlans to Substrait
     return PlannedPushdown
 
 ConnectorExecutor:
-    execute(planned_pushdown) -> ExecutionOutput { stream, ExecutionCancel }
+    execute(query) -> ExecutionOutput { stream, ExecutionCancel }
 
-Connector SDK execute_planned(executor, planned_pushdown, deadline):
-    output = executor.execute(planned_pushdown)
+Connector SDK execute_planned(executor, remote_execution, deadline):
+    output = executor.execute(remote.query)
     return ExecutionStream, which hands out ExecutionCancelHandle
         cancel() / expire() records cancellation / timeout, first wins,
             then calls the connector's ExecutionCancel
@@ -330,7 +330,8 @@ that is the first point at which the Connector can know which source facts are
 needed. It may query the Data Source under the planning operation's ordinary
 timeout, cancellation, error, and session-lease rules. Implementations may
 reuse cached facts across requests, but no planning-snapshot identity is
-required or serialized to workers.
+required. Only the `RemoteExecution` crosses to another process
+([Execution in another process](pushdown-planning.md#execution-in-another-process)).
 
 The basic `ConnectorPlanner` interface gives a Connector full control of those
 steps. For the standard rule-based case, `RewriteRuleConnectorPlanner` lets the
@@ -383,7 +384,7 @@ non-parameterized SQL statement. Connector rewrite rules use the concrete Data S
 nullability, collation, version, and session facts in the shared metadata before
 leaving an expression in the remote plan. SQL translation renders that approved
 plan without repeating the semantic decision. The resulting
-`ExecutableQuery<RenderedQuery>` retains that SQL-specific type through
+`RemoteExecution<RenderedQuery>` retains that SQL-specific type through
 adoption. Execution sends its SQL text directly; it does not receive or
 reconstruct a `LogicalPlan`, planning metadata, dialect, or semantic policy.
 

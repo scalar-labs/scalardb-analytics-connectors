@@ -37,7 +37,7 @@ requests:
 
 | Request | Input | Output |
 | --- | --- | --- |
-| Planned read | An adopted `PlannedPushdown` containing the remote Substrait plan and its Connector-generated executable query ([Read request representation](#read-request-representation)) | An Arrow stream with the remote output schema |
+| Planned read | The remote execution of an adopted `PlannedPushdown`: its Connector-generated query and remote output schema, possibly carried from another process ([Read request](#read-request)) | An Arrow stream with the remote output schema |
 
 Both capabilities follow the [calling conventions](#calling-conventions).
 How inputs and outputs cross the API is defined in
@@ -667,15 +667,25 @@ Data Source facts required by that complete region. The SDK applies the
 Connector-supplied semantic rewrite rules. The private metadata exists only
 during planning and does not cross the connector API. The result is a
 remote Substrait plan, an optional local Substrait plan, and a Connector-owned
-`ExecutableQuery<Q>` for the remote plan. The session's planner and executor
-share the concrete query type `Q`; the SDK does not serialize it into an opaque
-byte payload. A successful request becomes a `PlannedPushdown`. It contains the
-remote output schema, opaque bindings, and executable query. The local plan,
+query of type `Q` for the remote plan. The session's planner and executor
+share the concrete query type `Q`. A successful request becomes a
+`PlannedPushdown`. It contains the plans, opaque bindings, and the remote
+execution: the query together with the remote output schema. The local plan,
 when present, consumes that remote output through
 the reserved `ExtensionLeafRel(RemoteResult)` and must not independently read a
 named table.
 Credentials, secret values, open connections, and process-local pointers are
 not part of the result.
+
+The remote execution can run in another process, as when a Query Engine plans
+on one node and reads on another. The planning process encodes it as opaque
+bytes; the reading process restores them and starts the read on a session it
+opened itself from its own registration settings. The bytes are valid only for
+the library version that produced them, which holds because the library and its
+callers are updated together
+([Compatibility and versions](#compatibility-and-versions)). They carry no
+credentials and no local plan. The library version and the Data Source are not
+checked on restore; bytes that cannot be restored are `invalid request`.
 
 Resolution happens after common validation, because the complete validated plan
 determines which catalog and source facts are needed. Resolution may perform
@@ -690,11 +700,12 @@ result is not guaranteed. The only check at execution is the
 [schema check](#schema-check).
 
 Common structural checks inspect the same `PlannedPushdown`; they do not create
-a second planning-result type. Stable identity, persistence, and restore are not
-part of the shared contract until a concrete consumer requires them. The
+a second planning-result type. Stable identity and persistence are not part of
+the shared contract until a concrete consumer requires them; the only restore
+is a remote execution carried to another process as described above. The
 complete model is in [Boundary checks](pushdown-planning.md#boundary-checks).
 
-Remote execution accepts the adopted `PlannedPushdown`. Its Arrow stream must have
+Remote execution accepts the remote execution of the adopted `PlannedPushdown`. Its Arrow stream must have
 exactly the remote plan's output column names, order, Analytics types, and
 nullability. It executes the retained opaque query directly and does not
 translate the remote plan again. Before adopting the result, the Adapter must be
@@ -1093,7 +1104,10 @@ The connector API has these functions:
   - Namespace list: a set of namespace names ([Metadata requests](#metadata-requests)).
   - Table list: a set of namespace names and a set of table names.
   - Table metadata: a set of tables, as Arrow rows.
-  - Read: an adopted `PlannedPushdown`.
+  - Read: the remote execution of an adopted `PlannedPushdown`, or one restored
+    from bytes.
+- **Encode and restore a remote execution** as opaque bytes for another process
+  ([Read request](#read-request)).
 - **Cancel an operation**, from any thread.
 - **Retrieve an operation's error**, in the structure of
   [Errors in the API](#errors-in-the-api), after a pull ends with an error.
@@ -1107,7 +1121,10 @@ plan_pushdown(session, pushdown_request)
      | Unsupported(reason)
      | error
 
-start_read(session, planned_pushdown, timeout)
+encode_remote_execution(planned_pushdown) -> bytes
+restore_remote_execution(session, bytes) -> remote_execution | error
+
+start_read(session, remote_execution, timeout)
     -> operation + ArrowArrayStream
      | error
 ~~~

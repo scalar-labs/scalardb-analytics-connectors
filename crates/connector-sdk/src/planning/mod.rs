@@ -19,6 +19,6 @@ pub use logical_plan::{
     LiteralValue, LogicalExpression, LogicalExpressionKind, LogicalPlan, LogicalRelation,
     REMOTE_RESULT_TYPE_URL, TableBinding, UnaryOperator,
 };
-pub use planned_pushdown::{ExecutableQuery, PlannedPushdown};
+pub use planned_pushdown::{PlannedPushdown, PortableQuery, RemoteExecution};
 pub use pushdown_request::PushdownRequest;
 pub use query_plan::{QueryPlan, RewriteContext, RewriteRule, RewriteRuleSet};

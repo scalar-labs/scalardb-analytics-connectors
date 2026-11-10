@@ -114,12 +114,15 @@ Prefetching and caching are optional Connector implementation strategies. No
 ## Planning result and execution
 
 `PlannedPushdown<Q>` contains the remote and optional local plans plus the
-Connector-owned executable query of type `Q`. The session's planner and executor
+`RemoteExecution<Q>` that execution needs: the Connector-owned query of type
+`Q` and the remote output schema. The session's planner and executor
 share that type. It excludes credentials, connections, and process-local
 handles.
 
-At execution, the Adapter passes the adopted `PlannedPushdown` to
-`ConnectorExecutor`. The executor sends its typed `ExecutableQuery<Q>` directly.
+At execution, the Adapter passes the adopted pushdown's `RemoteExecution` to
+`execute_planned`, either directly or after carrying its bytes to another
+process ([Execution in another process](pushdown-planning.md#execution-in-another-process)).
+The executor sends its typed query `Q` directly.
 SQL-family sessions use `connector-sql::SqlExecutor`, whose query type is
 `RenderedQuery` and whose execution delegates to the shared ADBC query path.
 For an adopted proposal, the Adapter then runs the local plan, if present, over

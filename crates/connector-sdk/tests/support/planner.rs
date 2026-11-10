@@ -1,6 +1,5 @@
 use connector_sdk::{
-    ConnectorPlanner, ExecutableQuery, LogicalPlan, PlannedPushdown, PlanningError,
-    PushdownRequest, PushdownResult,
+    ConnectorPlanner, LogicalPlan, PlannedPushdown, PlanningError, PushdownRequest, PushdownResult,
 };
 use substrait::proto::Plan;
 
@@ -36,9 +35,7 @@ fn connector_result(
         offered_plan,
         pushed_remote_logical(offered_plan),
         None,
-        ExecutableQuery {
-            query: "SELECT user_id, external_id FROM users".to_owned(),
-        },
+        "SELECT user_id, external_id FROM users".to_owned(),
     )?;
     Ok(PushdownResult::Planned {
         pushdown: Box::new(pushdown),

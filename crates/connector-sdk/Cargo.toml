@@ -10,6 +10,8 @@ description = "Source-independent ScalarDB Analytics connector SDK"
 [dependencies]
 analytics-types.workspace = true
 arrow-array.workspace = true
+# Remote executions carry their output schema as Arrow JSON across processes.
+arrow-schema = { workspace = true, features = ["serde"] }
 futures-core.workspace = true
 prost.workspace = true
 prost-types.workspace = true

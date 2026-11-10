@@ -2,9 +2,9 @@ mod support;
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    ConnectorPlanner, ExecutableQuery, ExecutableQueryResult, LogicalPlan, LogicalRelation,
-    PlannedPushdown, PlanningError, PushdownResult, QueryPlan, RequestError, RewriteContext,
-    RewriteRule, RewriteRuleConnectorPlanner, RewriteRuleSet,
+    ConnectorPlanner, ExecutableQueryResult, LogicalPlan, LogicalRelation, PlannedPushdown,
+    PlanningError, PushdownResult, QueryPlan, RequestError, RewriteContext, RewriteRule,
+    RewriteRuleConnectorPlanner, RewriteRuleSet,
 };
 use std::sync::OnceLock;
 use substrait::proto::{
@@ -31,7 +31,7 @@ fn connector_returns_the_planned_pushdown_directly() {
     assert_eq!(pushdown.remote_plan, pushed_remote(&plan));
     assert!(pushdown.local_plan.is_none());
     assert_eq!(
-        pushdown.executable_query.query,
+        pushdown.remote.query,
         "SELECT user_id, external_id FROM users"
     );
     assert_eq!(
@@ -373,7 +373,7 @@ fn initial_query_plan_keeps_filter_and_projection_local() {
     let remote_read = read_ref(&pushdown.remote_plan);
     assert!(remote_read.filter.is_none());
     assert!(remote_read.projection.is_none());
-    assert_eq!(pushdown.remote_output_schema.fields().len(), 3);
+    assert_eq!(pushdown.remote.output_schema.fields().len(), 3);
 
     let local = pushdown.local_plan.as_ref().expect("local plan");
     assert_eq!(
@@ -432,10 +432,7 @@ impl RewriteRuleConnectorPlanner for InitialPlanPlanner {
         _remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
     ) -> Result<ExecutableQueryResult<String>, PlanningError> {
-        Ok(ExecutableQuery {
-            query: metadata.query.to_owned(),
-        }
-        .into())
+        Ok(ExecutableQueryResult::Executable(metadata.query.to_owned()))
     }
 }
 
@@ -487,10 +484,7 @@ impl RewriteRuleConnectorPlanner for ComposedRulePlanner {
         _remote_plan: &LogicalPlan,
         metadata: &Self::Metadata,
     ) -> Result<ExecutableQueryResult<String>, PlanningError> {
-        Ok(ExecutableQuery {
-            query: metadata.query.to_owned(),
-        }
-        .into())
+        Ok(ExecutableQueryResult::Executable(metadata.query.to_owned()))
     }
 }
 
@@ -668,14 +662,7 @@ fn complete_result(
     local: Option<LogicalPlan>,
     query: &str,
 ) -> Result<PushdownResult<String>, PlanningError> {
-    let pushdown = PlannedPushdown::try_new(
-        offered_plan,
-        remote,
-        local,
-        ExecutableQuery {
-            query: query.to_owned(),
-        },
-    )?;
+    let pushdown = PlannedPushdown::try_new(offered_plan, remote, local, query.to_owned())?;
     Ok(PushdownResult::Planned {
         pushdown: Box::new(pushdown),
     })

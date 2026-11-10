@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use adbc_driver_manager::ManagedConnection;
 use connector_sdk::{
-    ConnectorError, ConnectorExecutor, ExecutionOutput, LiteralValue, PlannedPushdown,
+    ConnectorError, ConnectorExecutor, ErrorKind, ExecutionOutput, LiteralValue, PortableQuery,
     RecordBatchStream,
 };
 
@@ -145,7 +145,7 @@ impl std::fmt::Debug for RenderedQuery {
     }
 }
 
-/// Executes SQL-family planned pushdowns through one ADBC connection.
+/// Executes SQL-family planned queries through one ADBC connection.
 pub struct SqlExecutor {
     connection: ManagedConnection,
 }
@@ -157,17 +157,29 @@ impl SqlExecutor {
     }
 }
 
+/// Carries the rendered SQL text as UTF-8 bytes.
+impl PortableQuery for RenderedQuery {
+    fn to_bytes(&self) -> Vec<u8> {
+        self.sql.as_bytes().to_vec()
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectorError> {
+        let sql = String::from_utf8(bytes.to_vec()).map_err(|_| {
+            ConnectorError::new(
+                ErrorKind::InvalidRequest,
+                false,
+                "the transported SQL query is not valid UTF-8",
+            )
+        })?;
+        Ok(Self { sql })
+    }
+}
+
 impl ConnectorExecutor for SqlExecutor {
     type Query = RenderedQuery;
 
-    fn execute(
-        &self,
-        pushdown: &PlannedPushdown<RenderedQuery>,
-    ) -> Result<ExecutionOutput, ConnectorError> {
-        let query = connector_adbc::query(
-            self.connection.clone(),
-            pushdown.executable_query.query.sql.clone(),
-        );
+    fn execute(&self, query: &RenderedQuery) -> Result<ExecutionOutput, ConnectorError> {
+        let query = connector_adbc::query(self.connection.clone(), query.sql.clone());
         let cancel = Arc::new(query.cancel_handle());
         let stream: RecordBatchStream = Box::pin(query);
         Ok(ExecutionOutput::new(stream, cancel))

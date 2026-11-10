@@ -175,7 +175,10 @@ Connection settings passed by the caller cannot override fixed settings.
   ([Plan-aware support decisions](#plan-aware-support-decisions),
   [Type information for the schema check](#type-information-for-the-schema-check))
   read no rows and are outside this rule.
-- Planning constructs the `ExecutableQuery` that implements the remote plan.
+- Planning constructs the query that implements the remote plan; with the
+  remote output schema it forms the `RemoteExecution`. The query type
+  implements `PortableQuery` so that the `RemoteExecution` can be carried to
+  another process.
   Execution sends that generated query directly rather than retranslating the
   Substrait plan. The session's planner and executor share its concrete query
   type. For the shared SQL path, that type is `RenderedQuery`, whose SQL text

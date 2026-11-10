@@ -16,7 +16,7 @@ PushdownRequest {
 PlannedPushdown {
     remote_plan
     local_plan: optional
-    executable_query
+    remote: RemoteExecution { query, output_schema }
 }
 ~~~
 
@@ -39,7 +39,8 @@ offered plan. For example, partial `AVG(x)` pushdown may produce remote
 | Local plan | The optional complete Substrait plan over `RemoteResult` that consumes the remote output and finishes the query in the Query Engine. It contains no independent Data Source read. |
 | Remote query generation | Translation of the remote plan into a Data Source-executable query. |
 | Executable query | Connector-owned representation of the generated remote query. Its type is shared by the session's planner and executor. A SQL Connector uses one complete non-parameterized SQL statement; another Connector may use another Data Source-specific type. It contains no credentials or live resources. |
-| Planned pushdown | The result of pushdown planning: the remote plan, optional local plan, and generated executable query. It remains a proposal until the Query Engine adapter adopts it. |
+| Remote execution | The executable query together with the remote output schema: everything execution needs, in the planning process or, carried as opaque bytes, in another process. |
+| Planned pushdown | The result of pushdown planning: the remote plan, optional local plan, and remote execution. It remains a proposal until the Query Engine adapter adopts it. |
 | Pushdown execution | Execution of an adopted planned pushdown, including query shipping, Data Source execution, and optional local-plan execution. |
 | Query shipping | The runtime action of sending the generated remote query to the Data Source for execution. |
 
@@ -104,7 +105,7 @@ QueryPlan {
 PlannedPushdown {
     remote_plan: Substrait Plan
     local_plan: optional Substrait Plan
-    executable_query: ExecutableQuery<ConnectorQuery>
+    remote: RemoteExecution<ConnectorQuery> { query, output_schema }
 }
 ~~~
 
@@ -130,12 +131,42 @@ schema. When a local plan exists, its `RemoteResult` extension leaf declares
 and consumes that schema. When no local plan exists, remote output is the final
 result.
 
-`ExecutableQuery<Q>` is Connector-owned. `Q` remains a concrete type shared by
-the session's planner and executor; the SDK does not erase it into a byte
-payload. A SQL Connector uses `RenderedQuery`, which contains one complete
-non-parameterized SQL statement whose typed literals were already rendered by
-its dialect. It contains no credentials, live connections, or process-local
-pointers.
+`RemoteExecution<Q>` is the part of the planned pushdown that execution needs:
+the Connector-owned query `Q` and the remote output schema. `Q` remains a
+concrete type shared by the session's planner and executor. A SQL Connector
+uses `RenderedQuery`, which contains one complete non-parameterized SQL
+statement whose typed literals were already rendered by its dialect. It
+contains no credentials, live connections, or process-local pointers, so it
+can cross a process boundary ([Execution in another process](#execution-in-another-process)).
+
+## Execution in another process
+
+Spark plans on the driver and reads on executors; Trino plans on the
+coordinator and reads on workers. The planning process therefore hands the
+reading process `RemoteExecution::to_bytes`, and the reading process restores
+it with `RemoteExecution::from_bytes` and passes it to `execute_planned` on a
+session it opened itself:
+
+~~~text
+planning process                       reading process
+PlannedPushdown.remote                 opens its own Data Source and session
+  -> to_bytes                            from its registration settings
+  -> byte[] inside the Adapter's         RemoteExecution::from_bytes
+     split or partition  ------------->   -> execute_planned(executor, remote, deadline)
+~~~
+
+- The SDK frames the remote output schema together with the Connector's query
+  bytes. The Connector encodes and decodes only its own `Q` through
+  `PortableQuery`.
+- The bytes are opaque to the Adapter and are valid only for the library
+  version that produced them. The planning and reading processes run the same
+  library because the library and its callers are updated together
+  ([Compatibility and versions](connector-contract.md#compatibility-and-versions)).
+- Credentials, connections, and the local plan are not carried. The local plan
+  was consumed when the Adapter adopted the proposal in the planning process.
+- Neither the library version nor the Data Source is checked when bytes are
+  restored. Passing bytes to another library version or another Data Source is
+  a caller error. Bytes that cannot be restored are `invalid request`.
 
 ## Planning flow
 
@@ -146,7 +177,7 @@ native region
   -> Connector loads private metadata required for this plan
   -> SDK creates the initial complete QueryPlan
   -> SDK applies the Connector's RewriteRuleSet using that metadata
-  -> Connector generates ExecutableQuery from the final remote plan and metadata
+  -> Connector generates the executable query from the final remote plan and metadata
   -> SDK converts the remote/local plans to Substrait and returns PlannedPushdown
   -> Adapter attempts to lower each complete local plan and checks its mappings
   -> Adapter rejects that proposal or installs it atomically
@@ -180,7 +211,7 @@ query again:
 
 ~~~text
 PlannedPushdown
-  -> Connector ships executable_query to the Data Source
+  -> Connector ships remote.query to the Data Source
   -> Data Source returns the remote result
   -> if local_plan exists, Query Engine executes it over the remote result
   -> Query Engine returns the final result
@@ -288,10 +319,10 @@ prove that a rewrite is semantically equivalent to the offered plan.
 decoding, and serialized-size limits belong to a concrete transport or
 persistence boundary rather than the planning API.
 
-`ExecutableQuery<Q>` is generated and owned by the trusted Connector. The SDK
-does not serialize or impose a shared size limit on `Q`. A persistence or
-Adapter boundary that needs serialization or a size limit defines and validates
-that representation locally.
+`RemoteExecution<Q>` is generated by the trusted Connector. Its query type
+implements `PortableQuery`, so only the Connector that owns `Q` encodes and
+decodes it ([Execution in another process](#execution-in-another-process)). The
+SDK imposes no shared size limit on `Q`.
 
 Boundary checks do not create a second domain result such as a
 `ConnectorPlanningResult` that is converted into `PlannedPushdown`; they inspect

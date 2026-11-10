@@ -1,19 +1,81 @@
 //! A validated pushdown proposal ready for adoption and execution.
 
 use ::substrait::proto::Plan;
-use analytics_types::AnalyticsSchema;
+use analytics_types::{AnalyticsSchema, arrow_schema::Schema};
 
 use super::{LogicalPlan, LogicalRelation, PlanningError};
-use crate::TableBinding;
+use crate::{ConnectorError, ErrorKind, TableBinding};
 
-/// Connector-owned instructions for executing one remote query.
+/// A Connector-owned query that can cross a process boundary.
+///
+/// The bytes are opaque and valid only for the same library version that
+/// produced them; no other component reads or writes them.
+pub trait PortableQuery: Sized {
+    /// Encodes the query for transport to another process.
+    fn to_bytes(&self) -> Vec<u8>;
+
+    /// Restores a query encoded by [`PortableQuery::to_bytes`].
+    fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectorError>;
+}
+
+/// The part of a planned pushdown that remote execution needs.
+///
+/// Execution in the planning process and in another process starts from the
+/// same value. Its bytes, produced by [`RemoteExecution::to_bytes`], carry no
+/// credential, connection, or process-local pointer.
 ///
 /// This type intentionally does not implement `Debug`: the query may contain
 /// SQL text, literal values, or other Connector-private execution data.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ExecutableQuery<Q> {
+pub struct RemoteExecution<Q> {
     /// Connector-defined instructions dispatched during remote execution.
     pub query: Q,
+    /// Schema produced by remote execution; every batch is checked against it.
+    pub output_schema: AnalyticsSchema,
+}
+
+impl<Q: PortableQuery> RemoteExecution<Q> {
+    /// Encodes the remote execution as opaque bytes for another process.
+    ///
+    /// The layout is the output schema's length as a little-endian `u64`, the
+    /// schema as Arrow JSON, and then the Connector's query bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let schema = serde_json::to_vec(&self.output_schema.to_arrow())
+            .expect("an Arrow schema always serializes to JSON");
+        let query = self.query.to_bytes();
+        let mut bytes = Vec::with_capacity(8 + schema.len() + query.len());
+        bytes.extend_from_slice(&(schema.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&schema);
+        bytes.extend_from_slice(&query);
+        bytes
+    }
+
+    /// Restores a remote execution encoded by [`RemoteExecution::to_bytes`].
+    ///
+    /// Bytes that cannot be restored are an `invalid request`.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectorError> {
+        let (length, rest) = bytes
+            .split_first_chunk::<8>()
+            .ok_or_else(|| invalid_transport("the remote execution bytes are truncated"))?;
+        let schema_length = usize::try_from(u64::from_le_bytes(*length))
+            .ok()
+            .filter(|schema_length| *schema_length <= rest.len())
+            .ok_or_else(|| invalid_transport("the remote execution bytes are truncated"))?;
+        let (schema, query) = rest.split_at(schema_length);
+        let schema: Schema = serde_json::from_slice(schema)
+            .map_err(|_| invalid_transport("the remote output schema cannot be decoded"))?;
+        let output_schema = AnalyticsSchema::try_from_arrow(&schema).map_err(|_| {
+            invalid_transport("the remote output schema is not an Analytics schema")
+        })?;
+        Ok(Self {
+            query: Q::from_bytes(query)?,
+            output_schema,
+        })
+    }
+}
+
+fn invalid_transport(message: &'static str) -> ConnectorError {
+    ConnectorError::new(ErrorKind::InvalidRequest, false, message)
 }
 
 /// A proposed semantic decomposition into remote work followed by optional local work.
@@ -22,21 +84,19 @@ pub struct ExecutableQuery<Q> {
 /// this proposal.
 ///
 /// This type intentionally does not implement `Debug`: it contains raw
-/// Substrait boundary plans and a Connector-owned [`ExecutableQuery`]. Inspect the
+/// Substrait boundary plans and a Connector-owned [`RemoteExecution`]. Inspect the
 /// validated `LogicalPlan` before boundary conversion when diagnostics need a
 /// redacted plan representation.
 #[derive(Clone, PartialEq)]
 pub struct PlannedPushdown<Q> {
-    /// Complete Substrait plan implemented by the executable remote query.
+    /// Complete Substrait plan implemented by the remote execution.
     pub remote_plan: Plan,
     /// Remaining Substrait work for the Query Engine, when required.
     pub local_plan: Option<Plan>,
-    /// Connector-owned instructions for executing `remote_plan`.
-    pub executable_query: ExecutableQuery<Q>,
+    /// What execution needs to run `remote_plan`; its output feeds `local_plan`.
+    pub remote: RemoteExecution<Q>,
     /// Schema of the remote plan's terminal table read.
     pub remote_base_schema: AnalyticsSchema,
-    /// Schema produced by remote execution and consumed by `local_plan`.
-    pub remote_output_schema: AnalyticsSchema,
     /// Opaque table identifiers referenced by the remote plan.
     pub table_bindings: Vec<TableBinding>,
     /// Final schema produced by the complete remote/local decomposition.
@@ -47,13 +107,13 @@ impl<Q> PlannedPushdown<Q> {
     /// Asserts the decomposition contract and constructs the boundary result.
     ///
     /// The internal remote and optional local plans are checked before they are
-    /// converted to Substrait. The executable query is retained unchanged for
-    /// later execution.
+    /// converted to Substrait. The query is retained unchanged, together with
+    /// the remote output schema, for later execution.
     pub fn try_new(
         offered_plan: &LogicalPlan,
         remote_plan: LogicalPlan,
         local_plan: Option<LogicalPlan>,
-        executable_query: ExecutableQuery<Q>,
+        query: Q,
     ) -> Result<Self, PlanningError> {
         let remote_output_schema =
             Self::assert_decomposition_contract(offered_plan, &remote_plan, local_plan.as_ref());
@@ -73,9 +133,11 @@ impl<Q> PlannedPushdown<Q> {
         Ok(Self {
             remote_plan,
             local_plan,
-            executable_query,
+            remote: RemoteExecution {
+                query,
+                output_schema: remote_output_schema,
+            },
             remote_base_schema,
-            remote_output_schema,
             table_bindings,
             output_schema,
         })

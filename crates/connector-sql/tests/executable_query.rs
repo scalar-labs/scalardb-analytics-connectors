@@ -8,12 +8,11 @@ use analytics_types::{AnalyticsField, AnalyticsSchema, AnalyticsType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use connector_sdk::{
-    ConnectorError, ErrorKind, ExecutableQuery, ExecutionCancelHandle, ExecutionStream,
-    PlannedPushdown, execute_planned,
+    ConnectorError, ErrorKind, ExecutionCancelHandle, ExecutionStream, RemoteExecution,
+    execute_planned,
 };
 use connector_sql::{RenderedQuery, SqlExecutor};
 use futures_core::Stream;
-use substrait::proto::Plan;
 
 #[path = "support/adbc.rs"]
 mod adbc;
@@ -27,19 +26,21 @@ fn public_sql_executable_query_path() {
     cancellation_stops_a_query_blocked_at_the_source();
     expiry_stops_a_query_blocked_at_the_source();
     preserves_adbc_execution_diagnostics();
+    transports_the_query_to_another_connection();
+    rejects_transported_sql_that_is_not_utf8();
 }
 
 fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
     let sql = "select value from source where value = 7";
-    let pushdown = planned_query(sql);
-    assert_eq!(pushdown.executable_query.query.sql, sql);
+    let remote = remote_query(sql);
+    assert_eq!(remote.query.sql, sql);
 
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![
         batch(&[10, 20]),
         batch(&[30]),
     ]));
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
+    let mut stream = execute_planned(&executor, &remote, None).unwrap();
 
     assert!(fixture.events().is_empty());
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[10, 20])))));
@@ -59,11 +60,11 @@ fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
 }
 
 fn preserves_execution_scoped_cancellation() {
-    let pushdown = planned_query("select value");
+    let remote = remote_query("select value");
     let (cancelled_fixture, cancelled_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
     let cancelled_executor = executor(cancelled_connection);
-    let mut cancelled = execute_planned(&cancelled_executor, &pushdown, None).unwrap();
+    let mut cancelled = execute_planned(&cancelled_executor, &remote, None).unwrap();
     cancelled.cancel_handle().cancel().unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut cancelled) else {
@@ -75,7 +76,7 @@ fn preserves_execution_scoped_cancellation() {
     let (next_fixture, next_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[2])]));
     let next_executor = executor(next_connection);
-    let mut next = execute_planned(&next_executor, &pushdown, None).unwrap();
+    let mut next = execute_planned(&next_executor, &remote, None).unwrap();
     assert_eq!(pull(&mut next), Poll::Ready(Some(Ok(batch(&[2])))));
     assert_eq!(
         next_fixture.events(),
@@ -103,10 +104,10 @@ fn expiry_stops_a_query_blocked_at_the_source() {
 fn stop_blocked_query(
     stop: impl FnOnce(&ExecutionCancelHandle) -> Result<(), ConnectorError>,
 ) -> ConnectorError {
-    let pushdown = planned_query("select slow");
+    let remote = remote_query("select slow");
     let (fixture, connection) = Fixture::install(FixtureExecution::BlockUntilCancelled);
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
+    let mut stream = execute_planned(&executor, &remote, None).unwrap();
     let handle = stream.cancel_handle();
 
     let puller = std::thread::spawn(move || pull(&mut stream));
@@ -129,11 +130,44 @@ fn stop_blocked_query(
     error
 }
 
+/// Plans in one process and executes in another: only the bytes cross over,
+/// and the receiving side uses its own connection.
+fn transports_the_query_to_another_connection() {
+    let sql = "select value from source where value = 7";
+    let bytes = remote_query(sql).to_bytes();
+
+    let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch(&[7])]));
+    let restored = RemoteExecution::<RenderedQuery>::from_bytes(&bytes).unwrap();
+    let executor = executor(connection);
+    let mut stream = execute_planned(&executor, &restored, None).unwrap();
+
+    assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[7])))));
+    assert_eq!(
+        fixture.events(),
+        vec![
+            Event::NewStatement,
+            Event::SetSql(sql.to_owned()),
+            Event::Execute,
+            Event::Pull,
+        ]
+    );
+}
+
+fn rejects_transported_sql_that_is_not_utf8() {
+    let mut bytes = remote_query("select value").to_bytes();
+    bytes.push(0xff);
+
+    let error = RemoteExecution::<RenderedQuery>::from_bytes(&bytes)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+}
+
 fn preserves_adbc_execution_diagnostics() {
-    let pushdown = planned_query("select broken");
+    let remote = remote_query("select broken");
     let (fixture, connection) = Fixture::install(FixtureExecution::Fail);
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown, None).unwrap();
+    let mut stream = execute_planned(&executor, &remote, None).unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("the first pull should return the ADBC execution error");
@@ -157,24 +191,16 @@ fn pull(
     Stream::poll_next(Pin::new(stream), &mut context)
 }
 
-fn planned_query(sql: &str) -> PlannedPushdown<RenderedQuery> {
-    let schema = AnalyticsSchema::new(vec![AnalyticsField::new(
-        "value",
-        AnalyticsType::BigInt,
-        false,
-    )]);
-    PlannedPushdown {
-        remote_plan: Plan::default(),
-        local_plan: None,
-        executable_query: ExecutableQuery {
-            query: RenderedQuery {
-                sql: sql.to_owned(),
-            },
+fn remote_query(sql: &str) -> RemoteExecution<RenderedQuery> {
+    RemoteExecution {
+        query: RenderedQuery {
+            sql: sql.to_owned(),
         },
-        remote_base_schema: schema.clone(),
-        remote_output_schema: schema.clone(),
-        table_bindings: Vec::new(),
-        output_schema: schema,
+        output_schema: AnalyticsSchema::new(vec![AnalyticsField::new(
+            "value",
+            AnalyticsType::BigInt,
+            false,
+        )]),
     }
 }
 

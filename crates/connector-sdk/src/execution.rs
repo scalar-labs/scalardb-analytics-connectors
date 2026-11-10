@@ -10,7 +10,7 @@ use std::{
 use arrow_array::RecordBatch;
 use futures_core::Stream;
 
-use crate::{ConnectorError, ErrorKind, PlannedPushdown};
+use crate::{ConnectorError, ErrorKind, PortableQuery, RemoteExecution};
 
 /// Pull-based Arrow batch stream returned by a connector.
 pub type RecordBatchStream =
@@ -42,30 +42,34 @@ impl ExecutionOutput {
     }
 }
 
-/// Executes plans that have already passed connector planning.
+/// Executes queries that have already passed connector planning.
 pub trait ConnectorExecutor: Send + Sync {
     /// Connector-owned instructions shared with this Connector's planner.
-    type Query;
+    ///
+    /// The query may have been planned in another process and restored with
+    /// [`PortableQuery::from_bytes`].
+    type Query: PortableQuery;
 
     /// Starts the already planned remote query and returns its unchecked stream.
     ///
     /// The SDK wraps the returned stream to enforce lifecycle and schema
     /// checks before batches are exposed to the caller, and stops the
     /// execution through the returned [`ExecutionCancel`].
-    fn execute(
-        &self,
-        pushdown: &PlannedPushdown<Self::Query>,
-    ) -> Result<ExecutionOutput, ConnectorError>;
+    fn execute(&self, query: &Self::Query) -> Result<ExecutionOutput, ConnectorError>;
 }
 
 /// Starts execution and installs the shared lifecycle and schema boundary.
 ///
+/// `remote` is either [`PlannedPushdown::remote`] in the planning process or a
+/// value restored with [`RemoteExecution::from_bytes`] in another process.
 /// `deadline` bounds pulling the stream. A deadline that passes while a pull is
 /// blocked at the source takes effect only when the caller's timeout watcher
 /// calls [`ExecutionCancelHandle::expire`].
+///
+/// [`PlannedPushdown::remote`]: crate::PlannedPushdown::remote
 pub fn execute_planned<E>(
     executor: &E,
-    pushdown: &PlannedPushdown<E::Query>,
+    remote: &RemoteExecution<E::Query>,
     deadline: Option<Instant>,
 ) -> Result<ExecutionStream, ConnectorError>
 where
@@ -74,10 +78,10 @@ where
     if deadline_passed(deadline) {
         return Err(StopReason::Expired.error());
     }
-    let output = executor.execute(pushdown)?;
+    let output = executor.execute(&remote.query)?;
     Ok(ExecutionStream {
         inner: output.stream,
-        expected_schema: pushdown.remote_output_schema.to_arrow(),
+        expected_schema: remote.output_schema.to_arrow(),
         deadline,
         stop: Arc::new(ExecutionStop {
             reason: OnceLock::new(),
