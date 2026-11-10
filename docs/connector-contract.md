@@ -393,12 +393,21 @@ They are separate items in one record, and receivers treat them separately:
 the source declaration is an observation of the source, while Analytics types
 are a derived record of the connector's mapping.
 
-Table metadata is a shared output used by both the Physical Catalog and the
-Semantic Catalog. The Physical Catalog uses it to plan and run queries; the
-Semantic Catalog uses it as material for meaning. Table metadata therefore
-includes items the Physical Catalog itself does not use, such as unique indexes
-and CHECK constraints. How each receives table metadata and which items it uses
-is defined by their own input and reference contracts.
+Each table read is returned in two layers:
+
+- **Source metadata** is what the connector read about the table, in a shape
+  the connector defines, such as PostgreSQL `pg_catalog` facts. It is returned
+  as a JSON document. The Semantic Catalog receives it as material for meaning,
+  and an LLM interprets it, so it has no fixed schema across Connectors.
+- **Table metadata** is the source-independent subset that this section
+  defines. The connector derives it from the source metadata, so it states
+  nothing that the source metadata does not. The Physical Catalog registers it
+  to plan and run queries. It also includes items the Physical Catalog itself
+  does not use, such as unique indexes and CHECK constraints, because the
+  Semantic Catalog relies on them too.
+
+How each receives these layers and which items it uses is defined by their own
+input and reference contracts.
 
 Table metadata returns, per level:
 
@@ -416,10 +425,11 @@ are the source's column order and have no gaps.
 Table metadata items are limited to those that receivers use with the same
 meaning regardless of Connector. An item without a user has no basis for
 deciding which meaning is correct and cannot be checked by conformance tests.
-For the same reason, an attribute many sources have does not become an item
-until a receiver needs it, and there is no key-value item for Data Source-specific
-attributes. When a receiver needs a source attribute, it is added as an
-optional, typed, source-independent item.
+For the same reason, an attribute many sources have does not become a table
+metadata item until a receiver needs it, and table metadata has no key-value
+item for Data Source-specific attributes; those belong to the source metadata.
+When a receiver needs a source attribute with one meaning across Connectors,
+it is added to table metadata as an optional, typed, source-independent item.
 
 ### Constraints
 
@@ -458,16 +468,16 @@ belongs to the Physical Catalog's contracts.
 
 ### Retrieval info and determinism
 
-Table metadata is deterministic: when the source's state is the same, a
-connector of the same version returns the same table metadata content, in the
+Table metadata and source metadata are deterministic: when the source's state
+is the same, a connector of the same version returns the same content, in the
 same order. Columns are ordered by ordinal, and constraints by kind, name, and
 columns. Values that change without a change at the source, such as the
 retrieval time, are not part of the content and are carried separately as
 retrieval info.
 
 A receiver that needs to detect changes, such as the Semantic Catalog, stores
-the table metadata it based its decisions on and compares it with newly
-retrieved table metadata. Names and source identifiers identify the same
+the table metadata or source metadata it based its decisions on and compares it
+with newly retrieved metadata. Names and source identifiers identify the same
 table, column, and constraint across retrievals. This contract defines no
 digest or schema version for that comparison.
 
@@ -568,7 +578,7 @@ returns one reason:
 | Reason | Meaning |
 | --- | --- |
 | Not mapped | The type mapping states that the type is not mapped |
-| Not supported by the connector | The type mapping defines a mapping, but this connector cannot produce values of that Analytics type ([Type mappings and coverage](#type-mappings-and-coverage)) |
+| Mapping not implemented | The type mapping defines a mapping, but this connector version does not implement it: its ADBC driver, reader crate, or own conversion cannot produce values of that Analytics type without changing them, so the rule is outside its coverage ([Type mappings and coverage](#type-mappings-and-coverage)). A later connector version may map it. |
 | Parameter out of range | The type is in the type mapping, but a parameter such as precision or unit exceeds the mappable range |
 
 A connector never implicitly converts an unsupported column to a nearby type.
@@ -603,7 +613,7 @@ this section:
   retrieval info.
 - For covered rules the connector returns the expected Analytics type, and for
   columns hitting uncovered rules it returns unsupported columns with the
-  reason "not supported by the connector". Any other result fails.
+  reason "mapping not implemented". Any other result fails.
 - Names, ordinals, nullability, Data Source types, and the representation of
   missing information match the expectations.
 - Retrieving the same fixture twice returns the same table metadata, apart from
@@ -1143,7 +1153,8 @@ items of [Metadata retrieval](#metadata-retrieval) laid out as columns. Each
 request kind has a fixed output schema,
 so its stream can return the schema before the source is queried. Table
 metadata output has one row per table, with columns and constraints as nested
-columns.
+columns and the source metadata as a JSON text column. A table that does not
+exist or could not be read has no source metadata.
 
 Namespaces are returned as sequences of names with no fixed depth. For sources
 with catalogs, the first element is the catalog.

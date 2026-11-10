@@ -54,15 +54,16 @@ Table metadata is produced in these stages:
 
 | Stage | Performed by | Input | Output |
 | --- | --- | --- | --- |
-| 1. Read the catalog | The connector SDK, running the connector's catalog queries (SQL sources), or the connector's code | A set of tables | Raw records of the source declaration: names, ordinals, nullability, Data Source types, constraints, identifiers, and missing items |
-| 2. Parse Data Source types | The connector's code | Data Source types, and catalog information needed to tell type kinds apart | Keys for looking up the type mapping |
-| 3. Apply the type mapping | The connector SDK | Keys and the connector's coverage | Analytics types, or unsupported with a reason |
-| 4. Assemble table metadata | The connector SDK | Results of stages 1 to 3 and retrieval info | Table metadata in deterministic order |
-| 5. Convert to Arrow | The connector SDK | Table metadata | Rows of the table metadata result |
+| 1. Read the catalog | The connector, running its catalog queries (with `connector-sql` for SQL sources) or its own code | A set of tables | The connector's source metadata: names, ordinals, nullability, Data Source types, constraints, identifiers, and missing items, plus whatever else the connector reads |
+| 2. Parse Data Source types | The connector | Data Source types, and catalog information needed to tell type kinds apart | Keys for looking up the type mapping |
+| 3. Apply the type mapping | The connector, in `to_table_metadata` | Keys and the connector's coverage | Analytics types, or unsupported with a reason |
+| 4. Build table metadata | The connector, through the SDK's `TableMetadata::new` | Results of stages 1 to 3 | Table metadata in deterministic order, with completeness derived from its values |
+| 5. Convert to Arrow | The connector API | Table metadata, source metadata, and retrieval info | Rows of the table metadata result |
 
-A connector supplies only the stage 1 queries and stage 2, and never decides
-Analytics types itself, so that the type mapping is applied by the same rules
-for every Connector.
+The type mapping needs source knowledge, so the connector applies it. What
+every Connector shares is the shape of the result: the SDK's column types
+cannot state an Analytics type without the Data Source type it came from, and
+`TableMetadata::new` fixes the order of columns and constraints.
 
 In stage 2, the Data Source type string alone sometimes cannot identify the mapping
 rule. PostgreSQL `format_type` returns only the name of a domain or enum, such

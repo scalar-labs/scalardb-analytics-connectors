@@ -157,7 +157,7 @@ as follows:
 
 | Contract element | Connector SDK | Connector |
 | --- | --- | --- |
-| Metadata retrieval | Running catalog queries (`connector-sql` for SQL sources), applying the type mapping, deciding unsupported columns, attaching retrieval info, aggregating completeness, and converting output to Arrow | Catalog queries, parsing Data Source types, how constraints and identifiers are read, and rules for detecting missing information |
+| Metadata retrieval | The table metadata model and its states, the deterministic order of columns and constraints, deriving completeness, cancellation and deadlines of catalog reads, and the retrieval info model | Catalog queries and reading, the source metadata type, the type mapping and unsupported reasons, how constraints and identifiers are read, and rules for detecting missing information |
 | Data read | Offered Substrait validation and `LogicalPlan` conversion, initial `QueryPlan` construction, application of the Connector-supplied rule set, decomposition-contract assertions, cancellation, and deadlines | Obtaining current Data Source/session facts, supplying remote/local rewrite rules, generating and executing remote queries, guaranteeing rewrite semantics, and converting source output |
 | Calling conventions | Cancellation and timeouts, the error structure, and credential handling; with ADBC access, loading and version-checking the ADBC driver (`connector-adbc`) | Mapping connection options to driver options, fixed settings, and classifying Data Source-specific error codes; with direct access, reading the Data Source |
 
@@ -165,9 +165,10 @@ The rule is that whatever must apply with the same meaning to every connector
 belongs in the connector SDK, and whatever needs source knowledge belongs in the
 connector. The SDK reaches a connector only through the connector traits
 (`CatalogReader`, `ConnectorPlanner`, and `ConnectorExecutor`;
-[Connector trait](#connector-trait)), so common validation, type mapping,
-planned-state checks, and table metadata assembly have the same SDK boundary in
-both forms of Data Source access. With ADBC access, connection, query
+[Connector trait](#connector-trait)), so common validation, planned-state
+checks, and the table metadata model have the same SDK boundary in both forms
+of Data Source access. The type mapping needs source knowledge, so the
+connector applies it; the SDK fixes only the types that carry its result. With ADBC access, connection, query
 execution, Arrow results, cancellation, and error retrieval are also the same
 `connector-adbc` processing for every source, leaving only source knowledge to
 the connector. With direct access, the connector reads the Data Source itself
@@ -408,102 +409,86 @@ traits to connectors because:
   months, while wrapping it confines those changes to `connector-adbc`.
 
 The `CatalogReader` returned by a connector's `catalog` has one function per
-metadata request
-([Capabilities](connector-contract.md#capabilities)):
+metadata request ([Capabilities](connector-contract.md#capabilities)). Table
+metadata has two layers: the connector's own source metadata type, which the
+Semantic Catalog receives as JSON, and the source-independent table metadata
+derived from it ([Table metadata](connector-contract.md#table-metadata)).
 
 ~~~rust
 pub trait CatalogReader: Send + Sync {
+    /// Connector-specific metadata for one table, such as `pg_catalog` facts.
+    type Table: SourceTableMetadata;
+
     /// Namespace list. `filter` is a set of names matched exactly, without case folding;
     /// filter at the source if possible, otherwise after listing.
-    fn list_namespaces(&self, session: SessionLease, filter: &NameFilter)
-        -> Result<CatalogRead<Listed<NamespacePath>>>;
+    fn list_namespaces(&self, filter: &NameFilter)
+        -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError>;
 
     /// Table list across namespaces, with a namespace filter and a table-name filter.
-    fn list_tables(&self, session: SessionLease,
-                   namespaces: &NameFilter, tables: &NameFilter)
-        -> Result<CatalogRead<Listed<TableEntry>>>;
+    fn list_tables(&self, namespaces: &NameFilter, tables: &NameFilter)
+        -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError>;
 
-    /// Table metadata for a set of tables: one record per requested table.
-    fn read_tables(&self, session: SessionLease, tables: &[TableRef])
-        -> Result<CatalogRead<TableRecord>>;
+    /// One record per requested table.
+    fn read_tables(&self, tables: &[TableReference])
+        -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
 }
 
-/// The session lent to one operation. Gives `&mut dyn DataSourceSession` access, and goes
-/// back to the session when the operation releases its Data Source resources.
-pub struct SessionLease { /* ... */ }
-
-/// One catalog read, owned by the operation. Borrows nothing from the reader,
-/// the session, or the arguments; sends nothing to the source before the first pull.
-pub struct CatalogRead<T> {
-    pub items: Box<dyn Iterator<Item = Result<T>> + Send>,
-    /// Stops this catalog read, including the source execution in progress.
-    pub cancel: Arc<dyn CancelHandle>,
+/// Serialized as the source metadata JSON document; the connector decides its shape.
+pub trait SourceTableMetadata: serde::Serialize + Send + 'static {
+    /// The connector applies its type mapping here.
+    fn to_table_metadata(&self) -> TableMetadata;
 }
 
-/// None means no filter.
-pub type NameFilter = Option<BTreeSet<String>>;
-
-pub enum Listed<T> {
-    Item(T),
-    /// A range whose list could not be read.
-    Unreadable { scope: NamespacePath, reason: MissingReason },
+pub enum TableRecord<T> {
+    Read(T),
+    NotFound { table: TableReference },
+    Unavailable { table: TableReference, reason: String },
 }
 
-pub struct TableEntry { pub table: TableRef, pub kind: TableKind }
-
-/// The three states of one requested table.
-pub enum TableRecord {
-    Read(DataSourceTable),
-    NotFound { table: TableRef },
-    Unavailable { table: TableRef, reason: MissingReason },
+/// Built with TableMetadata::new, which orders columns by ordinal and
+/// constraints by kind, name, and columns.
+pub struct TableMetadata {
+    table: TableReference,
+    kind: TableKind,                       // Table | View | External | Other(String)
+    source_id: Reported<String>,
+    columns: Vec<Column>,                  // name, ordinal, nullable, source_id, ty
+    columns_may_be_hidden: bool,
+    constraints: Reported<Vec<Constraint>>,
+    read_at: SystemTime,
 }
 
-/// What the Data Source declares, as reported by the Data Source.
-pub struct DataSourceTable {
-    pub table: TableRef,
-    pub kind: TableKind,
-    pub columns: Vec<DataSourceColumn>,
-    /// True if the catalog may have hidden columns without privilege.
-    pub columns_may_be_hidden: bool,
-    pub constraints: Reported<Vec<DataSourceConstraint>>,
-    pub data_source_id: Reported<DataSourceId>,
-    pub read_at: Timestamp,
+pub enum ColumnType {
+    Mapped { data_source_type: String, analytics_type: AnalyticsType },
+    Unsupported { data_source_type: String, reason: UnsupportedReason },
+    Unread { reason: String },
 }
 
-pub struct DataSourceColumn {
-    pub name: String,
-    pub ordinal: u32,
-    pub nullable: bool,
-    pub data_source_type: Result<String, MissingReason>,  // missing makes the table incomplete
-    pub attrs: DataSourceColumnAttributes,
-    pub data_source_id: Reported<DataSourceId>,
-}
-
-/// An item the connector may fail to read or never returns for its Connector.
-pub enum Reported<T> {
-    Value(T),
-    Missing(MissingReason),
-    NotOffered,
-}
+pub enum Reported<T> { Value(T), Missing { reason: String }, NotOffered }
 ~~~
 
-Each `CatalogReader` function takes a session lease from the operation and
-returns a `CatalogRead`. A `CatalogRead` borrows nothing from the reader, the
-session, or the arguments, so the operation can own it as a Data Source
-resource ([Lifetimes](#lifetimes)). Even when one `CatalogRead` runs several
-executions at the source, such as one query per namespace, its `cancel` stops
-the execution in progress.
+Each function returns the read's item stream together with its
+`ExecutionCancel`, the same shape as query execution. Callers start it through
+`start_source_read`, which applies cancellation and the deadline exactly as
+for execution ([Cancellation and timeouts](#cancellation-and-timeouts)). Even
+when one catalog read runs several executions at the source, such as one query
+per namespace, its `ExecutionCancel` stops the execution in progress. The reader
+is bound to its session through `DataSourceSession::catalog`, so no session
+handle is passed per call.
 
-The three `TableRecord` states correspond one to one to the contract's table
-metadata row states: `Read` is complete without missing items and incomplete
-with them, `NotFound` is "does not exist", and `Unavailable` is "could not be
-read" ([Missing information](connector-contract.md#missing-information)). The
-three `Reported` states correspond to a value, a missing item, and "not
-offered". The connector only puts what the source reported into these records.
-Applying the type mapping, deciding unsupported columns, aggregating
-completeness, and attaching retrieval info are done by the connector SDK from
-these records, never by the connector
-([Division of processing](#division-of-processing)).
+The three `TableRecord` states correspond one to one to the contract's row
+states: `Read` is complete or incomplete, `NotFound` is "does not exist", and
+`Unavailable` is "could not be read"
+([Missing information](connector-contract.md#missing-information)). Whether
+read table metadata is complete is derived from its values
+(`TableMetadata::is_complete`): any `Missing` item, any `Unread` column type, or
+`columns_may_be_hidden` makes it incomplete, while `NotOffered` does not. An
+Analytics type cannot be stated without the Data Source type it was mapped
+from.
+
+Retrieval info is assembled from each table's `read_at` and the session's
+`DataSourceSession::implementation` (the connector and ADBC driver names and
+versions). The connector API adds the library version and converts table
+metadata and source metadata to the Arrow output.
 
 ## Connector behavior as code
 
@@ -757,7 +742,7 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | --- | --- |
 | [Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access) | `connector-api`, the connector traits, `connector-adbc` ([ADBC driver handling](#adbc-driver-handling)), and direct-access connector implementations |
 | [Calling conventions](connector-contract.md#calling-conventions) | `connector-api` unit management and the connector SDK's cancellation, timeout, and error structure |
-| [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and `parse_source_type`, and the connector SDK's type mapping and table metadata assembly |
+| [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and source metadata type with its type mapping, and the connector SDK's table metadata model and source-read boundary |
 | [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema and lifecycle checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |
 | [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header |

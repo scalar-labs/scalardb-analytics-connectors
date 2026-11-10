@@ -9,12 +9,14 @@ mod planning;
 
 pub use error::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind, RequestError};
 pub use execution::{
-    ConnectorExecutor, ExecutionCancel, ExecutionCancelHandle, ExecutionOutput, ExecutionStream,
-    RecordBatchStream, execute_planned,
+    ConnectorExecutor, ConnectorStream, ExecutionCancel, ExecutionCancelHandle, ExecutionOutput,
+    ExecutionStream, RecordBatchStream, SourceStream, execute_planned, start_source_read,
 };
 pub use metadata::{
-    CatalogReader, ConnectorLibrary, DataSource, DataSourceSession, MetadataGap, MetadataState,
-    TableMetadata, TableReference, TypeMapper, UnsupportedType,
+    CatalogReader, Column, ColumnType, Component, ConnectorLibrary, Constraint, ConstraintKind,
+    DataSource, DataSourceSession, Implementation, Listed, NameFilter, NamespacePath, Reported,
+    SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
+    UniqueKind, UnsupportedReason,
 };
 pub use planning::{
     BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, ConnectorPlanner,

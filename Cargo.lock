@@ -247,6 +247,7 @@ dependencies = [
  "prost",
  "prost-types",
  "regress",
+ "serde",
  "serde_json",
  "substrait",
  "thiserror",
