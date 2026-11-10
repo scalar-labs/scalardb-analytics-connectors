@@ -7,9 +7,8 @@ use std::{
 
 use connector_sdk::{
     BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, CancellationToken, ConnectorPlanner,
-    ErrorKind, ExecutableQuery, ExecutionContext, ExecutionProvenance, LOGICAL_TYPE_URI,
-    LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError, PushdownRequest, PushdownResult,
-    execute_planned,
+    ErrorKind, ExecutableQuery, ExecutionContext, LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation,
+    PlannedPushdown, PlanningError, PushdownRequest, PushdownResult, execute_planned,
 };
 use connector_sql::{RenderedQuery, SqlExecutor, TranslationError, translate};
 use futures_core::Stream;
@@ -168,10 +167,7 @@ fn translated_query_round_trips_through_adbc_execution() {
 }
 
 fn sql_executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
-    SqlExecutor::new(
-        connection,
-        ExecutionProvenance::new("test-sql", "fixture", "1", None),
-    )
+    SqlExecutor::new(connection)
 }
 
 fn execution_context() -> ExecutionContext {

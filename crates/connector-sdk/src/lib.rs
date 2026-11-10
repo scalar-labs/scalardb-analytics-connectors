@@ -9,8 +9,8 @@ mod planning;
 
 pub use error::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind, RequestError};
 pub use execution::{
-    CancellationToken, ConnectorExecutor, ExecutionContext, ExecutionOutput, ExecutionProvenance,
-    ExecutionStream, RecordBatchStream, execute_planned,
+    CancellationToken, ConnectorExecutor, ExecutionContext, ExecutionOutput, ExecutionStream,
+    RecordBatchStream, execute_planned,
 };
 pub use metadata::{
     CatalogReader, ConnectorLibrary, DataSource, DataSourceSession, MetadataDigest, MetadataGap,

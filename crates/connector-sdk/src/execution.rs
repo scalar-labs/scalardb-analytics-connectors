@@ -76,45 +76,15 @@ impl ExecutionContext {
     }
 }
 
-/// Auditable identity of one connector execution.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExecutionProvenance {
-    /// Connector implementation that performed the query.
-    pub connector: String,
-    /// Data Source product observed during execution.
-    pub data_source_product: String,
-    /// Data Source version observed during execution.
-    pub data_source_version: String,
-    /// Optional Connector-defined identity of the executed source state.
-    pub snapshot_fingerprint: Option<String>,
-}
-
-impl ExecutionProvenance {
-    pub fn new(
-        connector: impl Into<String>,
-        data_source_product: impl Into<String>,
-        data_source_version: impl Into<String>,
-        snapshot_fingerprint: Option<String>,
-    ) -> Self {
-        Self {
-            connector: connector.into(),
-            data_source_product: data_source_product.into(),
-            data_source_version: data_source_version.into(),
-            snapshot_fingerprint,
-        }
-    }
-}
-
 /// Unchecked connector output, validated by `execute_planned` before exposure.
 pub struct ExecutionOutput {
     stream: RecordBatchStream,
-    provenance: ExecutionProvenance,
 }
 
 impl ExecutionOutput {
-    /// Wraps the Connector stream and its provenance for SDK validation.
-    pub fn new(stream: RecordBatchStream, provenance: ExecutionProvenance) -> Self {
-        Self { stream, provenance }
+    /// Wraps the Connector stream for SDK validation.
+    pub fn new(stream: RecordBatchStream) -> Self {
+        Self { stream }
     }
 }
 
@@ -147,7 +117,6 @@ where
     let output = executor.execute(pushdown, &context)?;
     Ok(ExecutionStream {
         inner: output.stream,
-        provenance: output.provenance,
         expected_schema: pushdown.remote_output_schema.to_arrow(),
         context,
         terminated: false,
@@ -157,17 +126,12 @@ where
 /// Stream wrapper that enforces cancellation, deadline, and output schema.
 pub struct ExecutionStream {
     inner: RecordBatchStream,
-    provenance: ExecutionProvenance,
     expected_schema: analytics_types::arrow_schema::Schema,
     context: ExecutionContext,
     terminated: bool,
 }
 
 impl ExecutionStream {
-    pub fn provenance(&self) -> &ExecutionProvenance {
-        &self.provenance
-    }
-
     /// Checks one remote batch against the schema fixed during planning.
     fn validate_batch(&self, batch: &RecordBatch) -> Result<(), ConnectorError> {
         if batch.schema().as_ref() != &self.expected_schema {

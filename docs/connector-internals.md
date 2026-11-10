@@ -71,7 +71,7 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, batch bounds, provenance, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, batch bounds, error classification, and secret-safe errors | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: loading drivers through the ADBC driver manager and checking their versions, passing options, running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by SQL-standard SQLSTATE class ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
 | `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: running catalog queries and generating SQL from remote `LogicalPlan` values with Data Source-specific dialect and semantic rules | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its Connector definition and the code the definition cannot express. A direct-access Connector also implements the Data Source access traits. | Knowledge of other Connectors |
@@ -167,14 +167,14 @@ as follows:
 | --- | --- | --- |
 | Capability declaration | Assembling metadata declarations and conservative pushdown hints | Metadata coverage and certainly-unsupported hints for the connected source's version and settings |
 | Metadata retrieval | Running catalog queries (`connector-sql` for SQL sources), applying the type mapping, deciding unsupported columns, attaching retrieval info, aggregating completeness, the digest, and converting output to Arrow | Catalog queries, parsing Data Source types, how constraints and identifiers are read, and rules for detecting missing information |
-| Data read | Offered Substrait validation and `LogicalPlan` conversion, initial `QueryPlan` construction, application of the Connector-supplied rule set, decomposition-contract assertions, cancellation, deadlines, batch bounds, and provenance | Obtaining current Data Source/session facts, supplying remote/local rewrite rules, generating and executing remote queries, guaranteeing rewrite semantics, and converting source output |
+| Data read | Offered Substrait validation and `LogicalPlan` conversion, initial `QueryPlan` construction, application of the Connector-supplied rule set, decomposition-contract assertions, cancellation, deadlines, and batch bounds | Obtaining current Data Source/session facts, supplying remote/local rewrite rules, generating and executing remote queries, guaranteeing rewrite semantics, and converting source output |
 | Calling conventions | Cancellation and timeouts, the error structure, and credential handling; with ADBC access, loading and version-checking the ADBC driver (`connector-adbc`) | Mapping connection options to driver options, fixed settings, and classifying Data Source-specific error codes; with direct access, the Data Source access trait implementation |
 
 The rule is that whatever must apply with the same meaning to every connector
 belongs in the connector SDK, and whatever needs source knowledge belongs in the
 connector. Data Source access sits behind a narrow trait that only reads catalogs
 and runs queries ([Connector trait](#connector-trait)), so common validation,
-type mapping, planned-state checks, read provenance, and table metadata assembly
+type mapping, planned-state checks, and table metadata assembly
 have the same SDK boundary in both forms. With ADBC access, connection, query execution, Arrow results,
 cancellation, and error retrieval are also the same `connector-adbc` processing
 for every source, leaving only source knowledge to the connector. With direct
@@ -769,6 +769,6 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | [Calling conventions](connector-contract.md#calling-conventions) | `connector-api` unit management and the connector SDK's cancellation, timeout, and error structure |
 | [Capability declaration](connector-contract.md#capability-declaration) | Metadata coverage and conservative pushdown hints assembled from connector information |
 | [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and `parse_source_type`, and the connector SDK's type mapping and table metadata assembly |
-| [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema, lifecycle, batch-bound, and provenance checks |
+| [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema, lifecycle, and batch-bound checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |
 | [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header |

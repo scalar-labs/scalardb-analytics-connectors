@@ -10,8 +10,8 @@ mod translation;
 
 use adbc_driver_manager::ManagedConnection;
 use connector_sdk::{
-    ConnectorError, ConnectorExecutor, ExecutionContext, ExecutionOutput, ExecutionProvenance,
-    LiteralValue, PlannedPushdown, RecordBatchStream,
+    ConnectorError, ConnectorExecutor, ExecutionContext, ExecutionOutput, LiteralValue,
+    PlannedPushdown, RecordBatchStream,
 };
 
 pub use translation::{TranslationError, translate};
@@ -146,16 +146,12 @@ impl std::fmt::Debug for RenderedQuery {
 /// Executes SQL-family planned pushdowns through one ADBC connection.
 pub struct SqlExecutor {
     connection: ManagedConnection,
-    provenance: ExecutionProvenance,
 }
 
 impl SqlExecutor {
-    /// Binds the shared SQL execution path to a session connection and its identity.
-    pub fn new(connection: ManagedConnection, provenance: ExecutionProvenance) -> Self {
-        Self {
-            connection,
-            provenance,
-        }
+    /// Binds the shared SQL execution path to a session connection.
+    pub fn new(connection: ManagedConnection) -> Self {
+        Self { connection }
     }
 }
 
@@ -171,6 +167,6 @@ impl ConnectorExecutor for SqlExecutor {
             self.connection.clone(),
             pushdown.executable_query.query.sql.clone(),
         ));
-        Ok(ExecutionOutput::new(stream, self.provenance.clone()))
+        Ok(ExecutionOutput::new(stream))
     }
 }

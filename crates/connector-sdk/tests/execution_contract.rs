@@ -3,7 +3,7 @@ mod support;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use connector_sdk::{
     CancellationToken, ConnectorError, ConnectorExecutor, ErrorKind, ExecutionContext,
-    ExecutionOutput, ExecutionProvenance, PlannedPushdown, RecordBatchStream, execute_planned,
+    ExecutionOutput, PlannedPushdown, RecordBatchStream, execute_planned,
 };
 use futures_core::Stream;
 use std::{
@@ -85,10 +85,7 @@ impl ConnectorExecutor for BatchExecutor {
     ) -> Result<ExecutionOutput, ConnectorError> {
         assert!(!pushdown.executable_query.query.is_empty());
         let stream: RecordBatchStream = Box::pin(OneBatchStream(Some(Ok(self.batch.clone()))));
-        Ok(ExecutionOutput::new(
-            stream,
-            ExecutionProvenance::new("test", "postgresql", "17.2", Some("snapshot-42".to_owned())),
-        ))
+        Ok(ExecutionOutput::new(stream))
     }
 }
 

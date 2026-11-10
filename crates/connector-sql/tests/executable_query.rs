@@ -9,7 +9,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use connector_sdk::{
     CancellationToken, ConnectorError, ErrorKind, ExecutableQuery, ExecutionContext,
-    ExecutionProvenance, ExecutionStream, PlannedPushdown, execute_planned,
+    ExecutionStream, PlannedPushdown, execute_planned,
 };
 use connector_sql::{RenderedQuery, SqlExecutor};
 use futures_core::Stream;
@@ -40,7 +40,6 @@ fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
     let mut stream = execute_planned(&executor, &pushdown, execution_context()).unwrap();
 
     assert!(fixture.events().is_empty());
-    assert_eq!(stream.provenance().connector, "test-sql");
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[10, 20])))));
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[30])))));
     assert_eq!(pull(&mut stream), Poll::Ready(None));
@@ -143,10 +142,7 @@ fn planned_query(sql: &str) -> PlannedPushdown<RenderedQuery> {
 }
 
 fn executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
-    SqlExecutor::new(
-        connection,
-        ExecutionProvenance::new("test-sql", "fixture", "1", None),
-    )
+    SqlExecutor::new(connection)
 }
 
 fn execution_context() -> ExecutionContext {
