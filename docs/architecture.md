@@ -207,8 +207,7 @@ inside the Analytics type system.
   boundary.
 - Unsupported source or Arrow representations fail explicitly rather than
   silently changing the Analytics type.
-- Static capability declarations are pruning hints; only a plan-aware connector
-  rule can authorize a native planner rewrite.
+- Only a plan-aware connector rule can authorize a native planner rewrite.
 - Planned state contains no credential, open connection, or process-local
   pointer.
 - Connector execution returns the remote output schema recorded by

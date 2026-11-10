@@ -165,8 +165,9 @@ encoding.
 
 ## Adding Analytics types
 
-Adding an Analytics type, whether extension-encoded or directly encoded, keeps
-binary compatibility of the connector API library and raises its MINOR
+Adding an Analytics type, whether extension-encoded or directly encoded, is
+released together with its callers, because the library and its callers are
+updated together
 ([Compatibility and versions](connector-contract.md#compatibility-and-versions)).
 Every adapter adds one row to its mapping table for the new type.
 
@@ -192,11 +193,8 @@ that mapping:
 | Uuid | UUID, lossless | StringType; the type's meaning is lost and values are handled as strings |
 | Enum | ENUM, lossless | StringType; the member set and order are lost |
 
-The table must be complete. A column whose Analytics type the caller does not
-know is registered as an unsupported column
-([Unsupported columns](connector-contract.md#unsupported-columns)) and never
-reaches the adapter, so the adapter never receives a type missing from its
-table. Everything else, such as precision and scale, timestamp unit and time
+The table must be complete. The library and its adapters are updated
+together, so an adapter never receives a type missing from its table. Everything else, such as precision and scale, timestamp unit and time
 zone, nullability, and nesting, is carried by the Arrow schema.
 
 ### Unexpected types

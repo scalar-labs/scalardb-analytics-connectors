@@ -53,7 +53,6 @@ impl AnalyticsField {
 /// Variants are peers in one semantic type system. Their source, Arrow, and
 /// Query Engine representations are owned by mappings at those boundaries.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum AnalyticsType {
     Boolean,
     Byte,

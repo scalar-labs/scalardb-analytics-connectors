@@ -73,7 +73,6 @@ impl fmt::Display for ErrorKind {
 
 /// A typed diagnostic value owned by the connector error.
 #[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
 pub enum DiagnosticValue {
     Bool(bool),
     U8(u8),

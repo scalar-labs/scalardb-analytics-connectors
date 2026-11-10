@@ -408,7 +408,6 @@ pub(super) fn encode_type(
             nullability,
             extensions,
         ),
-        _ => unreachable!("the Analytics type is outside the accepted Substrait profile"),
     };
     Type { kind: Some(kind) }
 }

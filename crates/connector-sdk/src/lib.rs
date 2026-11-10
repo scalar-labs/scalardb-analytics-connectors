@@ -13,8 +13,8 @@ pub use execution::{
     RecordBatchStream, execute_planned,
 };
 pub use metadata::{
-    CatalogReader, ConnectorLibrary, DataSource, DataSourceSession, MetadataDigest, MetadataGap,
-    MetadataProvenance, MetadataState, TableMetadata, TableReference, TypeMapper, UnsupportedType,
+    CatalogReader, ConnectorLibrary, DataSource, DataSourceSession, MetadataGap, MetadataState,
+    TableMetadata, TableReference, TypeMapper, UnsupportedType,
 };
 pub use planning::{
     BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, ConnectorPlanner,

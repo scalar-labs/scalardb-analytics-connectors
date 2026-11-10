@@ -27,21 +27,20 @@ A connector for a new Connector is built in this order:
    For ADBC access, choose the ADBC driver, and if no existing driver is usable,
    write one under `adbc-drivers/<source>` ([Our own ADBC drivers](#our-own-adbc-drivers)).
    For direct access, choose the reader crates.
-3. Create `crates/connectors/<source>` and write its
-   [connector definition](connector-internals.md#connector-definition).
-4. Implement what the definition cannot express through the
-   [connector trait](connector-internals.md#connector-trait). For a source that
-   speaks SQL, use `connector-sql`'s default `catalog` and `translator`. For
-   direct access, also implement the Data Source access traits
+3. Create `crates/connectors/<source>` and implement the
+   [connector trait](connector-internals.md#connector-trait) in Rust code and
+   constant tables ([Connector behavior as code](connector-internals.md#connector-behavior-as-code)).
+   For a source that speaks SQL, use `connector-sql`'s default `catalog` and
+   `translator`. For direct access, the connector reads the Data Source itself
    ([Direct access](#direct-access)).
-5. Fill `ConnectorDescriptor` with the name, version, Connectors, supported
-   `connector-sdk` version range, the description of accepted options
+4. Fill `ConnectorDescriptor` with the name, version, Connectors, the
+   description of accepted options
    ([Static information](connector-contract.md#static-information)), the form
    of Data Source access, and, with ADBC access, the ADBC driver.
-6. Put fixtures and expectations in `conformance/fixtures/<source>` and pass, for
+5. Put fixtures and expectations in `conformance/fixtures/<source>` and pass, for
    this connector alone, the calling-convention conformance tests and the
    metadata and data read conformance tests ([Tests](#tests)).
-7. Register it as a `connector-api` feature and build it into the artifact.
+6. Register it as a `connector-api` feature and build it into the artifact.
 
 These steps change neither the connector SDK, the contract, nor the callers of
 the connector API; `connector-api` only gains a feature, without code changes
@@ -55,10 +54,10 @@ Table metadata is produced in these stages:
 
 | Stage | Performed by | Input | Output |
 | --- | --- | --- | --- |
-| 1. Read the catalog | The connector SDK, running the definition's queries (SQL sources) or the connector's code | A set of tables | Raw records of the source declaration: names, ordinals, nullability, Data Source types, constraints, identifiers, and missing items |
+| 1. Read the catalog | The connector SDK, running the connector's catalog queries (SQL sources), or the connector's code | A set of tables | Raw records of the source declaration: names, ordinals, nullability, Data Source types, constraints, identifiers, and missing items |
 | 2. Parse Data Source types | The connector's code | Data Source types, and catalog information needed to tell type kinds apart | Keys for looking up the type mapping |
 | 3. Apply the type mapping | The connector SDK | Keys and the connector's coverage | Analytics types, or unsupported with a reason |
-| 4. Assemble table metadata | The connector SDK | Results of stages 1 to 3 and retrieval info | Table metadata and its content digest |
+| 4. Assemble table metadata | The connector SDK | Results of stages 1 to 3 and retrieval info | Table metadata in deterministic order |
 | 5. Convert to Arrow | The connector SDK | Table metadata | Rows of the table metadata result |
 
 A connector supplies only the stage 1 queries and stage 2, and never decides
@@ -91,27 +90,22 @@ domain or enum name, as the type mapping says.
 - Excluded namespaces are listed as the connector's own rule
   ([Data Source types](connector-contract.md#data-source-types)).
 - When a source cannot list tables of several namespaces in one query, the
-  connector SDK repeats the query per namespace; the definition only needs the
-  per-namespace query.
+  connector SDK repeats the query per namespace; the connector only supplies
+  the per-namespace query.
 - The retrieval time is the time each table's catalog was read.
 
-### Retrieval info and digest
+### Retrieval info
 
-The connector SDK takes the following retrieval info items from the connector's
-`ConnectorDescriptor`, its definition, the ADBC driver's report (ADBC access),
-and the session's capability declaration:
+The connector SDK takes the following retrieval info items from the
+connector's `ConnectorDescriptor` and, with ADBC access, the ADBC driver's
+report:
 
 - The connector's name and version and, with ADBC access, the ADBC driver's name
-  and version. Direct-access reader crates are identified by the connector
-  version
-  ([Retrieval info and content digest](connector-contract.md#retrieval-info-and-content-digest)).
+  and version. Direct-access reader crates and fixed settings are identified by
+  the connector version
+  ([Retrieval info and determinism](connector-contract.md#retrieval-info-and-determinism)).
 - The library version
   ([Compatibility and versions](connector-contract.md#compatibility-and-versions)).
-- The fixed settings identifier: a digest of the normalized list of session
-  setting queries, fixed driver options, and fixed reader crate settings.
-
-The content digest is computed by the connector SDK with the contract's
-normalization rules.
 
 ## Types and values
 
@@ -130,8 +124,8 @@ records the change in its changelog
 
 ### Converting Data Source access output to Analytics types
 
-- The connector definition lists, per mapping rule, the Arrow type the source
-  access (ADBC driver or reader crate) returns and the building block that
+- The connector's constant tables list, per mapping rule, the Arrow type the
+  Data Source access (ADBC driver or reader crate) returns and the building block that
   converts it to the Analytics type. Building blocks are chosen from the
   value-preserving conversions the connector SDK provides, such as widening
   integers, converting decimal strings to `decimal128`, and aligning time units.
@@ -146,9 +140,9 @@ records the change in its changelog
 
 ### Fixed settings
 
-Two kinds of settings that change how types and values are produced are fixed,
-and the fixed settings appear in the capability declaration
-([Cancellation, errors, and declarations for metadata](connector-contract.md#cancellation-errors-and-declarations-for-metadata)):
+Two kinds of settings that change how types and values are produced are fixed
+by the connector, and changing them raises the connector's version
+([Data Source types](connector-contract.md#data-source-types)):
 
 - session settings run right after connecting, such as the time zone; and
 - ADBC driver options or reader crate settings that change how types and values
@@ -174,8 +168,8 @@ Connection settings passed by the caller cannot override fixed settings.
   `Debug` because they contain literal-bearing boundary plans or
   Connector-owned executable queries.
 - One read request becomes one query to the source. Splitting it into several
-  queries would break the declaration that one request reads a single
-  point-in-time state ([Consistency](connector-contract.md#consistency)).
+  queries would break the rule that one request reads a single point-in-time
+  state ([Consistency](connector-contract.md#consistency)).
   Auxiliary queries that read attributes or types from the catalog for planning
   or for the schema check
   ([Plan-aware support decisions](#plan-aware-support-decisions),
@@ -235,23 +229,12 @@ may perform timeout-bound, cancellable Data Source I/O. A Connector may prefetch
 or cache facts for a session, but the cache is an implementation strategy rather
 than a required planning-snapshot abstraction.
 
-On the first pull, before sending the data query, the connector refreshes those
-facts with a metadata preflight unless the session or a named snapshot
-guarantees that they cannot have changed. Preflight also establishes an
-execution guard that remains effective while the source evaluates accepted
-operators: for example a transaction/snapshot, immutable session settings, a
-version token validated in the same operation, or semantics encoded explicitly
-in the generated request. If no such guard is possible, the connector does not
-apply a rewrite whose correctness depends on the mutable fact. A rewrite with a
-local plan is valid only if every permitted change still makes the remote result
-safe input for that local plan. Result type information remains part of the
-schema check, but information available only
-after the data query starts cannot justify an earlier rewrite decision.
-
-If confirmation shows a change, the connector must not execute the previously
-planned remote query under the old assumptions. It refreshes the source facts
-and requires replanning; if the change also changes an Analytics type, the
-result is `stale registration`.
+Those source attributes are treated as unchanged when the planned query runs;
+the connector does not recheck them at execution, and the result is not
+guaranteed if they change
+([Read request](connector-contract.md#read-request)). Result type information
+is still used by the schema check, but information available only after the
+data query starts cannot justify an earlier rewrite decision.
 
 Semantic guard tables are managed with the connector's version. Data-read
 conformance tests use fixtures whose comparison meaning varies to prove fully
@@ -264,20 +247,14 @@ as catalog Data Source types and uses them for the
 [schema check](connector-contract.md#schema-check):
 
 - With ADBC access, when the ADBC driver puts the Data Source type name in the
-  result's Arrow field metadata, that is used. The connector definition names
-  the metadata key.
+  result's Arrow field metadata, that is used. The connector names the
+  metadata key.
 - With direct access, the type is obtained, in the same form as the catalog
   Data Source type, from the schema the reader crate read at read time, such as
   table-format metadata or a file footer.
 - When the driver does not provide type names, or the result's type information
   cannot identify the mapping rule (PostgreSQL domains and enums, MySQL `ENUM`),
   the column's type is read from the catalog before the query.
-
-### Batches
-
-The Data Source access batch size is set to the library's configured maximum
-([Functions](connector-contract.md#functions)). When the driver or reader crate
-cannot set it, the connector SDK splits batches itself.
 
 ## Errors, logs, and metrics
 
@@ -287,7 +264,7 @@ The connector SDK classifies Data Source access errors into the contract's
 [error kinds](connector-contract.md#errors). Direct-access errors are
 classified by the connector's `classify_error`. The rest of this section covers
 ADBC access. ADBC errors carry a status code, a SQLSTATE, and a Data Source-specific
-vendor code. Classification by vendor code (the definition's error table) is
+vendor code. Classification by vendor code (the connector's error table) is
 applied before classification by SQLSTATE class; for example, MySQL `1142`
 returns SQLSTATE `42000` but is classified as `permission`.
 
@@ -384,13 +361,10 @@ The boundary cases have explicit owners:
 | The standard DataFusion provider sees a representable filter or an unsupported projection | A future DataFusion Adapter integration test must prove that it reports filters as `Inexact`, keeps planned state local to `scan`, and supplies a local projection over a full remote scan when needed |
 | A DuckDB multi-expression callback fails after an earlier expression was accepted | A future DuckDB Adapter integration test must prove that bind state and the residual vector roll back together |
 | An engine creates its first connector scan | Each future Adapter integration suite must prove that it initializes the exact base `ReadRel` before later operator attempts |
-| Planning facts require Data Source I/O or become invalid | Connector SDK tests prove metadata loading happens after common validation; each Connector's operation tests must prove its I/O handling and any source-specific execution guard |
-| A mutable semantic fact may change after planning | Connector-specific tests prove its execution guard preserves the fact through remote evaluation, or the Connector never applies a rewrite that depends on that fact |
+| Planning facts require Data Source I/O | Connector SDK tests prove metadata loading happens after common validation; each Connector's operation tests must prove its I/O handling |
 
-The last test uses an instrumented source fixture so the assertion covers the
-fact for the full period in which the remote operator is evaluated. Schema or
-object changes remain covered as `stale registration`; there is no common plan
-invalidation protocol.
+Schema or object changes are covered as `stale registration`; there is no
+common plan invalidation protocol.
 
 ### Fixtures
 
@@ -398,9 +372,9 @@ Each Connector's fixtures consist of:
 
 - a procedure that prepares the source, such as SQL that creates tables, types,
   and values, applied to a source started in a container;
-- expected table metadata, excluding retrieval info and compared with the
-  contract's normalization
-  ([Retrieval info and content digest](connector-contract.md#retrieval-info-and-content-digest));
+- expected table metadata, excluding retrieval info and in the contract's
+  deterministic order
+  ([Retrieval info and determinism](connector-contract.md#retrieval-info-and-determinism));
   and
 - expected reads: per request, the expected Arrow schema and values.
 
@@ -413,7 +387,7 @@ version (ADBC access), and platform as its compatibility table.
 | --- | --- |
 | PostgreSQL | Major versions within community support at the time of testing |
 | MySQL | The LTS version and the latest version at the time of testing |
-| ADBC driver (ADBC access) | The version range the connector declares |
+| ADBC driver (ADBC access) | The supported version range in the connector's static information |
 | Platform | The first distribution platforms of the product |
 
 ## Choosing Data Source access and ADBC drivers
@@ -432,8 +406,7 @@ An existing ADBC driver is used when all of these hold:
 - For each mapping rule, the values the driver returns can be turned into the
   Analytics type with value-preserving conversions. Rules for which this fails
   fall outside coverage, and the number of such rules is acceptable.
-- It supports cancellation. If it does not stop the query at the source, the
-  means in the connector definition can compensate.
+- Its cancellation stops the query at the source.
 - It does not copy the literal-bearing SQL text into logs or errors.
 - Options that change how types and values are produced can be fixed.
 - Its license permits distribution, and its native dependencies can be included
@@ -459,13 +432,13 @@ gets our own:
 - It implements `AdbcErrorFromArrayStream`
   ([ADBC driver handling](connector-internals.md#adbc-driver-handling)).
 - Pure Rust source clients are preferred. Keeping secret values out of logs and
-  providing a means of cancellation are client selection criteria.
+  cancellation that stops the query at the source are client selection
+  criteria.
 
 ### Direct access
 
-- Implement the Data Source access traits
-  ([Connector trait](connector-internals.md#connector-trait)) in the connector
-  crate. The Connector defines its `DataSourceQuery::Direct` request.
+- Implement the [connector traits](connector-internals.md#connector-trait) in
+  the connector crate, reading the Data Source directly inside them.
 - Choose reader crates and source clients that return Arrow and satisfy the
   direct-access rules in
   [Data Source access rules](connector-contract.md#data-source-access-rules). Whether they
@@ -504,12 +477,10 @@ as follows:
 | --- | --- | --- |
 | Catalog | `pg_catalog`: columns from `pg_attribute`, Data Source types from `format_type(atttypid, atttypmod)`, type kinds from `pg_type`, constraints from `pg_constraint`, and unique indexes and partial-index conditions from `pg_index` and `pg_get_expr` | `information_schema`: columns from `COLUMNS.COLUMN_TYPE`, constraints from `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE`, `REFERENTIAL_CONSTRAINTS`, and `CHECK_CONSTRAINTS`, and unique indexes from `STATISTICS` |
 | Objects silently omitted for lack of privilege | `pg_catalog` does not omit rows by privilege, so columns are never missing. A table not found is "does not exist". | `information_schema` omits columns and tables without privilege. When table privileges cannot be confirmed, table metadata is incomplete. A table not found is "could not be read". |
-| Data Source identifiers | Table OIDs and column numbers are returned | Declared as not offered |
-| Data Source schema versions | Declared as not offered | Declared as not offered |
+| Data Source identifiers | Table OIDs and column numbers are returned | Not offered |
 | Fixed settings | `TimeZone` to `UTC` and `client_encoding` to `UTF8`; driver options that change how types and values are produced | `time_zone` to `+00:00` and the character set to `utf8mb4`. `TIMESTAMP` values are converted by the session time zone, so fixing UTC produces `TimestampTz` values. Driver options that change how types and values are produced. |
 | `Text` comparison guards | When `server_encoding` is `UTF8` and the column's Data Source type is `text` or `character varying`, `COLLATE "C"` compares bytes in code-point order. `character(n)` ignores trailing spaces, so a fully remote comparison rewrite cannot use this rule for that type. | With character set `utf8mb4`, the NO PAD binary collation `utf8mb4_0900_bin` supplies the required comparison. `utf8mb4_bin` is PAD SPACE and ignores trailing spaces, so it cannot support a fully remote comparison rewrite. Other character sets need a different proven rule. |
-| Read point | Declared as not offered | Declared as not offered |
-| Cancellation | The driver's cancellation; if it does not reach the source, a cancel request | The driver's cancellation; if it does not reach the source, `KILL QUERY` from another connection |
+| Cancellation | The driver's cancellation, which must stop the query at the source | The driver's cancellation, which must stop the query at the source |
 | Query time limit | `statement_timeout` | `max_execution_time` |
 | Data Source-specific errors | The table in [Error classification](#error-classification) | `1045` is `authentication`; `1142` and `1143` are `permission`; `1317` (query interrupted) is `cancellation` if a cancellation was received or `timeout` if the deadline has passed; `3024` (maximum execution time exceeded) is `timeout` |
 
@@ -523,14 +494,14 @@ plan or reports the offered region unsupported.
 The contract must be implementable beyond PostgreSQL and MySQL
 ([Implementability](connector-contract.md#implementability)). For connectors the
 product anticipates but does not target first, this section shows how each
-contract item can be met, or kept within the contract by declaring it as not
+contract item can be met, or kept within the contract by recording it as not
 offered, and which parts of the structure it would use. These examples establish
 contract implementability; they do not select a connector implementation. In
 every case the contract, connector traits, and connector SDK stay the same.
 
 ### Oracle
 
-- **Structure:** `connector-sql` with an Oracle dialect definition. Comparisons
+- **Structure:** `connector-sql` with an Oracle SQL dialect. Comparisons
   on `CHAR` columns and on columns with non-binary collations cannot be exact
   without a separately proven semantic rule.
 - **Data Source access:** ADBC access through an ADBC driver for Oracle; without an
@@ -538,16 +509,15 @@ every case the contract, connector traits, and connector SDK stay the same.
   as Oracle Instant Client stay inside the driver.
 - **Connection settings and credentials:** a connect descriptor, and user name
   and password as separate options.
-- **Cancellation and timeouts:** the driver's cancellation, then an OCI break if
-  that does not stop the query.
+- **Cancellation and timeouts:** the driver's cancellation, which must stop the
+  query at the source.
 - **Metadata:** read from `ALL_TABLES`, `ALL_TAB_COLUMNS`, and related views.
   Data Source types and mapping are in [Oracle](type-mappings.md#oracle).
 - **Constraints:** primary keys, unique constraints, foreign keys, and CHECK
   constraints.
-- **Identifiers and schema versions:** object IDs.
+- **Identifiers:** object IDs.
 - **Missing information:** objects hidden by privilege are "could not be read".
-- **Data read:** read consistency within one query; the SCN can be the read
-  point.
+- **Data read:** read consistency within one query.
 - **Filter planning:** apply a remote filter rewrite only when the Oracle type
   and collation semantics are proven equivalent. A rule may instead return a
   semantics-preserving local filter over remote output; the Adapter decides
@@ -568,10 +538,10 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Metadata:** ScalarDB namespace and table metadata. Data Source types are
   ScalarDB type names, which need a new type mapping.
 - **Constraints:** only primary keys (partition key and clustering key); others
-  declared as not offered.
-- **Identifiers and schema versions:** declared as not offered.
+  not offered.
+- **Identifiers:** not offered.
 - **Missing information:** objects hidden by privilege are "could not be read".
-- **Data read:** read by scan; the read point is declared as not offered.
+- **Data read:** read by scan.
 - **Filter planning:** filters expressible with equivalent ScalarDB scan
   semantics can execute remotely. A useful but incomplete scan may be proposed
   with an exact local filter over its output; the Adapter decides whether that
@@ -581,8 +551,8 @@ every case the contract, connector traits, and connector SDK stay the same.
 
 ### Generic ODBC
 
-- **Structure:** `connector-sql`, with dialect and catalog queries written as a
-  per-Connector definition.
+- **Structure:** `connector-sql`, with dialect and catalog queries written per
+  Connector as constant tables.
 - **Data Source access:** ADBC access through an ADBC driver that uses ODBC. The ODBC
   driver manager and the source's ODBC driver stay inside that driver.
 - **Connection settings and credentials:** the ODBC connection string without
@@ -592,18 +562,17 @@ every case the contract, connector traits, and connector SDK stay the same.
   dialect table. Data Source types and mapping follow
   [Support tiers](connector-contract.md#support-tiers).
 - **Constraints:** primary keys, foreign keys, and unique indexes available
-  through ODBC catalog functions; CHECK constraints declared as not offered.
-- **Identifiers and schema versions:** declared as not offered.
+  through ODBC catalog functions; CHECK constraints not offered.
+- **Identifiers:** not offered.
 - **Missing information:** some ODBC drivers' catalog functions silently omit
   objects by privilege, so table metadata is incomplete unless the omission can
   be ruled out.
-- **Data read:** the read point is declared as not offered.
 - **Filter planning:** decided for the concrete ODBC source and driver context;
   the dialect table only supplies translation data and conservative guards.
 
 ### Query Engine-backed (Trino)
 
-- **Structure:** `connector-sql` with a Trino dialect definition; namespaces
+- **Structure:** `connector-sql` with a Trino SQL dialect; namespaces
   start with the catalog.
 - **Data Source access:** ADBC access through an ADBC driver for Trino; without an
   existing one, our own.
@@ -612,17 +581,16 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Cancellation and timeouts:** Trino's query cancellation API.
 - **Metadata:** Trino's `information_schema`, with a catalog level. Its connector
   owns the mapping from Trino Data Source types to Analytics types.
-- **Constraints, identifiers, and schema versions:** declared as not offered.
+- **Constraints and identifiers:** not offered.
 - **Missing information:** when Trino silently omits objects by privilege, table
   metadata is incomplete.
-- **Data read:** the read point is declared as not offered.
 - **Filter planning:** translated to Trino SQL only after the Connector checks
   the complete offered plan against Trino type and session semantics.
 
 ### Iceberg (direct access)
 
-- **Structure:** only `connector-sdk`; `catalog`, `translator`, and the source
-  access traits are written in code.
+- **Structure:** only `connector-sdk`; `catalog`, planner, and executor are
+  written in code and read the source directly.
 - **Data Source access:** direct access through `iceberg-rust`, reading table-format
   metadata and data files, with no native dependencies.
 - **Connection settings and credentials:** a table-format catalog, such as an
@@ -635,13 +603,12 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Constraints:** no enforced constraints. The schema's identifier fields can
   be returned as a declared-only, unenforced primary key
   ([Constraints](connector-contract.md#constraints)).
-- **Identifiers and schema versions:** the table UUID, field IDs, and the
-  current schema ID
-  ([Data Source identifiers and schema versions](connector-contract.md#data-source-identifiers-and-schema-versions)).
+- **Identifiers:** the table UUID and field IDs
+  ([Data Source identifiers](connector-contract.md#data-source-identifiers)).
 - **Missing information:** objects hidden by catalog privileges are "could not
   be read".
 - **Data read:** one snapshot is read, so one read request reads one
-  point-in-time state of the table; the snapshot ID can be the read point.
+  point-in-time state of the table.
 - **Filter planning:** partition and column statistics may drive data-file
   skipping, but skipping alone is not exact row filtering. Such pruning is
   represented by a remote pruning plan plus a local row-level filter. Omitting

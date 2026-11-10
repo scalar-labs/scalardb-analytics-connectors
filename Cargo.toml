@@ -29,7 +29,6 @@ connector-sql = { path = "crates/connector-sql", version = "0.1.0" }
 connector-postgresql = { path = "crates/connectors/postgresql", version = "0.1.0" }
 connector-mysql = { path = "crates/connectors/mysql", version = "0.1.0" }
 serde_json = "1.0"
-sha2 = "0.10"
 futures-core = "0.3"
 prost = "0.13.5"
 prost-types = "0.13.5"

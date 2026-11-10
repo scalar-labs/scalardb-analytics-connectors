@@ -37,13 +37,11 @@ requests:
 
 | Request | Input | Output |
 | --- | --- | --- |
-| Planned read | An adopted `PlannedPushdown` containing the remote Substrait plan and its Connector-generated executable query ([Read request representation](#read-request-representation)) | An Arrow stream with the remote output schema, plus operation-owned read provenance retrieved after execution ([Read provenance](#read-provenance)) |
+| Planned read | An adopted `PlannedPushdown` containing the remote Substrait plan and its Connector-generated executable query ([Read request representation](#read-request-representation)) | An Arrow stream with the remote output schema |
 
 Both capabilities follow the [calling conventions](#calling-conventions).
-Before receiving requests, a connector states which part of the two
-capabilities it can serve in its
-[capability declaration](#capability-declaration). How inputs and outputs
-cross the API is defined in [Connector API](#connector-api).
+How inputs and outputs cross the API is defined in
+[Connector API](#connector-api).
 
 ## Connector API and Data Source access
 
@@ -125,7 +123,7 @@ name their target by handle.
 
 | Unit | Meaning |
 | --- | --- |
-| Library | Initialized once per process. Receives the maximum result batch size, the location of ADBC drivers, and logging settings. The application initializes and shuts it down. |
+| Library | Initialized once per process. Receives the location of ADBC drivers and logging settings. The application initializes and shuts it down. |
 | Data source | Holds one data source's connection settings and credentials. One is opened per registered data source and reopened when connection settings change. |
 | Session | One connection to that data source. For a direct-access source without connections, the unit that runs one operation at a time. Callers open as many as they want concurrent operations. |
 | Operation | One metadata request or read request. Owns cancellation and error retrieval. Source resources are created at the first pull. |
@@ -187,8 +185,6 @@ Credentials are handled as follows:
   hide.
 - The connector keeps secret values only while the data source and the
   sessions using it are alive and erases them once all of them are released.
-  Sessions keep them alive because cancellation may open a separate connection
-  to the source ([Cancellation and timeouts](#cancellation-and-timeouts)).
 - The connector passes secret values to its Data Source access: as options to the
   ADBC driver with ADBC access, which also keeps them for that period, or to
   the client it uses with direct access. In both forms it uses only drivers,
@@ -230,7 +226,7 @@ without an error. A
 caller never treats the result of an operation that ended
 by cancellation, timeout, or error as complete. How much of a partial result is
 valid is defined for
-[metadata retrieval](#cancellation-errors-and-declarations-for-metadata) and
+[metadata retrieval](#cancellation-and-errors-for-metadata) and
 [data read](#incomplete-reads).
 
 ### Cancellation and timeouts
@@ -238,10 +234,9 @@ valid is defined for
 A caller can cancel any running operation from any thread, including while the
 first pull waits for the source. On cancellation the connector promptly stops
 the source query and its own reading. With ADBC access it uses the driver's
-cancellation; if that does not stop the query at the source, the connector
-uses the source's own means, such as a PostgreSQL cancel request or MySQL
-`KILL QUERY`. With direct access the connector itself stops reads and source
-calls in progress. The next pull of a cancelled stream returns `cancellation`.
+cancellation, and only drivers whose cancellation stops the query at the source
+are used ([Data Source access rules](#data-source-access-rules)). With direct
+access the connector itself stops reads and source calls in progress. The next pull of a cancelled stream returns `cancellation`.
 
 The caller specifies a timeout per request. It counts from sending the query to
 the source at the first pull until the stream has been pulled to the end. An
@@ -275,7 +270,7 @@ unresolvable host name is not retryable.
 | `connection` | The data source cannot be reached, or the connection broke (retryable). |
 | `authentication` | Authentication failed (not retryable). |
 | `permission` | There is no privilege to read a particular target (not retryable). |
-| `invalid request` | The request's shape or range is invalid, including a request outside the capability declaration (not retryable). |
+| `invalid request` | The request's shape or range is invalid (not retryable). |
 | `invalid state` | The call order or session state prevents accepting the request ([Units and concurrency](#units-and-concurrency), [Cancellation and timeouts](#cancellation-and-timeouts)). Finish the running stream or reopen an unusable session. |
 | `stale registration` | The table shape registered in the Physical Catalog no longer matches the source: the schema check found a type or nullability mismatch ([Schema check](#schema-check)), or a table or column the request references no longer exists. Re-registration is required (not retryable). |
 | `data` | A value that cannot be carried exactly was encountered ([Values](#values)) (not retryable). |
@@ -287,7 +282,7 @@ unresolvable host name is not retryable.
 
 Whether an error fails the whole operation or is recorded per target is
 defined for
-[metadata retrieval](#cancellation-errors-and-declarations-for-metadata) and
+[metadata retrieval](#cancellation-and-errors-for-metadata) and
 [data read](#incomplete-reads).
 
 Error messages and diagnostics never contain credentials or the secret parts
@@ -299,113 +294,30 @@ connector may emit in logs, metrics, and diagnostics: never credentials, secret
 option values, whole connection strings, literal and parameter values, row
 data, or messages returned by the data source.
 
-### Capability declaration
-
-Before receiving requests, a connector declares which part of the two
-capabilities it can serve. Callers fetch the capability declaration per
-session, because the same connector may declare differently depending on the
-connected source's version and settings.
-
-The declaration contains:
-
-- **Implementation:** the connector's name and version and, with ADBC access,
-  the name and version of the ADBC driver it uses.
-- **Data Source:** the connected system's product name and version, and the
-  Connector that owns its behavior.
-- **Metadata retrieval:** type mapping coverage, the constraints, identifiers,
-  and schema versions it returns, and its fixed settings
-  ([Cancellation, errors, and declarations for metadata](#cancellation-errors-and-declarations-for-metadata)).
-- **Data read:** whether it returns a read point, read consistency
-  ([Consistency](#consistency)), the accepted Substrait request shapes, and optional
-  pruning hints for planner rules that are certainly unsupported
-  ([Planning and residual operators](#planning-and-residual-operators)).
-
-The metadata declaration is authoritative for metadata requests. Data-read
-pushdown support depends on the complete plan and current Data Source facts: a static declaration may
-prevent an obviously futile attempt, but it never authorizes a planner rewrite.
-The connector's decision for the complete offered plan and current source facts is
-authoritative. The implementation and fixed settings in the declaration are
-recorded in the
-[retrieval info](#retrieval-info-and-content-digest) of table metadata and in
-[read provenance](#read-provenance).
-
 ### Compatibility and versions
 
-The contract's version is the connector API library's version. It is a
-`MAJOR.MINOR.PATCH` semantic version, and the shared library's SONAME contains
-MAJOR. Type mappings have no version of their own; a change in how a source is
-mapped appears as a change in the connector's version
-([Type mappings and coverage](#type-mappings-and-coverage)) and also raises the
-library MINOR (table below).
+The library and its callers (the application, the Physical Catalog, and
+adapters) ship in the same application distribution and are updated together.
+They are built from the same C header and the same set of Analytics types, so a
+caller never receives an Analytics type, error kind, output column, or item it
+was not built to handle. This contract therefore defines no rules for a caller
+paired with an older or newer library. If adapters are distributed separately
+or rolling upgrades become a requirement, the direction of allowed version skew
+will be decided then and rules added for it.
 
-Compatibility between the library and its callers has two kinds:
+The library has a version. It names the release and is returned in the
+[static information](#static-information). Type mappings have no version of
+their own; a change in how a source is mapped appears as a change in the
+connector's version ([Type mappings and coverage](#type-mappings-and-coverage)).
 
-- **Binary compatibility:** a caller built against an older C header can load
-  a newer library and call its functions. This covers function names and
-  arguments, structure layout, and handles.
-- **Data compatibility:** a caller can correctly handle received data with the
-  knowledge it was built with. This covers output columns, the set of
-  Analytics types, the items of capability declarations and static
-  information, error kinds, and the accepted Substrait plans.
+Exchanging Analytics types between distributions, such as between nodes of a
+data mesh, is outside this contract.
 
-They are separate because some changes break only one. Adding an Analytics
-type keeps binary compatibility, since no function or structure changes; only
-the set of types that may appear in an Arrow schema grows. Changing a
-structure's layout breaks binary compatibility even when the data carried is
-the same.
-
-The version to raise follows from which compatibility a change breaks:
-
-| Change | Binary | Data | Version |
-| --- | --- | --- | --- |
-| Add a function to the connector API | Keeps | Keeps | MINOR |
-| Change an existing function's arguments or a structure's layout | Breaks | — | MAJOR |
-| Add an optional output column, or an item to the capability declaration or static information | Keeps | Keeps; callers ignore unknown items | MINOR |
-| Add an Analytics type (an extension-encoded type such as `inet`, unsigned integers, and so on) | Keeps | Keeps; callers register columns of unknown types as unsupported | MINOR |
-| Add a Connector or connector | Keeps | Keeps; callers do not open Connectors they do not use | MINOR |
-| Change a type mapping or a connector's coverage | Keeps | Keeps; returned Analytics types may change, but retrieval info identifies which connector version produced them ([Retrieval info and content digest](#retrieval-info-and-content-digest)) | MINOR |
-| Add an error kind | Keeps | Keeps; callers handle unknown kinds by the retry flag alone ([Errors in the API](#errors-in-the-api)) | MINOR |
-| Rename an output column or remove an item | Keeps | Breaks | MAJOR |
-| Change the meaning of an existing Analytics type or remove a type | Keeps | Breaks | MAJOR |
-| Change an accepted Substrait request shape | Keeps | Breaks | MAJOR |
-| Fix behavior to match the contract | Keeps | Keeps | PATCH |
-
-MINOR changes keep data compatibility only because callers follow the handling
-noted in the table. These are therefore caller obligations:
-
-- Ignore unknown items, such as JSON document fields and output columns.
-- Register a column of an unknown Analytics type as an unsupported column
-  ([Unsupported columns](#unsupported-columns)). Unsupported columns cannot be
-  projected, so an adapter never receives an unknown type. Rebuilding the
-  caller against the newer version and re-registering gives the column its
-  Analytics type.
-- Handle an unknown error kind by its retry flag alone.
-
-Incompatible pairs stop at startup, before any type or data is exchanged:
-
-- A library with a different MAJOR has a different SONAME, so the dynamic
-  linker does not load it.
-- Before use, a caller reads the library version from the static information.
-  If its MINOR is lower than the MINOR of the C header the caller was built
-  with, the caller does not use that library.
-
-The library and its callers ship in the same application distribution. The
-Physical Catalog and adapters are built against the same C header, so they
-know the same set of Analytics types. These rules govern the library and its
-callers within one distribution. Exchanging Analytics types between
-distributions, such as between nodes of a data mesh, is outside this contract.
-
-Adding a Connector requires only a library MINOR. It is completed by adding a
-connector, the Connector's type mapping, and, with ADBC access, its ADBC
-driver, without changing the C ABI or its callers (the application, adapters,
-and the Physical Catalog). Data Source-specific information therefore travels only
-as data in the static information, the capability declaration, and connection
-options; no Data Source-specific function or item is added to the connector API. A
-Connector that needs a new Analytics type or a new kind of request is also
-that addition, and follows that row of the table.
-
-The library records its version in the retrieval info of table metadata and in
-read provenance.
+Adding a Connector is completed by adding a connector, the Connector's type
+mapping, and, with ADBC access, its ADBC driver, without changing the C ABI or
+its callers. Data Source-specific information therefore travels only as data in
+the static information and connection options; no Data Source-specific function
+or item is added to the connector API.
 
 ### Calling-convention conformance tests
 
@@ -425,7 +337,6 @@ metadata and read requests.
 | Release a stream partway | The source query stops and the same session accepts the next request |
 | Break the source connection during a pull | The session becomes unusable and the next request returns `invalid state` |
 | With ADBC access, install an ADBC driver outside the supported version range and open a session | Opening the session returns `invalid settings` |
-| Send a request beyond the capability declaration | Starting the operation returns `invalid request` |
 | Send a read request whose plan is not valid Substrait | Starting the operation returns `invalid request` |
 | Fail during a pull | Retrieving the operation's error yields its kind and retry flag |
 | All of the above | Secret values and filter literals never appear in error messages, diagnostics, or logs |
@@ -472,7 +383,7 @@ rest narrows the request and sends it again.
 A list is not a snapshot of the source at one point in time; the source may
 change while it is being pulled. The point in time of table metadata is given
 by each table's retrieval time
-([Retrieval info and content digest](#retrieval-info-and-content-digest)).
+([Retrieval info and determinism](#retrieval-info-and-determinism)).
 
 ### Table metadata
 
@@ -486,9 +397,8 @@ Table metadata is a shared output used by both the Physical Catalog and the
 Semantic Catalog. The Physical Catalog uses it to plan and run queries; the
 Semantic Catalog uses it as material for meaning. Table metadata therefore
 includes items the Physical Catalog itself does not use, such as unique indexes
-and CHECK constraints. Both can refer to the same table metadata through its
-retrieval info and content digest. How each receives table metadata and which
-items it uses is defined by their own input and reference contracts.
+and CHECK constraints. How each receives table metadata and which items it uses
+is defined by their own input and reference contracts.
 
 Table metadata returns, per level:
 
@@ -497,7 +407,7 @@ Table metadata returns, per level:
 | Data source | The retrieved range and the retrieval info |
 | Catalog | Name; omitted for sources without catalogs |
 | Namespace | Name; for files and table formats, the path hierarchy under the registered location or the table-format catalog's namespace |
-| Table | Name, kind (table, view, external table, and other kinds the source distinguishes), source identifier and schema version ([Data Source identifiers and schema versions](#data-source-identifiers-and-schema-versions)), columns, and constraints |
+| Table | Name, kind (table, view, external table, and other kinds the source distinguishes), source identifier ([Data Source identifiers](#data-source-identifiers)), columns, and constraints |
 | Column | Name, ordinal, nullability, Data Source type, Analytics type or unsupported ([Unsupported columns](#unsupported-columns)), and Data Source identifier |
 
 Names are returned as the source spells them, without case folding. Ordinals
@@ -509,7 +419,7 @@ deciding which meaning is correct and cannot be checked by conformance tests.
 For the same reason, an attribute many sources have does not become an item
 until a receiver needs it, and there is no key-value item for Data Source-specific
 attributes. When a receiver needs a source attribute, it is added as an
-optional, typed, source-independent item (a MINOR change).
+optional, typed, source-independent item.
 
 ### Constraints
 
@@ -530,107 +440,55 @@ lead users to misidentify rows, so the condition always accompanies it. When a
 source does not enforce a constraint, such as a declared-only constraint, the
 connector returns that distinction. Non-unique indexes, defaults, and
 generated-column expressions are not returned. For sources without constraints,
-such as Parquet and CSV, the connector declares that it does not return
-constraints, which does not mean the source has none.
+such as Parquet and CSV, the connector records constraints as "not offered"
+([Missing information](#missing-information)), which does not mean the source
+has none.
 
-### Data Source identifiers and schema versions
+### Data Source identifiers
 
 A source identifier is a value, separate from the name, that the source uses
 to refer to the same object: a PostgreSQL table OID, a SQL Server `object_id`,
 or an Iceberg table UUID and field ID.
 
-A source schema version is a value held by the source that changes when a
-table's schema changes, such as Iceberg's current schema ID or a Delta Lake
-table version. It does not necessarily increase (Iceberg can return to an
-earlier schema ID) and may change for reasons other than the schema (a Delta
-Lake table version advances with data changes). Equal values therefore imply
-an equal schema, but a changed value does not imply a changed schema.
+A connector returns one only when the source provides it and it is readable
+with the retrieval privileges. It is the source's own value, never a value
+synthesized by the connector. How it determines Physical Catalog resource
+identifiers, and how renames, drops, and re-creations are distinguished,
+belongs to the Physical Catalog's contracts.
 
-A connector returns these only when the source provides them and they are
-readable with the retrieval privileges. They are the source's own values, never
-values synthesized by the connector. How they determine Physical Catalog
-resource identifiers, and how renames, drops, and re-creations are
-distinguished, belongs to the Physical Catalog's contracts.
+### Retrieval info and determinism
 
-### Retrieval info and content digest
+Table metadata is deterministic: when the source's state is the same, a
+connector of the same version returns the same table metadata content, in the
+same order. Columns are ordered by ordinal, and constraints by kind, name, and
+columns. Values that change without a change at the source, such as the
+retrieval time, are not part of the content and are carried separately as
+retrieval info.
+
+A receiver that needs to detect changes, such as the Semantic Catalog, stores
+the table metadata it based its decisions on and compares it with newly
+retrieved table metadata. Names and source identifiers identify the same
+table, column, and constraint across retrievals. This contract defines no
+digest or schema version for that comparison.
 
 The same table can receive different Analytics types from a different
-connector, connector version, ADBC driver or driver version, or fixed
-settings. A different type mapping appears as a different connector version
-([Type mappings and coverage](#type-mappings-and-coverage)). With direct
-access, reader crates are built into the connector and their versions are part
-of the connector's version ([Data Source access rules](#data-source-access-rules)), so
-the connector's name and version identify them. To trace the cause of a
-difference, table metadata carries the following. The producing connector and
-its version, the library version, the ADBC driver and its version, the fixed
-settings, and the retrieval time are together called retrieval info.
+connector, connector version, or ADBC driver or driver version. A different
+type mapping or a different fixed setting appears as a different connector
+version ([Type mappings and coverage](#type-mappings-and-coverage),
+[Data Source types](#data-source-types)). With direct access, reader crates are
+built into the connector and their versions are part of the connector's
+version ([Data Source access rules](#data-source-access-rules)), so the
+connector's name and version identify them. To trace the cause of a
+difference, table metadata carries retrieval info:
 
 | Item | Content |
 | --- | --- |
 | Implementation | The producing connector's name and version, and the library version ([Compatibility and versions](#compatibility-and-versions)) |
 | ADBC driver | The driver's name and version ([Data Source access rules](#data-source-access-rules)); present only with ADBC access |
-| Fixed settings | An identifier of the settings that affect how types and values are produced ([Data Source types](#data-source-types)) |
 | Retrieval time | Per table, the time the connector read the source's catalog |
-| Completeness | Whether the table's metadata is complete or some information could not be obtained ([Missing information](#missing-information)) |
-| Content digest | A value computed deterministically from the content items defined below |
 
-The content digest is used to decide whether content changed. Content here is
-what table metadata states about its target: whether it exists, the source
-declaration, the derived Analytics types, the target's identity at the source,
-and which of these could not be obtained. The digest includes only these, and
-nothing that can change while they stay the same; otherwise the digest would
-change without a content change and could not be used for the decision.
-
-The digest is computed per table:
-
-- **Included:** the catalog, namespace, and table names, the table kind, the
-  source identifier, columns, constraints, a table's "does not exist" or
-  "could not be read" state with its reason, completeness and missing items
-  (both judged without the schema version), and "not offered" records for
-  constraints and source identifiers ([Missing information](#missing-information)).
-- **Excluded:** retrieval info, the source schema version, and missing-item and
-  "not offered" records about the schema version.
-
-The schema version is excluded because, like a Delta Lake table version, it can
-change without a schema change. It is not needed to decide whether content
-changed: what it tells, that equal values mean an equal schema, the digest
-already tells. Whenever an item is added, whether it enters the digest is
-decided at the same time by whether it is content in the sense above.
-
-Every implementation that produces table metadata computes the digest,
-including interim implementations outside this repository. The Physical
-Catalog and the Semantic Catalog only compare digests. The normalization is
-defined by this contract because digests are compared across table metadata
-with the same library MAJOR.MINOR (below), so equal content must give equal
-values across implementations and their versions. Conformance test expectations
-are compared with the same normalization:
-
-- Columns are ordered by ordinal; constraints by kind, name, and columns.
-- Names and Data Source types are used as the source spelled them, without case
-  folding.
-- Field names used in serialization are the output column names defined by the
-  corresponding API function ([Functions](#functions)).
-- The normalized record is serialized with RFC 8785 JSON canonicalization and
-  hashed with SHA-256.
-
-Because field names are output column names, renaming an output column changes
-the digest even when the content is the same. Renaming is a change to an
-existing function's output and raises the library MAJOR. When a MINOR release
-adds an optional item, new connectors fill it, so the digest changes even if
-the source did not. A digest difference is therefore read as a content change
-only between table metadata whose retrieval info has the same library
-MAJOR.MINOR. PATCH is not part of that range: a PATCH that fixes an output
-defect may change digests without a source change and trigger one extra
-re-evaluation, which is accepted, because splitting the range per PATCH would
-lose change detection for every table on every library update. How table
-metadata of different versions is compared belongs to the Physical Catalog's
-and the Semantic Catalog's contracts. Excluding items added by a MINOR release
-from the digest is rejected, because changes to those items would then be
-undetectable until the next MAJOR.
-
-If any retrieval info item other than the retrieval time changes, the result is
-new table metadata even when the content is the same. How the Physical Catalog
-versions stored table metadata belongs to its own contracts.
+How the Physical Catalog versions stored table metadata belongs to its own
+contracts.
 
 ### Missing information
 
@@ -643,13 +501,14 @@ recorded as dropped columns or tables.
 | --- | --- |
 | The table is known to exist but its content cannot be read for lack of privilege | The table is returned as "could not be read", with its name and reason and no columns |
 | A table named in a table metadata request does not exist | The table is returned as "does not exist", with its name and no columns, only when the connector can confirm it does not exist; otherwise as "could not be read". For example, when a catalog omits tables without privilege (such as PostgreSQL `information_schema.tables`), absence cannot distinguish nonexistence from missing privilege. |
-| Columns were read but constraints, source identifiers, the source schema version, or some Data Source types could not be | The table metadata is returned as incomplete, naming the missing items |
+| Columns were read but constraints, source identifiers, or some Data Source types could not be | The table metadata is returned as incomplete, naming the missing items |
 | The catalog silently omits columns without privilege (such as PostgreSQL `information_schema.columns`) and the connector read it in a way that cannot detect missing columns | The table metadata is returned as incomplete |
 | A namespace or table list cannot be read | The unreadable range is returned and no targets in it |
-| The operation ended partway | The rules in [Cancellation, errors, and declarations for metadata](#cancellation-errors-and-declarations-for-metadata) apply |
+| The operation ended partway | The rules in [Cancellation and errors for metadata](#cancellation-and-errors-for-metadata) apply |
 
-An item the connector declares it does not return is not a missing item. Table
-metadata records it as "not offered", distinct from incomplete. Incomplete
+An item the connector never returns for its Connector, such as constraints for
+Parquet, is not a missing item. Table metadata records it as "not offered",
+distinct from incomplete. Incomplete
 table metadata asserts nothing about its missing items. The Physical Catalog
 never infers a drop or a change from incomplete table metadata; a dropped table
 is inferred only from "does not exist", never from "could not be read".
@@ -662,8 +521,9 @@ is inferred only from "does not exist", never from "could not be read".
   ([Type mappings and coverage](#type-mappings-and-coverage)). It does not go
   through a JDBC driver's reinterpretation.
 - Settings of JDBC drivers, the ADBC driver the connector uses, and client
-  libraries do not change the retrieved schema. The connector fixes and
-  declares the settings that change how types and values are produced.
+  libraries do not change the retrieved schema. The connector fixes the
+  settings that change how types and values are produced, and raises its
+  version when it changes them.
 - Excluded namespaces, such as PostgreSQL `pg_toast` and `pg_temp_*`, are
   listed by the connector as its own rule.
 
@@ -685,7 +545,8 @@ its changelog whenever its mapping or coverage changes. Conformance tests
 ([Metadata conformance tests](#metadata-conformance-tests)) check that a
 connector maps as its type mapping says.
 
-A connector declares as its coverage the mapping rules it can satisfy. A rule
+A connector's coverage is the set of mapping rules it can satisfy, and it is
+part of the connector's version. A rule
 is satisfied when the connector, in a data read, can produce values of the
 rule's Analytics type without changing the source's values. A type conversion
 during a read is allowed only when it provably does not change values, such as
@@ -710,18 +571,12 @@ returns one reason:
 | Not supported by the connector | The type mapping defines a mapping, but this connector cannot produce values of that Analytics type ([Type mappings and coverage](#type-mappings-and-coverage)) |
 | Parameter out of range | The type is in the type mapping, but a parameter such as precision or unit exceeds the mappable range |
 
-When the Physical Catalog does not know an Analytics type the connector
-returned, because the library MINOR is newer than the one the Physical Catalog
-was built with ([Compatibility and versions](#compatibility-and-versions)), the
-Physical Catalog registers the column as unsupported with the reason "not
-supported by the caller".
-
 A connector never implicitly converts an unsupported column to a nearby type.
 
 A covered column can still hold values that cannot be carried exactly; those
 are handled by [Values](#values).
 
-### Cancellation, errors, and declarations for metadata
+### Cancellation and errors for metadata
 
 Metadata requests follow the [cancellation and timeout](#cancellation-and-timeouts)
 rules and the [error kinds](#errors). Errors reach as follows:
@@ -735,13 +590,6 @@ rules and the [error kinds](#errors). Errors reach as follows:
 An incomplete operation is indicated by the stream ending with an error
 ([Requests and results](#requests-and-results)). `stale registration` and `data`
 do not occur in metadata retrieval.
-
-For metadata retrieval, the capability declaration includes:
-
-- the Connectors it handles and, per Connector, its type mapping coverage;
-- the kinds of constraints it returns;
-- whether it returns source identifiers and source schema versions; and
-- the fixed settings that affect how types and values are produced.
 
 ### Metadata conformance tests
 
@@ -757,18 +605,20 @@ this section:
   columns hitting uncovered rules it returns unsupported columns with the
   reason "not supported by the connector". Any other result fails.
 - Names, ordinals, nullability, Data Source types, and the representation of
-  missing information match the expectations regardless of the declaration.
+  missing information match the expectations.
+- Retrieving the same fixture twice returns the same table metadata, apart from
+  retrieval info, in the same order.
 - A nonexistent table is returned as "does not exist" for sources where the
   connector can confirm nonexistence, and as "could not be read" otherwise.
 - Name filters return only exact matches, without case folding.
 - Every extension-encoded type the connector returns is registered in the
   [Analytics type model](analytics-types.md#registered-extension-encoded-types).
   Returning an unregistered one fails.
-- Constraints, source identifiers, and source schema versions match the
-  expectations where the connector declares it returns them, and are recorded
-  as "not offered" where it declares it does not.
+- Constraints and source identifiers match the expectations where the
+  connector returns them, and are recorded as "not offered" where the
+  expectations say the connector does not return them.
 
-Whether the declared coverage matches the types and values a read produces is
+Whether the coverage in the expectations matches the types and values a read produces is
 checked by the [data read conformance tests](#data-read-conformance-tests).
 Cancellation and timeout are checked by the
 [calling-convention conformance tests](#calling-convention-conformance-tests).
@@ -794,10 +644,8 @@ uses the single credential registered for the data source.
 
 To support those limits, a connector:
 
-- stops on timeout and cancellation ([Cancellation and timeouts](#cancellation-and-timeouts));
-- stops when the stream is released ([Requests and results](#requests-and-results)); and
-- returns the information needed to record the query as
-  [read provenance](#read-provenance).
+- stops on timeout and cancellation ([Cancellation and timeouts](#cancellation-and-timeouts)); and
+- stops when the stream is released ([Requests and results](#requests-and-results)).
 
 ### Read request
 
@@ -834,6 +682,12 @@ determines which catalog and source facts are needed. Resolution may perform
 timeout-bound, cancellable Data Source I/O during planning. A session may
 prefetch or cache facts, but that is an implementation strategy rather than a
 required planning-snapshot protocol.
+
+Source attributes that planning relied on, such as collations, character sets,
+the Data Source version, and session settings, are treated as unchanged when
+the planned query runs. If they change between planning and execution, the
+result is not guaranteed. The only check at execution is the
+[schema check](#schema-check).
 
 Common structural checks inspect the same `PlannedPushdown`; they do not create
 a second planning-result type. Stable identity, persistence, and restore are not
@@ -922,59 +776,22 @@ result, and the caller never treats them as complete. `authentication`,
 `stale registration` are returned before the first row. Other kinds can occur
 before the first row or partway.
 
-### Read provenance
-
-A read operation records provenance separately from its Arrow schema:
-
-| Item | Content |
-| --- | --- |
-| Implementation | The connector's name and version, the ADBC driver's name and version (ADBC access only), and the library version |
-| Fixed settings | An identifier of the fixed settings used to produce values |
-| Request | The normalized form of the received request and its digest |
-| Executed query | The query sent to the source; with direct access, the calls made to the source, such as the table-format snapshot read or API calls. Parameter values are excluded. |
-| Read start time | The time the connector sent the query to the source |
-| Read point | A value showing which point-in-time state the source read, when the source can return one; otherwise its absence |
-
-The normalized request contains filter literals, which are user data. Callers
-never write provenance to logs.
-
-The caller retrieves the final provenance from the operation after execution
-ends, including after an error or cancellation that occurred after the source
-query was sent. Before the source query starts, the retrieval function returns
-`invalid state`; if no query was ever sent, no read provenance exists. Keeping
-provenance on the operation allows the Arrow schema to be available before
-source I/O while read start time and read point are recorded when they actually
-become known.
-
-Provenance is used to record queries that inspected data values. Without a read
-point, the same request sent later is not guaranteed to return the same rows,
-and that absence is recorded with the provenance. Adapters pass provenance on
-to their callers without dropping it.
-
 ### Consistency
 
 A read request reads one point-in-time state of the source when the source can
 run it as one query. There is no consistency across read requests: two tables
 read in one query may reflect different points in time.
 
-For data read, the capability declaration includes:
-
-- whether a read point can be returned;
-- whether one read request reads a single point-in-time state of the source;
-  and
-- the accepted Substrait request shapes and any conservative pruning hints described
-  in [Planning and residual operators](#planning-and-residual-operators).
-
 ### Data read conformance tests
 
 These tests check that a connector meets this section and produces the types
-and values it declared in metadata retrieval:
+and values it returns in metadata retrieval:
 
 - Each Connector has fixtures with boundary values for every mapping rule
   (minimum, maximum, precision limit, time zones, NULL) and values that cannot
   be carried exactly.
 - For covered rules, the connector returns the expected Arrow types and values.
-  This substantiates the coverage declaration.
+  This substantiates the coverage in the fixture expectations.
 - Projecting a column with a value that cannot be carried exactly is a `data`
   error; not projecting it is not.
 - A remote plan followed by its optional local plan returns the same rows and
@@ -1226,16 +1043,12 @@ issues multiple complete requests. The Connector does not combine those
 requests. The SDK does not evaluate arbitrary residual predicates over Arrow
 batches.
 
-Static capabilities are optional conservative hints. They may say that an
-operator or extension is certainly unavailable, but only the connector's
-plan-aware result authorizes a rewrite. The complete ownership and lifecycle
-model is in
-[Pushdown planning](pushdown-planning.md).
+Only the connector's plan-aware result authorizes a rewrite. The complete
+ownership and lifecycle model is in [Pushdown planning](pushdown-planning.md).
 
 ## Connector API
 
-This section maps the requests, capability declarations, errors, and
-provenance above onto connector API functions and the shape of exchanged data.
+This section maps the requests and errors above onto connector API functions and the shape of exchanged data.
 The exact C function names and structures are published in the C header with
 the first API implementation and versioned with the library.
 
@@ -1247,23 +1060,22 @@ the first API implementation and versioned with the library.
 - Result streams and tabular inputs, such as a set of tables, use the Arrow C
   data interface (`ArrowArrayStream`, `ArrowArray`, `ArrowSchema`).
 - Read requests are serialized Substrait plans (protobuf bytes).
-- Capability declarations and static information are versioned JSON documents
-  whose required content is defined in their sections below.
+- Static information is a versioned JSON document whose required content is
+  defined in its section below.
 - Errors use the structure in [Errors in the API](#errors-in-the-api).
 
 ### Functions
 
 The connector API has these functions:
 
-- **Library initialization and shutdown.** Initialization takes the maximum
-  result batch size, the ADBC driver location
+- **Library initialization and shutdown.** Initialization takes the ADBC
+  driver location
   ([Data Source access rules](#data-source-access-rules)), and log level and destination.
   Static information ([Static information](#static-information)) can be read
   even before initialization.
 - **Open and close a data source.** Input: Connector, connection setting and
   credential options, and connection timeout.
 - **Open and close a session.**
-- **Fetch the capability declaration**, per session.
 - **Plan pushdown.** A versioned request envelope carries one complete offered
   Substrait region. The Adapter constructs that
   region from a maximal native pattern it can rewrite around. After common
@@ -1285,9 +1097,6 @@ The connector API has these functions:
 - **Cancel an operation**, from any thread.
 - **Retrieve an operation's error**, in the structure of
   [Errors in the API](#errors-in-the-api), after a pull ends with an error.
-- **Retrieve final read provenance** from a completed read operation. It is
-  operation-owned JSON and is separate from the Arrow schema because its read
-  start time and read point do not exist when `get_schema` first succeeds.
 - **Close an operation.**
 
 At the language-neutral level, planning and read execution form this boundary:
@@ -1305,9 +1114,9 @@ start_read(session, planned_pushdown, timeout)
 
 `plan_pushdown` changes no native Query Engine state; the adapter interprets
 the outcome and performs that rewrite. `start_read` accepts only an adopted
-planning result. The Connector is responsible for any execution-time source
-checks or guards required by its rewrite semantics. A schema or object
-mismatch remains `stale registration`. The current execution does not invoke
+planning result. Source attributes used in planning are treated as unchanged
+([Read request](#read-request)), and a schema or object mismatch found by the
+[schema check](#schema-check) is `stale registration`. The current execution does not invoke
 the optimizer again, but its caller may retry the query and cause replanning.
 The complete responsibility and control flow are in
 [Pushdown planning](pushdown-planning.md).
@@ -1334,20 +1143,6 @@ disagree if the source changed between the calls.
 For sources without namespace and table hierarchies, such as files and object
 storage, the path hierarchy under the registered location maps to namespaces
 and files or table-format tables map to tables.
-
-Read provenance is returned as versioned JSON by the operation provenance
-function. Adapters pass it to the Query Engine or audit path alongside the
-completed operation, independently of the Arrow stream schema.
-
-### Capability declaration document
-
-The capability declaration is returned per session as a versioned JSON
-document, with the items listed in
-[Capability declaration](#capability-declaration),
-[Cancellation, errors, and declarations for metadata](#cancellation-errors-and-declarations-for-metadata),
-[Consistency](#consistency), and
-[Planning and residual operators](#planning-and-residual-operators). Language
-bindings hand it to callers as a typed value.
 
 ### Errors in the API
 
@@ -1406,12 +1201,11 @@ With ADBC access:
   initialization. Where drivers are placed and how they are distributed belongs
   to the product's distribution, not to this contract.
 - The connector fixes the driver options that change how types and values are
-  produced, and includes them in the declaration's fixed settings.
+  produced, and raises its version when it changes them.
 - The connector uses only drivers that keep secret values out of logs and
-  errors and that provide a means of cancellation.
-- The name and version of the driver used are recorded in retrieval info and
-  read provenance, because a different driver version can return different
-  types or values.
+  errors and whose cancellation stops the query at the source.
+- The name and version of the driver used are recorded in retrieval info,
+  because a different driver version can return different types or values.
 - Raising the driver version means rerunning that connector's metadata and
   data read conformance tests with the new version.
 
@@ -1420,14 +1214,14 @@ With direct access:
 - The implementation is written in Rust without native dependencies and built
   into the library.
 - The connector fixes the reader crate settings that change how types and
-  values are produced, and includes them in the declaration's fixed settings.
+  values are produced, and raises its version when it changes them.
 - The implementation and the clients and reader crates it uses keep secret
   values out of logs and errors.
 - The implementation can stop reads and source calls in progress on
   cancellation and timeout ([Cancellation and timeouts](#cancellation-and-timeouts)).
 - Reader crate versions are pinned as dependencies of the connector crate.
-  Changing one raises the connector version, and retrieval info and read
-  provenance identify it through the connector's name and version.
+  Changing one raises the connector version, and retrieval info identifies it
+  through the connector's name and version.
 - Raising a reader crate version means rerunning that connector's metadata and
   data read conformance tests with the new version.
 
@@ -1462,14 +1256,14 @@ The contract must be implementable by connectors other than PostgreSQL and
 MySQL.
 [Applying the conventions to other sources](connector-implementation.md#applying-the-conventions-to-other-sources)
 shows how Oracle, ScalarDB, generic ODBC, Trino, and Iceberg connectors meet
-each item or stay within the contract by declaring what they do not offer.
+each item or stay within the contract by recording what they do not offer.
 From those cases, the contract does not presuppose that:
 
 - requests run at the source as SQL; planning requests arrive as Substrait,
   and the connector decides support and translation from the plan and current
   Data Source facts;
-- a source has constraints, source identifiers, schema versions, or read
-  points; each can be declared as not offered;
+- a source has constraints or source identifiers; each can be recorded as not
+  offered;
 - namespaces have a particular depth; they are returned as name sequences;
 - a source has PostgreSQL or MySQL type or comparison semantics; type mappings
   are per Connector, and comparison differences are absorbed inside the

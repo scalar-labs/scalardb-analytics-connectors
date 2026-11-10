@@ -16,7 +16,6 @@ prost-types.workspace = true
 # Keep Substrait's transitive regex engine compatible with the workspace MSRV.
 regress.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 substrait.workspace = true
 thiserror.workspace = true
 

@@ -1,7 +1,6 @@
 //! Data Source-independent metadata and connector lifecycle contracts.
 
 use analytics_types::{AnalyticsSchema, AnalyticsType};
-use sha2::{Digest, Sha256};
 
 use crate::{ConnectorError, ConnectorExecutor, ConnectorPlanner, RequestError};
 
@@ -32,46 +31,6 @@ impl MetadataGap {
         Self {
             field: field.into(),
             reason: reason.into(),
-        }
-    }
-}
-
-/// Stable digest of a connector-defined canonical metadata representation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MetadataDigest([u8; 32]);
-
-impl MetadataDigest {
-    /// Hashes a Connector-defined canonical metadata encoding.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
-        Self(Sha256::digest(bytes).into())
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Provenance attached to one table metadata result.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MetadataProvenance {
-    /// Data Source product observed during metadata retrieval.
-    pub data_source_product: String,
-    /// Data Source version observed during metadata retrieval.
-    pub data_source_version: String,
-    /// Optional Connector-defined identity of the observed catalog state.
-    pub catalog_snapshot: Option<String>,
-}
-
-impl MetadataProvenance {
-    pub fn new(
-        data_source_product: impl Into<String>,
-        data_source_version: impl Into<String>,
-        catalog_snapshot: Option<String>,
-    ) -> Self {
-        Self {
-            data_source_product: data_source_product.into(),
-            data_source_version: data_source_version.into(),
-            catalog_snapshot,
         }
     }
 }
@@ -108,24 +67,13 @@ pub struct TableMetadata {
     pub table_reference: TableReference,
     /// Data Source schema mapped into Analytics types.
     pub schema: AnalyticsSchema,
-    /// Digest of the Connector's canonical metadata representation.
-    pub digest: MetadataDigest,
-    /// Data Source state from which this metadata was read.
-    pub provenance: MetadataProvenance,
 }
 
 impl TableMetadata {
-    pub fn new(
-        table_reference: TableReference,
-        schema: AnalyticsSchema,
-        digest: MetadataDigest,
-        provenance: MetadataProvenance,
-    ) -> Self {
+    pub fn new(table_reference: TableReference, schema: AnalyticsSchema) -> Self {
         Self {
             table_reference,
             schema,
-            digest,
-            provenance,
         }
     }
 }
