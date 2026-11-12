@@ -7,6 +7,7 @@
 
 mod comparison;
 mod listing;
+mod schema_check;
 mod table;
 
 pub use comparison::{
@@ -14,39 +15,8 @@ pub use comparison::{
     Side, TableAttribute, TableChanges, TableComparison, TableState,
 };
 pub use listing::{Listed, NameFilter, NamespacePath, TableEntry};
+pub use schema_check::check_schema;
 pub use table::{
     Column, ColumnType, Constraint, ConstraintKind, Reported, SourceTableMetadata, TableKind,
     TableMetadata, TableRecord, TableReference, UniqueKind, UnsupportedReason,
 };
-
-use crate::{ConnectorError, ExecutionOutput};
-
-/// Reads one Data Source's catalog for the three metadata requests.
-///
-/// Each function starts one catalog read and returns its item stream with the
-/// means of stopping it. Wrap the call with [`crate::start_source_read`] to
-/// apply cancellation and the deadline.
-pub trait CatalogReader: Send + Sync {
-    /// Connector-specific metadata for one table, such as PostgreSQL `pg_catalog` facts.
-    type Table: SourceTableMetadata;
-
-    /// Lists namespaces whose names exactly match `filter`, or all of them.
-    fn list_namespaces(
-        &self,
-        filter: &NameFilter,
-    ) -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError>;
-
-    /// Lists tables across the matching namespaces whose names match `tables`.
-    fn list_tables(
-        &self,
-        namespaces: &NameFilter,
-        tables: &NameFilter,
-    ) -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError>;
-
-    /// Reads one record per requested table, including tables that do not
-    /// exist or could not be read.
-    fn read_tables(
-        &self,
-        tables: &[TableReference],
-    ) -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
-}

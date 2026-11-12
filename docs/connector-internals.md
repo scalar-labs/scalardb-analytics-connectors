@@ -26,7 +26,7 @@ details are decided in the implementation.
 | Table reference | An unresolved non-empty table name path used by metadata requests. It is not a table binding and carries no proof that it belongs to an open Data Source or registered schema. |
 | Table binding | A non-secret opaque identity for one registered table. The Physical Catalog persists it and an adapter copies it into a Substrait `namedTable`; only the Connector interprets it. |
 | SQL dialect | Connector-owned representation rules for SQL identifiers and typed literals. It does not represent a Data Source, connection, table, or common SQL grammar. |
-| Connector trait | The Rust traits a connector implements. The connector SDK uses a connector only through these traits ([Connector trait](#connector-trait)). |
+| Connector trait | The SDK's `Connector` trait, the library's entry point for one Connector, together with its component traits and the layer traits (`AdbcConnector`, `SqlConnector`) that supply components. The connector SDK uses a connector only through these traits ([Connector trait](#connector-trait)). |
 | Validated plan | A `LogicalPlan` produced by validating and converting an offered Substrait plan in the SDK-supported semantic profile ([Read representation](#read-representation)) |
 | Planning metadata | Connector-private, per-call facts used by rewrite rules and executable-query generation; its shape is specific to the Data Source and it does not cross the planning boundary |
 | Pushdown planning | Query decomposition followed by remote query generation. It ends when the Connector returns a planned pushdown. See the canonical [pushdown glossary](pushdown-planning.md#glossary). |
@@ -69,10 +69,10 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | Connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads and metadata requests, the Arrow rows of metadata results, cancellation, the timeout watcher, and panic containment | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
-| `connector-adbc` | The ADBC access implementation provided by the connector SDK: loading drivers through the ADBC driver manager and checking their versions, passing options, running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by SQL-standard SQLSTATE class ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
-| `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: running catalog queries and generating SQL from remote `LogicalPlan` values with Data Source-specific dialect and semantic rules | Knowledge of any particular Data Source or native Query Engine plan |
-| `crates/connectors/<connector>` | One Connector: its connector traits, written as Rust code and constant tables. A direct-access Connector also reads the Data Source itself. | Knowledge of other Connectors |
+| `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads and metadata requests, the Arrow rows of metadata results, cancellation, the timeout watcher, and panic containment | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-adbc` | The ADBC access implementation provided by the connector SDK: the `AdbcConnector` trait and the `Adbc<C>` access component built from it (loading drivers through the ADBC driver manager and checking their versions, passing options, opening Data Sources and connecting sessions), running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by ADBC status and SQL-standard SQLSTATE class where the Connector's error table does not match ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
+| `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: the `SqlConnector` trait and the catalog, planner, and executor components built from it, running catalog queries, the filter and projection rewrite rules over the Connector's semantic decisions, generating SQL from remote `LogicalPlan` values with the Connector's dialect, and sending the planned statement | Knowledge of any particular Data Source or native Query Engine plan |
+| `crates/connectors/<connector>` | One Connector: its `Connector` implementation and its declarations to the layer traits, written as Rust code and constant tables. An ADBC-access Connector also implements `AdbcConnector`, and a SQL-speaking one also `SqlConnector`; a direct-access Connector supplies its own components and reads the Data Source itself. | Knowledge of other Connectors |
 | `connector-api` | The connector API's C ABI and its header, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
 | `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
 | `conformance` | The runner that tests the contract through the connector API only, and per-Connector fixtures | Dependencies on Connector internals |
@@ -163,11 +163,12 @@ as follows:
 
 The rule is that whatever must apply with the same meaning to every connector
 belongs in the connector SDK, and whatever needs source knowledge belongs in the
-connector. The SDK reaches a connector only through the connector traits
-(`CatalogReader`, `ConnectorPlanner`, and `ConnectorExecutor`;
-[Connector trait](#connector-trait)), so common validation, planned-state
-checks, and the table metadata model have the same SDK boundary in both forms
-of Data Source access. The type mapping needs source knowledge, so the
+connector. The SDK reaches a connector only through the `Connector` trait and
+its components (`Access`, `Catalog`, `Planner`, `Executor`, and
+`ErrorHandler`; [Connector trait](#connector-trait)), and runs the shared
+planning and read flows itself, so common validation, planned-state checks,
+the schema check, and the table metadata model have the same SDK boundary in
+both forms of Data Source access. The type mapping needs source knowledge, so the
 connector applies it; the SDK fixes only the types that carry its result. With ADBC access, connection, query
 execution, Arrow results, cancellation, and error retrieval are also the same
 `connector-adbc` processing for every source, leaving only source knowledge to
@@ -239,8 +240,9 @@ The resulting planning metadata is a Connector-private type. Its shape may
 differ by Data Source and may include physical identifiers, source types,
 collations, capabilities, or any other facts needed by that Connector. It is
 created for one planning call, borrowed by rewrite rules and executable-query
-generation, and then dropped. It does not appear in `ConnectorPlanner`,
-`PlannedPushdown`, or the language-neutral connector API.
+generation, and then dropped. The SDK sees it only as the `Planner`'s opaque
+`Facts` type; it does not appear in `PlannedPushdown` or the language-neutral
+connector API.
 
 Source attributes that planning relied on, such as collations, character sets,
 the Data Source version, and session settings, are treated as unchanged when
@@ -264,69 +266,219 @@ return `Unsupported` without turning a normal optimizer attempt into an error.
 
 ## Connector trait
 
-A connector enters the SDK through a process-level library, a long-lived source
-handle, and an isolated session. The session supplies catalog, planning, and
-execution capabilities:
+The library's entry point for one Connector is the SDK's `Connector` trait. A
+Connector selects the components it is built from through associated types and
+declares what only it knows. The provided functions of `Connector` are the
+flows that apply with the same meaning to every Connector, so a Connector does
+not implement them:
 
 ~~~text
-ConnectorLibrary:
+Connector:
+    type Access: Access<Self>           how the Data Source is reached
+    type Catalog: Catalog<Self>         how metadata requests are answered
+    type Planner: Planner<Self>         how offered plans are decomposed and the
+                                        query generated
+    type Executor: Executor<Self>       how a generated query is sent
+    type ErrorHandler: ErrorHandler     the error table and redaction, over the
+                                        access's diagnostic type
+    type Query: PortableQuery           the Data Source query planned and run
+
     descriptor() -> ConnectorDescriptor            (available before initialization)
-    new(library_settings) -> ConnectorLibrary
-    open_data_source(connector, connection_options, connection_timeout) -> DataSource
+    convert_column(column, target Analytics type) -> column
 
-DataSource:
-    open_session() -> DataSourceSession
+    provided:
+    plan(session, request) -> Planned(PlannedPushdown) | Unsupported
+    read(session, RemoteExecution<PlannedRead<Query>>) -> ExecutionOutput
+    classify(diagnostic) -> ConnectorError
+~~~
 
-DataSourceSession:
-    catalog() -> CatalogReader
-    planner() -> ConnectorPlanner
-    executor() -> ConnectorExecutor
+The component traits are:
 
-ConnectorPlanner:
-    plan(offered_plan)
-        -> Planned(PlannedPushdown) | Unsupported
+~~~text
+Access<C>:
+    type Library, DataSource, Session     the state the SDK's units hold
+    type Diagnostic                       what the access reports about an error
+    description() -> DataSourceAccess     (for the descriptor)
+    open_library(library_settings) -> Library
+    open_data_source(library, connector, connection_options, connection_timeout)
+        -> DataSource
+    open_session(data_source) -> Session
+    component(session) -> optional driver Component     (for retrieval info)
+    error(diagnostic, optional ErrorClass) -> ConnectorError
 
-RewriteRuleConnectorPlanner:
-    load_metadata(offered_plan) -> Connector-private metadata
-    rewrite_rules() -> RewriteRuleSet<Connector-private metadata>
-    create_executable_query(remote_plan, metadata) -> ConnectorQuery | Unsupported
+Catalog<C>:
+    type Table: SourceTableMetadata
+    type Context                          session-level facts, read once when a
+                                          session opens
+    open_context(access session) -> Context
+    namespace_list(session, filter) -> ExecutionOutput<Listed<NamespacePath>>
+    table_list(session, namespaces, tables) -> ExecutionOutput<Listed<TableEntry>>
+    table_metadata(session, tables) -> ExecutionOutput<TableRecord<Table>>
 
-SQL-family create_executable_query:
-    connector-sql translates remote_plan using physical names from metadata
-        common visitor owns Read/Project/Filter and fixed SQL syntax
-        LogicalExpression exposes resolved functions, fields, and validated LiteralValue nodes
-        SqlDialect renders identifier and LiteralValue fragments
-        Fragment composes them into one RenderedQuery
-    RenderedQuery is retained as the typed query of the RemoteExecution
+Planner<C>:
+    type Facts                            Connector-private planning metadata
+    planning_facts(session, offered_plan) -> (TableReference, Facts)
+    rewrite_rules() -> RewriteRuleSet<Facts>       (built once per session)
+    generate_query(remote_plan, facts) -> Query | Unsupported
 
-SQL-family execution:
-    connector-sql::SqlExecutor implements ConnectorExecutor<Query = RenderedQuery>
-    SqlExecutor passes the planned rendered statement to connector-adbc::query
-    connector-adbc owns lazy statement creation, execution, streaming, cancellation,
-        diagnostics, and resource release
+Executor<C>:
+    run(session, query) -> ExecutionOutput { stream, ExecutionCancel }
 
-Connector SDK implementation of ConnectorPlanner for RewriteRuleConnectorPlanner:
-    metadata = load_metadata(offered_plan)
+ErrorHandler:
+    type Diagnostic
+    classify(diagnostic) -> optional ErrorClass    (default: no match)
+    redact(diagnostic) -> diagnostic               (default: unchanged)
+~~~
+
+The SDK owns the units that hold component state. `DataSource<C>` holds the
+access's Data Source state. `Session<C>` holds the access's session state
+(`Session::access`), the catalog's context (`Session::context`), and the
+planner's rewrite rules; `Session::open` builds it from a newly opened access
+session, reading the context on it. Components receive the `Session<C>`, so no
+connection or catalog handle is passed separately. The library's per-Connector
+state, which holds the access's library state, is private to the SDK.
+
+The provided flows are:
+
+~~~text
+Connector::plan(session, request):
+    offered_plan = validated LogicalPlan of request.offered_plan
+    (table, facts) = Planner::planning_facts(session, offered_plan)
     query_plan = initial complete remote/local QueryPlan
-    for rule in rewrite_rules() in configured order:
-        query_plan = rule.rewrite(query_plan, metadata)
+    for rule in the session's rewrite rules in configured order:
+        query_plan = rule.rewrite(query_plan, facts)
         unchanged query_plan -> no-op and continue
         error -> stop with error
-    query = create_executable_query(query_plan.remote_plan, metadata)
+    a local plan that only returns the remote result is dropped
+    query = Planner::generate_query(query_plan.remote_plan, facts)
     unsupported -> return Unsupported without constructing a pushdown
+    read = PlannedRead { table, registered base schema of the remote read, query }
     convert the remote/local LogicalPlans to Substrait
-    return PlannedPushdown
+    return PlannedPushdown whose RemoteExecution carries read
 
-ConnectorExecutor:
-    execute(query) -> ExecutionOutput { stream, ExecutionCancel }
+Connector::read(session, remote):      nothing is sent before the first pull
+    Catalog::table_metadata(session, [remote.query.table])
+        check_schema(registered base schema, current table metadata)
+        a mismatch or a missing table is stale registration; the query is
+            never sent
+    then Executor::run(session, remote.query.query)
+        each batch is converted with Connector::convert_column into the
+            planned output schema
+    one ExecutionCancel stops the running step and every later one
 
-Connector SDK execute_planned(executor, remote_execution, deadline):
-    output = executor.execute(remote.query)
+Connector::classify(diagnostic):
+    diagnostic = ErrorHandler::redact(diagnostic)
+    class = ErrorHandler::classify(diagnostic)
+    return Access::error(diagnostic, class)
+        a class from the Connector's error table takes precedence over the
+            access's generic classes
+
+Connector SDK execute_planned(output_schema, deadline, start):
+    output = start()            the runtime passes Connector::read on the session
     return ExecutionStream, which hands out ExecutionCancelHandle
         cancel() / expire() records cancellation / timeout, first wins,
             then calls the connector's ExecutionCancel
         a pull after a recorded stop returns that stop's error
 ~~~
+
+`PlannedRead<Q>` is the query of every planned read: the table as metadata
+requests name it, the registered schema of the base columns the plan reads,
+and the Connector's query `Q`. It implements `PortableQuery` by framing the
+table and base schema around `Q`'s own bytes, so a Connector encodes only its
+query.
+
+Shared layers supply components for the Connectors that declare what those
+layers need. Each layer is a subtrait of `Connector` that pins the components
+it supplies through associated-type equality, so that a Connector declares
+only what is specific to its Data Source:
+
+~~~text
+connector-sdk    Connector, and the component traits Access, Catalog, Planner,
+                 Executor, and ErrorHandler
+connector-adbc   AdbcConnector: Connector<Access = Adbc<Self>>
+                     DRIVER: the ADBC driver and the versions it was tested with
+                     database_options(connection_options, connection_timeout)
+                 Adbc<C> implements Access<C>
+connector-sql    SqlConnector: AdbcConnector + SqlDialect
+                     + Connector<Catalog = SqlCatalog<Self>,
+                                 Planner = SqlPlanner<Self>,
+                                 Executor = SqlExecutor<Self>, Query = SqlRead>
+                     Table, Context, PlanningFacts
+                     session_context, namespace_list, table_list, table_metadata:
+                         each a function that runs its statements on
+                         CatalogReads and uses each result where it is fetched
+                     planning_facts, runs_remotely
+                 SqlCatalog<C>, SqlPlanner<C>, and SqlExecutor<C> implement
+                 Catalog<C>, Planner<C>, and Executor<C>
+~~~
+
+A SQL-speaking Connector such as PostgreSQL therefore implements three traits:
+`Connector`, where it names `Adbc<Self>`, the three SQL components, `SqlRead`,
+and its own error handler, and declares its descriptor and value conversion;
+`AdbcConnector`; and `SqlConnector`. The component choices in its `Connector`
+implementation are the ones the layer traits require, and the compiler rejects
+any other. A direct-access Connector implements `Connector` with components of
+its own, including an `Access` that reads the Data Source itself. A Connector
+with no error table or redaction of its own uses `GenericErrorHandler<D>` over
+its access's diagnostic type.
+
+The layers pin components instead of implementing `Connector` for their
+Connectors because Rust leaves no other way to share them:
+
+- A subtrait cannot implement its supertrait's items. `AdbcConnector` cannot
+  supply `Connector::Access`; it can only require that it be `Adbc<Self>`.
+- A blanket `impl<C: AdbcConnector> Connector for C` cannot be written in
+  `connector-adbc`: `Connector` is foreign to that crate and `C` is not
+  covered by a local type, so the orphan rule rejects it. Blanket
+  implementations for different forms of access would also overlap, because
+  coherence cannot rule out a type that implements both layer traits.
+
+The components, by contrast, are generic types local to each layer, such as
+`Adbc<C>` and `SqlCatalog<C>`, so each layer implements the SDK's component
+traits for them.
+
+~~~text
+ADBC access (Adbc<C>, from AdbcConnector C):
+    open_library keeps the library settings; no driver is loaded yet
+    open_data_source loads C::DRIVER through its manifest once per library (a
+        failed load is not kept), and opens one ADBC database (AdbcDatabase<C>)
+        with C::database_options
+    open_session connects, checks the driver version on the first connection,
+        and returns AdbcSession<C>: the connection and the driver component
+    every driver error becomes an AdbcDiagnostic and goes through
+        Connector::classify; Adbc<C>::error applies the ADBC status and
+        SQLSTATE classes unless the Connector's error table matched
+
+SQL components (from SqlConnector C):
+    SqlCatalog<C>: opening a session runs C::session_context; each metadata
+        request runs C's function as one source read on the session's
+        connection, at the first pull; CatalogReads::query runs one statement
+        to its end, and a cancel stops the running statement and keeps later
+        ones from starting
+    SqlPlanner<C>:
+        planning_facts: C::planning_facts resolves the binding and reads facts
+        rewrite rules: the whole filter moves remotely when C::runs_remotely
+            accepts its condition; a projection of plain columns moves once no
+            local filter remains below it
+        generate_query translates the remote plan
+            common visitor owns Read/Project/Filter and fixed SQL syntax
+            LogicalExpression exposes resolved functions, fields, and validated LiteralValue nodes
+            C's SqlDialect renders identifier and LiteralValue fragments
+            Fragment composes them into one RenderedQuery
+            SqlRead keeps only the SQL; the PlannedRead around it carries the
+                table and the registered base schema
+    SqlExecutor<C>: passes the SqlRead's SQL to connector-adbc::query on the
+        session's connection
+        connector-adbc owns lazy statement creation, execution, streaming,
+            cancellation, diagnostics, and resource release
+~~~
+
+`ConnectorPlanner`, its rule-based form `RewriteRuleConnectorPlanner`,
+`PushdownRequest`, and `RewriteRuleSet` remain in the SDK as planning building
+blocks. `RewriteRuleConnectorPlanner` takes a metadata loader, ordered rules,
+and an executable-query generator, and its blanket `ConnectorPlanner`
+implementation runs the same rule loop as `Connector::plan`. The `Connector`
+flow itself drives a `Planner` component.
 
 Connector planning runs after the SDK has produced a `LogicalPlan`, because
 that is the first point at which the Connector can know which source facts are
@@ -336,12 +488,10 @@ reuse cached facts across requests, but no planning-snapshot identity is
 required. Only the `RemoteExecution` crosses to another process
 ([Execution in another process](pushdown-planning.md#execution-in-another-process)).
 
-The basic `ConnectorPlanner` interface gives a Connector full control of those
-steps. For the standard rule-based case, `RewriteRuleConnectorPlanner` lets the
-Connector provide its private metadata loader, ordered rules, and executable
-query generator while the SDK owns the common control flow. Its blanket
-`ConnectorPlanner` implementation returns `PlannedPushdown` directly; no
-resolved-plan carrier or second planning result crosses the boundary. The SDK
+Through its `Planner`, the Connector provides its private facts loader, ordered
+rules, and query generator, while `Connector::plan` owns the common control
+flow. The flow returns `PlannedPushdown` directly; no resolved-plan carrier or
+second planning result crosses the boundary. The SDK
 constructs `LogicalPlan` as part of offered Substrait validation and asserts the
 decomposition contract when constructing `PlannedPushdown`. It does not
 revalidate Connector-produced plans as external input, interpret Connector
@@ -369,7 +519,7 @@ interfaces keep source knowledge out of the SDK.
 
 For SQL-family Connectors, `connector-sql` traverses the validated remote
 `LogicalPlan` and its `LogicalExpression` nodes. It does
-not interpret Substrait anchors or extension declarations. `load_metadata` creates one
+not interpret Substrait anchors or extension declarations. `planning_facts` creates one
 Connector-private metadata value containing the physical names and Data Source
 facts needed by the planning call. Rewrite rules and executable-query generation
 borrow that same value; no separate SQL metadata model is constructed.
@@ -381,21 +531,21 @@ in a second token model. `LogicalPlan` owns literal validation and
 canonicalization and stores a `LiteralValue` retaining typed null and
 logical-carrier information in each literal expression. Connector
 rewrites are revalidated when they construct a replacement plan root.
-`SqlDialect` owns actual representation differences such as identifier quoting
+The Connector's `SqlDialect` owns actual representation differences such as identifier quoting
 and literal spelling and escaping. The result is one complete
 non-parameterized SQL statement. Connector rewrite rules use the concrete Data Source type,
 nullability, collation, version, and session facts in the shared metadata before
 leaving an expression in the remote plan. SQL translation renders that approved
 plan without repeating the semantic decision. The resulting
-`RemoteExecution<RenderedQuery>` retains that SQL-specific type through
+`RemoteExecution<PlannedRead<SqlRead>>` retains that SQL-specific type through
 adoption. Execution sends its SQL text directly; it does not receive or
 reconstruct a `LogicalPlan`, planning metadata, dialect, or semantic policy.
 
 Data Source access sits below these traits. It reads catalogs and executes
 Data Source queries returning Arrow streams; it does not expose native Query
 Engine plans. `connector-adbc` provides the common ADBC access, while a
-direct-access connector reads the Data Source itself inside its trait
-implementations. Cancellation remains scoped to one execution so another thread
+direct-access connector reads the Data Source itself inside its own
+components. Cancellation remains scoped to one execution so another thread
 can stop a blocked source call.
 
 `connector-adbc` wraps ADBC in its own types instead of exposing `adbc_core`'s
@@ -410,28 +560,32 @@ traits to connectors because:
 - `adbc_core` has not reached 1.0 and releases incompatible versions every few
   months, while wrapping it confines those changes to `connector-adbc`.
 
-The `CatalogReader` returned by a connector's `catalog` has one function per
-metadata request ([Capabilities](connector-contract.md#capabilities)). Table
-metadata has two layers: the connector's own source metadata type, which the
-Semantic Catalog receives as JSON, and the source-independent table metadata
-derived from it ([Table metadata](connector-contract.md#table-metadata)).
+A Connector's `Catalog` component has one function per metadata request
+([Capabilities](connector-contract.md#capabilities)). Table metadata has two
+layers: the connector's own source metadata type, which the Semantic Catalog
+receives as JSON, and the source-independent table metadata derived from it
+([Table metadata](connector-contract.md#table-metadata)).
 
 ~~~rust
-pub trait CatalogReader: Send + Sync {
+pub trait Catalog<C: Connector>: 'static {
     /// Connector-specific metadata for one table, such as `pg_catalog` facts.
     type Table: SourceTableMetadata;
+    /// Session-level facts read once when a session opens.
+    type Context: Send + Sync + 'static;
+
+    fn open_context(session: &AccessSession<C>) -> Result<Self::Context, ConnectorError>;
 
     /// Namespace list. `filter` is a set of names matched exactly, without case folding;
     /// filter at the source if possible, otherwise after listing.
-    fn list_namespaces(&self, filter: &NameFilter)
+    fn namespace_list(session: &Session<C>, filter: &NameFilter)
         -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError>;
 
     /// Table list across namespaces, with a namespace filter and a table-name filter.
-    fn list_tables(&self, namespaces: &NameFilter, tables: &NameFilter)
+    fn table_list(session: &Session<C>, namespaces: &NameFilter, tables: &NameFilter)
         -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError>;
 
     /// One record per requested table.
-    fn read_tables(&self, tables: &[TableReference])
+    fn table_metadata(session: &Session<C>, tables: &[TableReference])
         -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
 }
 
@@ -475,9 +629,9 @@ Each function returns the read's item stream together with its
 `start_source_read`, which applies cancellation and the deadline exactly as
 for execution ([Cancellation and timeouts](#cancellation-and-timeouts)). Even
 when one catalog read runs several executions at the source, such as one query
-per namespace, its `ExecutionCancel` stops the execution in progress. The reader
-is bound to its session through `DataSourceSession::catalog`, so no session
-handle is passed per call.
+per namespace, its `ExecutionCancel` stops the execution in progress. Each
+function receives the SDK's `Session<C>`, which carries the access's session
+state and the context the catalog read when the session opened.
 
 The three `TableRecord` states correspond one to one to the contract's row
 states: `Read` is complete or incomplete, `NotFound` is "does not exist", and
@@ -504,8 +658,9 @@ are equal, and what changed is found by comparing the table metadata derived
 from both.
 
 Retrieval info is assembled from each table's `read_at`, the connector's name
-and version in its `ConnectorDescriptor`, and the session's
-`DataSourceSession::adbc_driver` (the ADBC driver's name and version). The
+and version in its `ConnectorDescriptor`, and the driver component the
+access reports for the session through `Access::component` (with ADBC access,
+the ADBC driver's name and version). The
 connector API adds the library version and converts table metadata and source
 metadata to the Arrow output.
 
@@ -569,10 +724,11 @@ The runtime owns the contract's semantics:
   `ConnectorError`, so `plan_pushdown` returns its kind, retryability, and
   Data Source details unchanged.
 
-The SDK lifecycle traits have associated types that differ per connector.
-The runtime implements one object-safe counterpart of each trait for every
-SDK implementation and holds connectors only through those, so dispatch by
-Connector name needs no knowledge of a particular connector. A remote
+A Connector's units carry types that differ per connector. A library
+registers each Connector with `BuiltInConnector::of::<C>()`, and the runtime
+implements one object-safe counterpart of each unit for every `Connector` and
+holds connectors only through those, so dispatch by Connector name needs no
+knowledge of a particular connector. A remote
 execution keeps its connector's query type behind the same boundary; a read
 of a remote execution planned by another connector is `invalid request`.
 
@@ -586,9 +742,9 @@ an error the caller frees, and an operation's error is owned by the operation.
 
 | Unit | Created | Holds | Released |
 | --- | --- | --- | --- |
-| Library | At initialization | Settings, the ADBC driver manager (`connector-adbc`), and the timeout watcher thread | Closed at shutdown; its state, including the watcher, lives until its last Data Source, session, and operation are released, so running reads still stop at their deadlines. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
+| Library | At initialization | Settings, each registered Connector's access library state (with ADBC access, the ADBC driver, loaded when the first Data Source opens), and the timeout watcher thread | Closed at shutdown; its state, including the watcher, lives until its last Data Source, session, and operation are released, so running reads still stop at their deadlines. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
 | Data source | When opened | The selected connector, validated connection settings and credentials, and, with ADBC access, its ADBC database | When the data source and every session using it are closed |
-| Session | When opened | Its `DataSourceSession` (an ADBC connection with ADBC access), catalog reader, connector planner, executor, and optional planning-facts cache | When closed, releasing its cache and `DataSourceSession` |
+| Session | When opened | Its `Session<C>`: the access's session state (with ADBC access, an ADBC connection and the driver component), the catalog's context read when it opened, and the planner's rewrite rules | When closed, releasing its `Session<C>` |
 | Operation | When started: validates the request and takes a session lease | Data Source resources: the session lease and, after resolution or first pull, its execution/read state and `CancelHandle`; also cancellation, deadline, and error state | When closed, releasing every Data Source resource. Metadata/read resources are also released, and the lease returned, when the stream ends or is released. |
 | Result stream | When a metadata or read operation starts | A reference to the operation, conversion state, expected output schema, and cancellation/deadline state. It holds no Data Source resources. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
 
@@ -637,11 +793,11 @@ the request (including the checks in [Read representation](#read-representation)
 and does not call Data Source access. Read and metadata Data Source access is
 called from the caller's thread inside a stream pull; planning resolution may
 also call it from `plan_pushdown`. At the first pull, the connector SDK translates the
-request, calls `read_catalog` or `execute`, stores the returned execution and its
+request, starts the catalog read or `Connector::read`, stores the returned execution and its
 cancel handle in the operation, and then pulls its stream. A direct-access
 implementation that uses an asynchronous reader crate keeps that runtime inside
-the implementation and waits for results within the trait call; the runtime
-never leaves the trait.
+the implementation and waits for results within the component call; the
+runtime never leaves the component.
 
 `AdbcQueryStream` is the state machine for one lazy ADBC query. Its
 `QueryState` enum encodes the current lifecycle phase. The stream and its cloneable
@@ -677,9 +833,9 @@ the statement concurrently.
 | Library, data source | Allowed from several threads |
 | Session, operation, result stream | One at a time ([Units and concurrency](connector-contract.md#units-and-concurrency)), except that an operation may be cancelled from another thread |
 
-A data source is used from several threads. `DataSource` is `Send + Sync`, and
-a direct-access implementation must behave correctly when sessions are opened
-concurrently. ADBC does not require drivers to support
+A data source is used from several threads. The access's Data Source state
+(`Access::DataSource`) is `Send + Sync`, and a direct-access implementation
+must behave correctly when sessions are opened concurrently. ADBC does not require drivers to support
 concurrent use of a database, so `connector-adbc` serializes database
 functions (creating connections). The `Connector` trait is also `Send + Sync`.
 
@@ -702,8 +858,11 @@ Cancellation propagates in this order:
      directly or substitute connection-wide cancellation. Between driver
      calls, cancellation is recorded locally and the connector does not issue
      an unnecessary native cancellation callback.
-     `connector-sql`'s `SqlExecutor` returns the query's
-     `AdbcQueryCancelHandle` as that execution's `ExecutionCancel`.
+     For a planned read, the SDK's `Connector::read` returns an
+     `ExecutionCancel` that forwards to the step in progress: the schema
+     check's catalog read, then the query's cancel (with `connector-sql`, the
+     `AdbcQueryCancelHandle`). A cancellation recorded between steps keeps the
+     next step from starting.
    - **Direct access:** the implementation's `ExecutionCancel` stops file
      reads and source calls in progress.
 4. The pull in progress, or the stream's next pull, returns `cancellation`,
@@ -761,20 +920,33 @@ connection broke partway and its state is unknown.
 
 This applies only to ADBC access and is implemented by `connector-adbc`.
 
+- **Connector declaration:** a Connector using ADBC access implements
+  `AdbcConnector`, which requires its `Connector::Access` to be `Adbc<Self>`
+  and declares its driver and supported versions (`DRIVER`) and how connection
+  options become driver options (`database_options`). Its error table and
+  redaction are its `Connector::ErrorHandler` over `AdbcDiagnostic`. `Adbc<C>`
+  implements the SDK's `Access` from this declaration, so loading, opening,
+  connecting, and the version check are the same for every such Connector.
 - **Loading:** `connector-adbc` loads ADBC drivers through the Rust ADBC driver
   manager from the location received at library initialization, using the
-  driver name the connector supplies when a data source is opened. ADBC
-  reports a driver's version through a connection function
+  driver name the connector declares, when the first data source is opened. A
+  driver is loaded through its ADBC driver manifest, `<driver name>.toml` in
+  that location, which names the shared library and declares the driver's
+  version. ADBC reports a driver's version through a connection function
   (`AdbcConnectionGetInfo`), so the version is checked against the supported
   range when the first session opens, returning `invalid settings` if it
   is outside
   ([Calling-convention conformance tests](connector-contract.md#calling-convention-conformance-tests),
   [Data Source access rules](connector-contract.md#data-source-access-rules)).
+  A driver that reports its version as `unknown`, as the Apache Arrow ADBC
+  PostgreSQL driver does, is identified by the manifest's version instead.
 - **Options:** the connector maps product connection options to driver
   options, and the fixed driver options are passed at the same time.
 - **Errors:** driver errors carry an ADBC status code, a SQLSTATE, and a
   Data Source-specific vendor code. `connector-adbc` classifies them into contract
-  error kinds using the connector's error table and SQLSTATE classes. Because
+  error kinds using the connector's error table and SQLSTATE classes. The
+  connector first redacts what its driver copies into diagnostics and must
+  not leave the connector, such as SQL text in a driver message. Because
   the SQLSTATE comes from ADBC's error details, SQLSTATE classification lives in
   `connector-adbc`, not `connector-sql`, so ADBC-access connectors that do not
   use `connector-sql` can use it. Errors mid-stream are retrieved in detail with
@@ -806,7 +978,7 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | --- | --- |
 | [Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access) | `connector-api`, the connector traits, `connector-adbc` ([ADBC driver handling](#adbc-driver-handling)), and direct-access connector implementations |
 | [Calling conventions](connector-contract.md#calling-conventions) | The connector SDK's runtime (unit management, session lease, cancellation, timeouts) and its error structure |
-| [Metadata retrieval](connector-contract.md#metadata-retrieval) | The connector's `catalog` (`CatalogReader`) and source metadata type with its type mapping, and the connector SDK's table metadata model, its comparison, and the source-read boundary |
-| [Data read](connector-contract.md#data-read) | The connector's planner and executor, and the connector SDK's schema and lifecycle checks |
+| [Metadata retrieval](connector-contract.md#metadata-retrieval) | The Connector's `Catalog` component and source metadata type with its type mapping, and the connector SDK's table metadata model, its comparison, and the source-read boundary |
+| [Data read](connector-contract.md#data-read) | The Connector's `Planner` and `Executor` components and value conversion, and the connector SDK's planning and read flows with their schema and lifecycle checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |
 | [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header, and the connector SDK runtime's metadata schemas |

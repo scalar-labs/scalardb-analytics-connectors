@@ -17,14 +17,14 @@ use arrow_array::{
 use connector_sdk::{
     ConnectorError, ErrorKind, LibrarySettings, NameFilter, SecretString, TableReference,
     runtime::{BuiltInConnector, Library, MetadataRequest, Operation, SessionState},
-    test_connector::{Probe, TestConnectorLibrary, TestFixture, TestTable, probe},
+    test_connector::{Probe, TestConnector, TestFixture, TestTable, probe},
 };
 
 const LIBRARY_VERSION: &str = "0.0.0-test";
 
 fn session(label: &str) -> (Arc<SessionState>, Arc<Probe>) {
     let library = Library::initialize(
-        &[BuiltInConnector::of::<TestConnectorLibrary>()],
+        &[BuiltInConnector::of::<TestConnector>()],
         &LibrarySettings::default(),
         LIBRARY_VERSION,
     )

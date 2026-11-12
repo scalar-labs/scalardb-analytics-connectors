@@ -13,7 +13,7 @@ use connector_sdk::{
         BuiltInConnector, DataSourceState, Library, Operation, PlanningOutcome, SessionState,
         SharedRemoteExecution,
     },
-    test_connector::{Probe, TestConnectorLibrary, probe},
+    test_connector::{Probe, TestConnector, probe},
 };
 use prost::Message;
 use substrait::proto::{
@@ -22,7 +22,7 @@ use substrait::proto::{
 
 fn library() -> Arc<Library> {
     Library::initialize(
-        &[BuiltInConnector::of::<TestConnectorLibrary>()],
+        &[BuiltInConnector::of::<TestConnector>()],
         &LibrarySettings::default(),
         "0.0.0-test",
     )
@@ -47,9 +47,14 @@ fn open_probed(library: &Arc<Library>, label: &str) -> (Arc<DataSourceState>, Ar
 
 /// Encodes a Substrait plan that reads one `bigint` column `value` from `table`.
 fn read_plan(table: &[&str]) -> Vec<u8> {
+    column_read_plan(table, "value")
+}
+
+/// Encodes a Substrait plan that reads one `bigint` column `column` from `table`.
+fn column_read_plan(table: &[&str], column: &str) -> Vec<u8> {
     let read = ReadRel {
         base_schema: Some(NamedStruct {
-            names: vec!["value".to_owned()],
+            names: vec![column.to_owned()],
             r#struct: Some(r#type::Struct {
                 types: vec![Type {
                     kind: Some(r#type::Kind::I64(r#type::I64 {
@@ -73,7 +78,7 @@ fn read_plan(table: &[&str]) -> Vec<u8> {
                 input: Some(Rel {
                     rel_type: Some(rel::RelType::Read(Box::new(read))),
                 }),
-                names: vec!["value".to_owned()],
+                names: vec![column.to_owned()],
             })),
         }],
         ..Default::default()
@@ -124,8 +129,26 @@ fn a_read_is_sent_at_its_first_pull() {
 
     assert_eq!(probe.sent.load(Ordering::SeqCst), 0);
     assert_eq!(pull_all(&operation).unwrap(), 2);
-    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 2);
     assert!(operation.error().is_none());
+}
+
+#[test]
+fn a_read_whose_registered_schema_changed_is_stale_and_sends_no_query() {
+    let library = library();
+    let (data_source, probe) = open_probed(&library, "stale");
+    let session = data_source.open_session().unwrap();
+    let PlanningOutcome::Planned { remote, .. } = session
+        .plan_pushdown(&column_read_plan(&["batches", "1"], "renamed"))
+        .unwrap()
+    else {
+        panic!("the read plans");
+    };
+    let operation = session.start_read(remote, None).unwrap();
+
+    assert_eq!(kind(operation.pull()), ErrorKind::StaleRegistration);
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -193,7 +216,7 @@ fn cancelling_from_another_thread_stops_a_blocked_pull() {
 
     let pulled = thread::scope(|scope| {
         let puller = scope.spawn(|| operation.pull());
-        wait_until(|| probe.sent.load(Ordering::SeqCst) == 1);
+        wait_until(|| probe.sent.load(Ordering::SeqCst) == 2);
         operation.cancel().unwrap();
         puller.join().unwrap()
     });
@@ -202,8 +225,31 @@ fn cancelling_from_another_thread_stops_a_blocked_pull() {
     assert_eq!(error.kind(), ErrorKind::Cancellation);
     assert!(!error.retryable());
     assert_eq!(probe.cancelled.load(Ordering::SeqCst), 1);
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     assert!(session.start_read(remote, None).is_ok());
+}
+
+#[test]
+fn cancelling_during_the_schema_check_stops_it_and_sends_no_query() {
+    let library = library();
+    let (data_source, probe) = open_probed(&library, "cancel-check");
+    let session = data_source.open_session().unwrap();
+    let operation = session
+        .start_read(remote(&session, &["check-blocks"]), None)
+        .unwrap();
+
+    let pulled = thread::scope(|scope| {
+        let puller = scope.spawn(|| operation.pull());
+        wait_until(|| probe.sent.load(Ordering::SeqCst) == 1);
+        operation.cancel().unwrap();
+        puller.join().unwrap()
+    });
+
+    assert_eq!(kind(pulled), ErrorKind::Cancellation);
+    // Only the catalog read was sent. The cancel stopped it and the query,
+    // which therefore never starts.
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.cancelled.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -223,7 +269,7 @@ fn the_timeout_counts_from_the_first_pull_and_stops_a_blocked_pull() {
 
     assert_eq!(error.kind(), ErrorKind::Timeout);
     assert!(error.retryable());
-    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 2);
     assert_eq!(probe.cancelled.load(Ordering::SeqCst), 1);
 }
 
@@ -238,7 +284,7 @@ fn releasing_a_read_partway_stops_it_and_frees_the_session() {
 
     operation.release();
 
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     let next = session.start_read(remote, None).unwrap();
     assert!(next.pull().unwrap().is_some());
 }
@@ -261,7 +307,7 @@ fn calls_on_a_child_after_its_parent_closed_return_invalid_state() {
     );
     assert_eq!(kind(operation.pull()), ErrorKind::InvalidState);
     assert_eq!(operation.error().unwrap().kind(), ErrorKind::InvalidState);
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     assert_eq!(kind(data_source.open_session()), ErrorKind::InvalidState);
 }
 
@@ -277,7 +323,7 @@ fn a_pull_after_its_operation_closed_returns_invalid_state() {
     operation.close();
 
     assert_eq!(kind(operation.pull()), ErrorKind::InvalidState);
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     assert!(session.start_read(remote, None).is_ok());
 }
 
@@ -310,7 +356,7 @@ fn a_panic_in_a_pull_becomes_internal_and_makes_the_session_unusable() {
 
     assert_eq!(kind(operation.pull()), ErrorKind::Internal);
 
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     assert_eq!(
         kind(plan(&session, &["batches", "1"])),
         ErrorKind::InvalidState
@@ -373,7 +419,7 @@ fn a_remote_execution_restored_from_bytes_reads_on_another_session() {
         .unwrap();
 
     assert_eq!(pull_all(&operation).unwrap(), 1);
-    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 2);
     assert_eq!(
         kind(session.restore_remote_execution(b"not a remote execution")),
         ErrorKind::InvalidRequest
@@ -439,7 +485,7 @@ fn shutting_down_closes_every_unit_but_running_reads_keep_their_deadline() {
 
     let pulled = thread::scope(|scope| {
         let puller = scope.spawn(|| operation.pull());
-        wait_until(|| probe.sent.load(Ordering::SeqCst) == 1);
+        wait_until(|| probe.sent.load(Ordering::SeqCst) == 2);
         library.shut_down();
         puller.join().unwrap()
     });

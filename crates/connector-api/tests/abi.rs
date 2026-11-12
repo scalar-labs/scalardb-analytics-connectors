@@ -40,7 +40,7 @@ fn a_read_returns_the_planned_batches_through_the_arrow_stream() {
     assert_eq!(schema.field(0).name(), "value");
     assert_eq!(probe.sent.load(Ordering::SeqCst), 0);
     assert_eq!(stream.pull(), Pull::Batch(1));
-    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 2);
     assert_eq!(stream.pull(), Pull::Batch(1));
     assert_eq!(stream.pull(), Pull::End);
     assert!(operation.error().is_none());
@@ -63,7 +63,7 @@ fn cancelling_from_another_thread_stops_a_blocked_pull() {
 
     let pulled = thread::scope(|scope| {
         let puller = scope.spawn(move || stream.pull());
-        wait_until(|| probe.sent.load(Ordering::SeqCst) == 1);
+        wait_until(|| probe.sent.load(Ordering::SeqCst) == 2);
         operation.cancel().unwrap();
         puller.join().unwrap()
     });
@@ -76,7 +76,7 @@ fn cancelling_from_another_thread_stops_a_blocked_pull() {
         ScalardbAnalyticsConnectorErrorKind::Cancellation
     );
     assert!(!error.retryable);
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     assert!(session.read(&remote, 0).is_ok());
 }
 
@@ -91,7 +91,7 @@ fn releasing_a_stream_partway_stops_the_query_and_frees_the_session() {
 
     read.stream.release();
 
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     let mut next = session.read(&remote, 0).unwrap();
     assert_eq!(next.stream.pull(), Pull::Batch(1));
 }
@@ -117,7 +117,7 @@ fn calls_on_a_child_after_its_parent_closed_return_invalid_state() {
         read.operation.error().unwrap().kind,
         ScalardbAnalyticsConnectorErrorKind::InvalidState
     );
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     read.stream.release();
     read.operation.close();
     session.close();
@@ -138,7 +138,7 @@ fn a_stream_pulled_after_its_operation_closed_returns_invalid_state() {
     operation.close();
 
     assert!(matches!(stream.pull(), Pull::Failed(_, message) if message.contains("invalid state")));
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     assert!(session.read(&remote, 0).is_ok());
 }
 
@@ -221,7 +221,7 @@ fn a_panic_in_a_pull_becomes_internal_and_makes_the_session_unusable() {
         operation.error().unwrap().kind,
         ScalardbAnalyticsConnectorErrorKind::Internal
     );
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
     let error = session.plan(&["batches", "1"]).err().unwrap();
     assert_eq!(
         error.kind,
@@ -245,7 +245,7 @@ fn a_stream_released_after_every_parent_closed_releases_the_read() {
     read.operation.close();
     read.stream.release();
 
-    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn a_remote_execution_restored_from_bytes_reads_on_another_session() {
     let mut read = session.read(&remote, 0).unwrap();
 
     assert_eq!(read.stream.pull(), Pull::Batch(1));
-    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.sent.load(Ordering::SeqCst), 2);
     let error = session.restore(b"not a remote execution").err().unwrap();
     assert_eq!(
         error.kind,

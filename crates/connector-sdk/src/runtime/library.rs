@@ -15,8 +15,8 @@ use super::{
     watcher::Watcher,
 };
 use crate::{
-    Component, ConnectionOptions, ConnectorDescriptor, ConnectorError, ConnectorLibrary,
-    DataSource, DataSourceSession, ErrorKind, LibrarySettings, PortableQuery, SecretString,
+    Component, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ErrorKind,
+    LibrarySettings, SecretString,
 };
 
 /// One connector built into a library, registered before initialization.
@@ -27,16 +27,11 @@ pub struct BuiltInConnector {
 }
 
 impl BuiltInConnector {
-    /// Registers connector library `L`.
-    pub fn of<L>() -> Self
-    where
-        L: ConnectorLibrary,
-        <<L::DataSource as DataSource>::Session as DataSourceSession>::Query:
-            PortableQuery + Send + Sync + 'static,
-    {
+    /// Registers Connector `C`.
+    pub fn of<C: Connector>() -> Self {
         Self {
-            descriptor: L::descriptor(),
-            create: create_library::<L>,
+            descriptor: C::descriptor(),
+            create: create_library::<C>,
         }
     }
 }

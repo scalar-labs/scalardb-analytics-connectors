@@ -434,6 +434,14 @@ item for Data Source-specific attributes; those belong to the source metadata.
 When a receiver needs a source attribute with one meaning across Connectors,
 it is added to table metadata as an optional, typed, source-independent item.
 
+Table metadata holds the facts about a table that callers rely on when they
+analyze and optimize queries in their own engine. Information a Connector uses
+only to decide how to execute, such as a column's collation when deciding
+whether a comparison can be pushed down, is not table metadata; the Connector
+reads it from the Data Source when it needs it. Which items fall on which side
+is decided against this criterion as Connectors are implemented, not
+enumerated in advance.
+
 ### Constraints
 
 The returned constraints are primary keys, unique constraints and unique

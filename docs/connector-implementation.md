@@ -30,8 +30,16 @@ A connector for a new Connector is built in this order:
 3. Create `crates/connectors/<source>` and implement the
    [connector trait](connector-internals.md#connector-trait) in Rust code and
    constant tables ([Connector behavior as code](connector-internals.md#connector-behavior-as-code)).
-   For a source that speaks SQL, use `connector-sql`'s default `catalog` and
-   `translator`. For direct access, the connector reads the Data Source itself
+   Every connector implements `Connector`, which names its components, its
+   error handler, and its query, and declares its descriptor and value
+   conversion. A source that speaks SQL through ADBC also implements
+   `AdbcConnector` and `SqlConnector`, which declare its driver, options,
+   catalog reads, planning facts, semantic decisions, and dialect;
+   `connector-adbc` and `connector-sql` supply the access, catalog, planner,
+   and executor components from them, and the SDK runs the planning and read
+   flows. An ADBC source that does not speak SQL implements `AdbcConnector`
+   and supplies its own catalog, planner, and executor. For direct access, the
+   connector supplies all of its components and reads the Data Source itself
    ([Direct access](#direct-access)).
 4. Fill `ConnectorDescriptor` with the name, version, Connectors, the
    description of accepted options
@@ -181,10 +189,12 @@ Connection settings passed by the caller cannot override fixed settings.
   implements `PortableQuery` so that the `RemoteExecution` can be carried to
   another process.
   Execution sends that generated query directly rather than retranslating the
-  Substrait plan. The session's planner and executor share its concrete query
-  type. For the shared SQL path, that type is `RenderedQuery`, whose SQL text
-  `connector-sql::SqlExecutor` passes directly to ADBC through its
-  `ConnectorExecutor` implementation. When work remains
+  Substrait plan. The Connector's planner and executor share its concrete
+  query type, `Connector::Query`. The SDK's planned read reads the table's
+  current metadata through the Connector's `Catalog` for the schema check, has
+  its `Executor` send the query, and converts each batch with
+  `Connector::convert_column`. For the shared SQL path, the query is `SqlRead`,
+  whose SQL text `connector-sql::SqlExecutor` passes directly to ADBC. When work remains
   local, the Connector returns a `local_plan` as part of its proposal. The
   Adapter adopts the proposal only if it can convert the complete local plan to
   native Query Engine work. The connector SDK does not apply a leftover
@@ -195,14 +205,13 @@ Connection settings passed by the caller cannot override fixed settings.
 
 ### Plan-aware support decisions
 
-The standard implementation uses `RewriteRuleConnectorPlanner`. The Connector
-defines a private metadata type, loads the source facts needed by the
-offered `LogicalPlan`, supplies an ordered `RewriteRuleSet<Metadata>` over
-`LogicalPlan`, and generates the executable query from the final remote logical
-plan. The SDK implements the common `ConnectorPlanner` flow around those three
-operations, including constructing `LogicalPlan` while validating Substrait
-and converting the result back to Substrait. A Connector that needs a
-different flow may implement the basic `ConnectorPlanner` interface directly.
+The Connector's `Planner` component defines a private facts type, loads the
+source facts needed by the offered `LogicalPlan`, supplies an ordered
+`RewriteRuleSet<Facts>` over `LogicalPlan`, and generates the executable query
+from the final remote logical plan. The SDK's `Connector::plan` implements the
+common flow around those three operations, including constructing
+`LogicalPlan` while validating Substrait and converting the result back to
+Substrait.
 The decision is not made from an operator/type capability table alone. The
 shared contract does not require a filter to be split into conjuncts or
 normalized to CNF or DNF.
@@ -222,8 +231,8 @@ their result is input to the plan-aware decision rather than an authorization
 visible to the adapter. An overlooked collation, Data Source type, or session
 setting must prevent the affected rewrite rule from being applied. The
 affected rule remains a no-op, and a later Connector-supplied rule may produce
-an appropriate local plan. A custom `ConnectorPlanner` may instead return
-`Unsupported`; it must never produce a silently different decomposition.
+an appropriate local plan. Query generation may instead return
+`Unsupported`; planning must never produce a silently different decomposition.
 
 The source attributes used for the decision, such as Data Source type, collation,
 character set, and Data Source version, must be valid for the planned execution.
@@ -266,7 +275,8 @@ as catalog Data Source types and uses them for the
 
 The connector SDK classifies Data Source access errors into the contract's
 [error kinds](connector-contract.md#errors). Direct-access errors are
-classified by the connector's `classify_error`. The rest of this section covers
+classified by the Connector's error handler (`Connector::ErrorHandler`) and
+its access's generic classes. The rest of this section covers
 ADBC access. ADBC errors carry a status code, a SQLSTATE, and a Data Source-specific
 vendor code. Classification by vendor code (the connector's error table) is
 applied before classification by SQLSTATE class; for example, MySQL `1142`
@@ -441,8 +451,9 @@ gets our own:
 
 ### Direct access
 
-- Implement the [connector traits](connector-internals.md#connector-trait) in
-  the connector crate, reading the Data Source directly inside them.
+- Implement the [`Connector` trait](connector-internals.md#connector-trait)
+  and its components in the connector crate, reading the Data Source directly
+  inside them.
 - Choose reader crates and source clients that return Arrow and satisfy the
   direct-access rules in
   [Data Source access rules](connector-contract.md#data-source-access-rules). Whether they

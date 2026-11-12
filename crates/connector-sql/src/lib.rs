@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use adbc_driver_manager::ManagedConnection;
 use connector_sdk::{
-    ConnectorError, ConnectorExecutor, ErrorKind, ExecutionOutput, LiteralValue, PortableQuery,
-    RecordBatchStream,
+    ConnectorError, ErrorKind, ExecutionOutput, LiteralValue, PortableQuery, RecordBatchStream,
 };
 
 pub use translation::{TranslationError, translate};
@@ -175,10 +174,9 @@ impl PortableQuery for RenderedQuery {
     }
 }
 
-impl ConnectorExecutor for SqlExecutor {
-    type Query = RenderedQuery;
-
-    fn execute(&self, query: &RenderedQuery) -> Result<ExecutionOutput, ConnectorError> {
+impl SqlExecutor {
+    /// Starts the planned statement and returns its unchecked stream.
+    pub fn execute(&self, query: &RenderedQuery) -> Result<ExecutionOutput, ConnectorError> {
         let query = connector_adbc::query(self.connection.clone(), query.sql.clone());
         let cancel = Arc::new(query.cancel_handle());
         let stream: RecordBatchStream = Box::pin(query);

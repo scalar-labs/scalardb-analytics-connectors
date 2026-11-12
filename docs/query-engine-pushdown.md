@@ -114,17 +114,20 @@ Prefetching and caching are optional Connector implementation strategies. No
 ## Planning result and execution
 
 `PlannedPushdown<Q>` contains the remote and optional local plans plus the
-`RemoteExecution<Q>` that execution needs: the Connector-owned query of type
-`Q` and the remote output schema. The session's planner and executor
-share that type. It excludes credentials, connections, and process-local
-handles.
+`RemoteExecution<Q>` that execution needs: the query of type `Q` and the
+remote output schema. For a Connector, `Q` is the SDK's `PlannedRead`, which
+carries the read table, the registered base schema, and the Connector-owned
+query that the Connector's planner and executor share. It excludes
+credentials, connections, and process-local handles.
 
-At execution, the Adapter passes the adopted pushdown's `RemoteExecution` to
-`execute_planned`, either directly or after carrying its bytes to another
-process ([Execution in another process](pushdown-planning.md#execution-in-another-process)).
-The executor sends its typed query `Q` directly.
-SQL-family sessions use `connector-sql::SqlExecutor`, whose query type is
-`RenderedQuery` and whose execution delegates to the shared ADBC query path.
+At execution, the adopted pushdown's `RemoteExecution` is read through
+`execute_planned` with `Connector::read`, either directly or after its bytes
+are carried to another process
+([Execution in another process](pushdown-planning.md#execution-in-another-process)).
+The SDK runs the schema check, and the Connector's executor then sends its
+typed query directly. SQL-family Connectors use `connector-sql::SqlExecutor`,
+whose query type is `SqlRead` and which delegates to the shared ADBC query
+path.
 For an adopted proposal, the Adapter then runs the local plan, if present, over
 the returned Arrow stream.
 

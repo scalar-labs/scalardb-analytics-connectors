@@ -11,10 +11,10 @@ use std::{
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    CatalogReader, Column, ColumnAttribute, ColumnChange, ColumnType, ConnectorError, Constraint,
-    ConstraintKind, Difference, ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter,
-    NamespacePath, Reported, SourceStream, SourceTableMetadata, TableEntry, TableKind,
-    TableMetadata, TableRecord, TableReference, UniqueKind, UnsupportedReason, start_source_read,
+    Column, ColumnAttribute, ColumnChange, ColumnType, ConnectorError, Constraint, ConstraintKind,
+    Difference, ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter, NamespacePath,
+    Reported, SourceStream, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
+    TableReference, UniqueKind, UnsupportedReason, start_source_read,
 };
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ fn stored_source_metadata_is_compared_through_the_connector_type() {
 fn table_records_stream_through_a_source_read() {
     let reader = FakeReader::default();
     let tables = [table_reference("orders"), table_reference("missing")];
-    let mut stream = start_source_read(None, || reader.read_tables(&tables)).unwrap();
+    let mut stream = start_source_read(None, || reader.table_metadata(&tables)).unwrap();
 
     let Poll::Ready(Some(Ok(TableRecord::Read {
         metadata: table, ..
@@ -174,7 +174,7 @@ fn catalog_reads_stop_on_cancel_and_expiry() {
     let reader = FakeReader::default();
     let filter: NameFilter = None;
 
-    let mut namespaces = start_source_read(None, || reader.list_namespaces(&filter)).unwrap();
+    let mut namespaces = start_source_read(None, || reader.namespace_list(&filter)).unwrap();
     namespaces.cancel_handle().cancel().unwrap();
     assert!(matches!(
         pull(&mut namespaces),
@@ -182,7 +182,7 @@ fn catalog_reads_stop_on_cancel_and_expiry() {
     ));
     assert_eq!(pull(&mut namespaces), Poll::Ready(None));
 
-    let mut tables = start_source_read(None, || reader.list_tables(&filter, &filter)).unwrap();
+    let mut tables = start_source_read(None, || reader.table_list(&filter, &filter)).unwrap();
     tables.cancel_handle().expire().unwrap();
     assert!(matches!(
         pull(&mut tables),
@@ -190,7 +190,7 @@ fn catalog_reads_stop_on_cancel_and_expiry() {
     ));
 
     let requested = [table_reference("orders")];
-    let mut records = start_source_read(None, || reader.read_tables(&requested)).unwrap();
+    let mut records = start_source_read(None, || reader.table_metadata(&requested)).unwrap();
     records.cancel_handle().cancel().unwrap();
     assert!(matches!(
         pull(&mut records),
@@ -381,10 +381,9 @@ impl FakeReader {
     }
 }
 
-impl CatalogReader for FakeReader {
-    type Table = FakeTable;
-
-    fn list_namespaces(
+/// The three catalog reads, shaped as a Connector's catalog returns them.
+impl FakeReader {
+    fn namespace_list(
         &self,
         _filter: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError> {
@@ -393,7 +392,7 @@ impl CatalogReader for FakeReader {
         })]))
     }
 
-    fn list_tables(
+    fn table_list(
         &self,
         _namespaces: &NameFilter,
         _tables: &NameFilter,
@@ -404,7 +403,7 @@ impl CatalogReader for FakeReader {
         })]))
     }
 
-    fn read_tables(
+    fn table_metadata(
         &self,
         _tables: &[TableReference],
     ) -> Result<ExecutionOutput<TableRecord<FakeTable>>, ConnectorError> {

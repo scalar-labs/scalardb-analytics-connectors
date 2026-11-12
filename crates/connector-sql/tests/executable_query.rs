@@ -40,7 +40,10 @@ fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
         batch(&[30]),
     ]));
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
 
     assert!(fixture.events().is_empty());
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[10, 20])))));
@@ -64,7 +67,10 @@ fn preserves_execution_scoped_cancellation() {
     let (cancelled_fixture, cancelled_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
     let cancelled_executor = executor(cancelled_connection);
-    let mut cancelled = execute_planned(&cancelled_executor, &remote, None).unwrap();
+    let mut cancelled = execute_planned(&remote.output_schema, None, || {
+        cancelled_executor.execute(&remote.query)
+    })
+    .unwrap();
     cancelled.cancel_handle().cancel().unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut cancelled) else {
@@ -76,7 +82,10 @@ fn preserves_execution_scoped_cancellation() {
     let (next_fixture, next_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[2])]));
     let next_executor = executor(next_connection);
-    let mut next = execute_planned(&next_executor, &remote, None).unwrap();
+    let mut next = execute_planned(&remote.output_schema, None, || {
+        next_executor.execute(&remote.query)
+    })
+    .unwrap();
     assert_eq!(pull(&mut next), Poll::Ready(Some(Ok(batch(&[2])))));
     assert_eq!(
         next_fixture.events(),
@@ -107,7 +116,10 @@ fn stop_blocked_query(
     let remote = remote_query("select slow");
     let (fixture, connection) = Fixture::install(FixtureExecution::BlockUntilCancelled);
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
     let handle = stream.cancel_handle();
 
     let puller = std::thread::spawn(move || pull(&mut stream));
@@ -139,7 +151,10 @@ fn transports_the_query_to_another_connection() {
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch(&[7])]));
     let restored = RemoteExecution::<RenderedQuery>::from_bytes(&bytes).unwrap();
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &restored, None).unwrap();
+    let mut stream = execute_planned(&restored.output_schema, None, || {
+        executor.execute(&restored.query)
+    })
+    .unwrap();
 
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[7])))));
     assert_eq!(
@@ -167,7 +182,10 @@ fn preserves_adbc_execution_diagnostics() {
     let remote = remote_query("select broken");
     let (fixture, connection) = Fixture::install(FixtureExecution::Fail);
     let executor = executor(connection);
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("the first pull should return the ADBC execution error");
