@@ -1,5 +1,7 @@
 //! Direct translation of a validated remote logical plan into SQL fragments.
 
+use std::marker::PhantomData;
+
 use analytics_types::AnalyticsField;
 use connector_sdk::{
     BinaryOperator, LogicalExpression, LogicalExpressionKind, LogicalPlan, LogicalRelation,
@@ -33,21 +35,21 @@ pub enum TranslationError {
     Unsupported { reason: String },
 }
 
-/// Translates one validated remote `LogicalPlan` without building another AST.
+/// Translates one validated remote `LogicalPlan` in dialect `D` without
+/// building another AST.
 pub fn translate<D>(
     plan: &LogicalPlan,
     relation: &[String],
     columns: &[String],
-    dialect: D,
 ) -> Result<RenderedQuery, TranslationError>
 where
     D: SqlDialect,
 {
-    let translator = Translator {
+    let translator = Translator::<D> {
         plan,
         relation,
         columns,
-        dialect: &dialect,
+        _dialect: PhantomData,
     };
     let fragment = translator.render_plan()?;
     Ok(fragment.render())
@@ -64,7 +66,7 @@ where
     plan: &'a LogicalPlan,
     relation: &'a [String],
     columns: &'a [String],
-    dialect: &'a D,
+    _dialect: PhantomData<fn() -> D>,
 }
 
 impl<D> Translator<'_, D>
@@ -143,7 +145,7 @@ where
                 });
             }
             LogicalExpressionKind::Field { position } => self.render_column(*position),
-            LogicalExpressionKind::Literal(value) => Fragment::literal(self.dialect, value),
+            LogicalExpressionKind::Literal(value) => Fragment::literal::<D>(value),
         };
         Ok(fragment)
     }
@@ -192,7 +194,7 @@ where
         Fragment::concatenate_with(
             projection.iter().zip(aliases).map(|(position, alias)| {
                 let column = self.render_column(*position);
-                let alias = Fragment::identifier(self.dialect, alias.name());
+                let alias = Fragment::identifier::<D>(alias.name());
                 Fragment::compose([column, Fragment::fixed(AS), alias])
             }),
             ", ",
@@ -204,7 +206,7 @@ where
         let parts = self
             .relation
             .iter()
-            .map(|component| Fragment::identifier(self.dialect, component))
+            .map(|component| Fragment::identifier::<D>(component))
             .collect::<Vec<_>>();
         Fragment::concatenate_with(parts, DOT)
     }
@@ -215,6 +217,6 @@ where
             .columns
             .get(position)
             .expect("loaded metadata covers every validated base-schema field");
-        Fragment::identifier(self.dialect, column)
+        Fragment::identifier::<D>(column)
     }
 }

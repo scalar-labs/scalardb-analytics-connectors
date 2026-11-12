@@ -15,6 +15,7 @@ use adbc_driver_manager::{ManagedConnection, ManagedDriver};
 use adbc_ffi::FFI_AdbcDriverInitFunc;
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, Schema, SchemaRef};
+use connector_adbc::AdbcConnection;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -40,7 +41,8 @@ pub(crate) enum FixtureExecution {
 }
 
 impl Fixture {
-    pub(crate) fn install(execution: FixtureExecution) -> (Self, ManagedConnection) {
+    /// Installs the fixture and returns a connection to it for Connector `C`.
+    pub(crate) fn install<C>(execution: FixtureExecution) -> (Self, AdbcConnection<C>) {
         let fixture = Self {
             events: Arc::new(Mutex::new(Vec::new())),
             gate: Arc::new(ExecuteGate::default()),
@@ -58,7 +60,8 @@ impl Fixture {
             batches,
             execute,
         });
-        (fixture, managed_connection())
+        let connection = AdbcConnection::new(managed_connection());
+        (fixture, connection)
     }
 
     pub(crate) fn events(&self) -> Vec<Event> {

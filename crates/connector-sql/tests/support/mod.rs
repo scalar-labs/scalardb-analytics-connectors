@@ -4,18 +4,18 @@ use connector_sdk::LiteralValue;
 use connector_sql::SqlDialect;
 
 pub(crate) mod adbc;
-pub(crate) mod adbc_connector;
+pub(crate) mod connector;
 
 /// A diagnostic dialect that makes values received from `LogicalPlan` visible
 /// without claiming the spelling rules of any supported Data Source.
 pub(crate) struct TestDialect;
 
 impl SqlDialect for TestDialect {
-    fn quote_identifier(&self, identifier: &str) -> String {
+    fn quote_identifier(identifier: &str) -> String {
         format!("\"{}\"", identifier.replace('"', "\"\""))
     }
 
-    fn write_literal(&self, literal: &LiteralValue, sql: &mut String) {
+    fn write_literal(literal: &LiteralValue, sql: &mut String) {
         match literal {
             LiteralValue::Boolean(value) => write_marker(sql, "boolean", value),
             LiteralValue::Byte(value) => write_marker(sql, "byte", value),
@@ -56,7 +56,7 @@ impl SqlDialect for TestDialect {
             }
             LiteralValue::Logical { data_type, carrier } => {
                 write!(sql, "test_logical('{data_type:?}', ").unwrap();
-                self.write_literal(carrier, sql);
+                Self::write_literal(carrier, sql);
                 sql.push(')');
             }
         }

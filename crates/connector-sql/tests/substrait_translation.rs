@@ -1,16 +1,16 @@
 use std::{
     cell::RefCell,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     task::{Context, Poll, Waker},
 };
 
 use connector_sdk::{
-    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, LOGICAL_TYPE_URI,
-    LogicalPlan, LogicalRelation, PlannedPushdown, PlanningError, PushdownRequest, PushdownResult,
-    execute_planned,
+    BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, ConnectorPlanner, ErrorKind, Executor,
+    LOGICAL_TYPE_URI, LogicalPlan, LogicalRelation, PlannedPushdown, PlannedRead, PlanningError,
+    PushdownRequest, PushdownResult, RemoteExecution, execute_planned,
 };
-use connector_sql::{RenderedQuery, SqlExecutor, TranslationError, translate};
+use connector_sql::{RenderedQuery, SqlExecutor, SqlRead, TranslationError, translate};
 use futures_core::Stream;
 use substrait::proto::{
     Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
@@ -24,8 +24,11 @@ mod support;
 use support::{
     TestDialect,
     adbc::{Event, Fixture, FixtureExecution},
-    adbc_connector::FixtureAdbc,
+    connector::{self, sql_test_connector},
 };
+
+sql_test_connector!(AcceptsFilters, runs_remotely = true);
+sql_test_connector!(RejectsFilters, runs_remotely = false);
 
 const COMPARISON_URI_ANCHOR: u32 = 1;
 const BOOLEAN_URI_ANCHOR: u32 = 2;
@@ -67,11 +70,10 @@ impl ConnectorPlanner for TranslationPlanner {
     type Query = RenderedQuery;
 
     fn plan(&self, plan: &LogicalPlan) -> Result<PushdownResult<RenderedQuery>, PlanningError> {
-        self.result.replace(Some(translate(
+        self.result.replace(Some(translate::<TestDialect>(
             plan,
             &self.relation,
             &self.columns,
-            TestDialect,
         )));
         Ok(PushdownResult::Unsupported {
             reason: "test captured translation".to_owned(),
@@ -82,29 +84,114 @@ impl ConnectorPlanner for TranslationPlanner {
 struct ExecutableTranslationPlanner;
 
 impl ConnectorPlanner for ExecutableTranslationPlanner {
-    type Query = RenderedQuery;
+    type Query = SqlRead;
 
-    fn plan(
-        &self,
-        logical_plan: &LogicalPlan,
-    ) -> Result<PushdownResult<RenderedQuery>, PlanningError> {
-        let rendered_query = translate(
-            logical_plan,
-            &["physical".to_owned(), "users".to_owned()],
-            &[
-                "id_col".to_owned(),
-                "name_col".to_owned(),
-                "score_col".to_owned(),
-            ],
-            TestDialect,
-        )
-        .expect("the execution fixture plan should translate");
-        let pushdown =
-            PlannedPushdown::try_new(logical_plan, logical_plan.clone(), None, rendered_query)?;
+    fn plan(&self, logical_plan: &LogicalPlan) -> Result<PushdownResult<SqlRead>, PlanningError> {
+        let planner = TranslationPlanner::new();
+        let rendered = translate::<TestDialect>(logical_plan, &planner.relation, &planner.columns)
+            .expect("the execution fixture plan should translate");
+        let read = SqlRead { sql: rendered.sql };
+        let pushdown = PlannedPushdown::try_new(logical_plan, logical_plan.clone(), None, read)?;
         Ok(PushdownResult::Planned {
             pushdown: Box::new(pushdown),
         })
     }
+}
+
+/// The ADBC fixture holds one installation at a time, so the tests that
+/// install it take turns.
+fn fixture_turn() -> MutexGuard<'static, ()> {
+    static TURN: Mutex<()> = Mutex::new(());
+    TURN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Plans the requested plan on a session of a Connector using the shared SQL
+/// planner.
+fn plan_with<C: connector_sql::SqlConnector>() -> PlannedPushdown<PlannedRead<SqlRead>> {
+    plan_offered::<C>(requested_plan("equal:any1_any1", column(0)))
+}
+
+/// Plans `offered_plan` on a session of a Connector using the shared SQL
+/// planner.
+fn plan_offered<C: connector_sql::SqlConnector>(
+    offered_plan: Plan,
+) -> PlannedPushdown<PlannedRead<SqlRead>> {
+    let _turn = fixture_turn();
+    let (_fixture, connection) = Fixture::install(FixtureExecution::Batches(Vec::new()));
+    let session = connector::session::<C>(connection);
+    let PushdownResult::Planned { pushdown } =
+        C::plan(&session, PushdownRequest { offered_plan }).unwrap()
+    else {
+        panic!("the shared rules always produce a plan");
+    };
+    *pushdown
+}
+
+/// Renames the offered plan's output columns through its root names.
+fn renamed(mut plan: Plan) -> Plan {
+    let plan_rel::RelType::Root(root) = plan.relations[0].rel_type.as_mut().unwrap() else {
+        panic!("expected root");
+    };
+    root.names = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    plan
+}
+
+#[test]
+fn moving_all_work_remotely_keeps_the_offered_output_names() {
+    let output_names = |pushdown: &PlannedPushdown<PlannedRead<SqlRead>>| -> Vec<String> {
+        pushdown
+            .output_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().to_owned())
+            .collect()
+    };
+    // An accepted filter with no projection above it moves remotely.
+    let filtered = plan_offered::<AcceptsFilters>(renamed(filter_read_plan(scalar(
+        EQUAL,
+        vec![column(0), i64_literal(7)],
+    ))));
+    assert!(filtered.local_plan.is_none());
+    assert_eq!(output_names(&filtered), ["a", "b", "c"]);
+    assert_eq!(filtered.remote.output_schema, filtered.output_schema);
+
+    // A plain read leaves a local plan that only renames, which is dropped.
+    let read = plan_offered::<RejectsFilters>(renamed(read_plan()));
+    assert!(read.local_plan.is_none());
+    assert_eq!(output_names(&read), ["a", "b", "c"]);
+    assert_eq!(read.remote.output_schema, read.output_schema);
+}
+
+#[test]
+fn an_accepted_filter_and_its_projection_move_into_the_remote_sql() {
+    let pushdown = plan_with::<AcceptsFilters>();
+    assert!(pushdown.local_plan.is_none());
+    assert!(pushdown.remote.query.query.sql.contains(" WHERE "));
+    assert_eq!(pushdown.remote.output_schema, pushdown.output_schema);
+    // The schema check covers the projected and filtered columns only.
+    assert_eq!(base_names(&pushdown), ["id", "score"]);
+}
+
+#[test]
+fn a_rejected_filter_keeps_the_filter_and_projection_local() {
+    let pushdown = plan_with::<RejectsFilters>();
+    assert!(pushdown.local_plan.is_some());
+    assert!(!pushdown.remote.query.query.sql.contains(" WHERE "));
+    assert_eq!(pushdown.remote.output_schema, pushdown.remote_base_schema);
+    // The remote SQL reads every column, so the schema check covers them all.
+    assert_eq!(base_names(&pushdown), ["id", "name", "score"]);
+}
+
+/// The columns a planned read's schema check covers.
+fn base_names(pushdown: &PlannedPushdown<PlannedRead<SqlRead>>) -> Vec<String> {
+    pushdown
+        .remote
+        .query
+        .base_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().to_owned())
+        .collect()
 }
 
 #[test]
@@ -119,6 +206,7 @@ fn translates_read() {
 
 #[test]
 fn translated_query_round_trips_through_adbc_execution() {
+    let _turn = fixture_turn();
     let PushdownResult::Planned { pushdown } = (PushdownRequest {
         offered_plan: read_plan(),
     })
@@ -130,11 +218,7 @@ fn translated_query_round_trips_through_adbc_execution() {
     let batch =
         arrow_array::RecordBatch::new_empty(Arc::new(pushdown.remote.output_schema.to_arrow()));
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch.clone()]));
-    let executor = sql_executor(connection);
-    let mut stream = execute_planned(&pushdown.remote.output_schema, None, || {
-        executor.execute(&pushdown.remote.query)
-    })
-    .unwrap();
+    let mut stream = execute(connection, &pushdown.remote);
     let mut context = Context::from_waker(Waker::noop());
 
     assert!(fixture.events().is_empty());
@@ -154,11 +238,7 @@ fn translated_query_round_trips_through_adbc_execution() {
 
     drop(stream);
     let (_fixture, connection) = Fixture::install(FixtureExecution::Fail);
-    let executor = sql_executor(connection);
-    let mut stream = execute_planned(&pushdown.remote.output_schema, None, || {
-        executor.execute(&pushdown.remote.query)
-    })
-    .unwrap();
+    let mut stream = execute(connection, &pushdown.remote);
     let Poll::Ready(Some(Err(error))) = Stream::poll_next(Pin::new(&mut stream), &mut context)
     else {
         panic!("the translated query should preserve its ADBC execution error");
@@ -167,8 +247,16 @@ fn translated_query_round_trips_through_adbc_execution() {
     assert_eq!(error.data_source_message(), Some("fixture execute failure"));
 }
 
-fn sql_executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor<FixtureAdbc> {
-    SqlExecutor::new(connector_adbc::AdbcConnection::new(connection))
+/// Starts the statement on a fixture session, as a planned read's query step.
+fn execute(
+    connection: connector_adbc::AdbcConnection<RejectsFilters>,
+    remote: &RemoteExecution<SqlRead>,
+) -> connector_sdk::ExecutionStream {
+    let session = connector::session(connection);
+    execute_planned(&remote.output_schema, None, || {
+        SqlExecutor::<RejectsFilters>::run(&session, &remote.query)
+    })
+    .unwrap()
 }
 
 #[test]

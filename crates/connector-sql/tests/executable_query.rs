@@ -8,21 +8,19 @@ use analytics_types::{AnalyticsField, AnalyticsSchema, AnalyticsType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use connector_sdk::{
-    ConnectorError, ErrorKind, ExecutionCancelHandle, ExecutionStream, RemoteExecution,
+    ConnectorError, ErrorKind, ExecutionCancelHandle, ExecutionStream, Executor, RemoteExecution,
     execute_planned,
 };
-use connector_sql::{RenderedQuery, SqlExecutor};
+use connector_sql::{SqlExecutor, SqlRead};
 use futures_core::Stream;
 
 #[path = "support/adbc.rs"]
 mod adbc;
-#[path = "support/adbc_connector.rs"]
-mod adbc_connector;
-
-use adbc_connector::FixtureAdbc;
-use connector_adbc::AdbcConnection;
+#[path = "support/connector.rs"]
+mod connector;
 
 use adbc::{Event, Fixture, FixtureExecution};
+connector::sql_test_connector!(FixtureSql, runs_remotely = false);
 
 #[test]
 fn public_sql_executable_query_path() {
@@ -32,7 +30,7 @@ fn public_sql_executable_query_path() {
     expiry_stops_a_query_blocked_at_the_source();
     preserves_adbc_execution_diagnostics();
     transports_the_query_to_another_connection();
-    rejects_transported_sql_that_is_not_utf8();
+    rejects_transported_bytes_that_are_not_a_statement();
 }
 
 fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
@@ -44,11 +42,7 @@ fn round_trips_sql_and_delegates_the_lazy_batch_stream() {
         batch(&[10, 20]),
         batch(&[30]),
     ]));
-    let executor = executor(connection);
-    let mut stream = execute_planned(&remote.output_schema, None, || {
-        executor.execute(&remote.query)
-    })
-    .unwrap();
+    let mut stream = execute(connection, &remote);
 
     assert!(fixture.events().is_empty());
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[10, 20])))));
@@ -71,11 +65,7 @@ fn preserves_execution_scoped_cancellation() {
     let remote = remote_query("select value");
     let (cancelled_fixture, cancelled_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
-    let cancelled_executor = executor(cancelled_connection);
-    let mut cancelled = execute_planned(&remote.output_schema, None, || {
-        cancelled_executor.execute(&remote.query)
-    })
-    .unwrap();
+    let mut cancelled = execute(cancelled_connection, &remote);
     cancelled.cancel_handle().cancel().unwrap();
 
     let Poll::Ready(Some(Err(error))) = pull(&mut cancelled) else {
@@ -86,11 +76,7 @@ fn preserves_execution_scoped_cancellation() {
 
     let (next_fixture, next_connection) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[2])]));
-    let next_executor = executor(next_connection);
-    let mut next = execute_planned(&remote.output_schema, None, || {
-        next_executor.execute(&remote.query)
-    })
-    .unwrap();
+    let mut next = execute(next_connection, &remote);
     assert_eq!(pull(&mut next), Poll::Ready(Some(Ok(batch(&[2])))));
     assert_eq!(
         next_fixture.events(),
@@ -120,11 +106,7 @@ fn stop_blocked_query(
 ) -> ConnectorError {
     let remote = remote_query("select slow");
     let (fixture, connection) = Fixture::install(FixtureExecution::BlockUntilCancelled);
-    let executor = executor(connection);
-    let mut stream = execute_planned(&remote.output_schema, None, || {
-        executor.execute(&remote.query)
-    })
-    .unwrap();
+    let mut stream = execute(connection, &remote);
     let handle = stream.cancel_handle();
 
     let puller = std::thread::spawn(move || pull(&mut stream));
@@ -154,12 +136,8 @@ fn transports_the_query_to_another_connection() {
     let bytes = remote_query(sql).to_bytes();
 
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch(&[7])]));
-    let restored = RemoteExecution::<RenderedQuery>::from_bytes(&bytes).unwrap();
-    let executor = executor(connection);
-    let mut stream = execute_planned(&restored.output_schema, None, || {
-        executor.execute(&restored.query)
-    })
-    .unwrap();
+    let restored = RemoteExecution::<SqlRead>::from_bytes(&bytes).unwrap();
+    let mut stream = execute(connection, &restored);
 
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[7])))));
     assert_eq!(
@@ -173,11 +151,11 @@ fn transports_the_query_to_another_connection() {
     );
 }
 
-fn rejects_transported_sql_that_is_not_utf8() {
+fn rejects_transported_bytes_that_are_not_a_statement() {
     let mut bytes = remote_query("select value").to_bytes();
     bytes.push(0xff);
 
-    let error = RemoteExecution::<RenderedQuery>::from_bytes(&bytes)
+    let error = RemoteExecution::<SqlRead>::from_bytes(&bytes)
         .err()
         .unwrap();
     assert_eq!(error.kind(), ErrorKind::InvalidRequest);
@@ -186,11 +164,7 @@ fn rejects_transported_sql_that_is_not_utf8() {
 fn preserves_adbc_execution_diagnostics() {
     let remote = remote_query("select broken");
     let (fixture, connection) = Fixture::install(FixtureExecution::Fail);
-    let executor = executor(connection);
-    let mut stream = execute_planned(&remote.output_schema, None, || {
-        executor.execute(&remote.query)
-    })
-    .unwrap();
+    let mut stream = execute(connection, &remote);
 
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("the first pull should return the ADBC execution error");
@@ -214,21 +188,33 @@ fn pull(
     Stream::poll_next(Pin::new(stream), &mut context)
 }
 
-fn remote_query(sql: &str) -> RemoteExecution<RenderedQuery> {
+fn value_schema() -> AnalyticsSchema {
+    AnalyticsSchema::new(vec![AnalyticsField::new(
+        "value",
+        AnalyticsType::BigInt,
+        false,
+    )])
+}
+
+fn remote_query(sql: &str) -> RemoteExecution<SqlRead> {
     RemoteExecution {
-        query: RenderedQuery {
+        query: SqlRead {
             sql: sql.to_owned(),
         },
-        output_schema: AnalyticsSchema::new(vec![AnalyticsField::new(
-            "value",
-            AnalyticsType::BigInt,
-            false,
-        )]),
+        output_schema: value_schema(),
     }
 }
 
-fn executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor<FixtureAdbc> {
-    SqlExecutor::new(AdbcConnection::new(connection))
+/// Starts the statement on a fixture session, as a planned read's query step.
+fn execute(
+    connection: connector_adbc::AdbcConnection<FixtureSql>,
+    remote: &RemoteExecution<SqlRead>,
+) -> ExecutionStream {
+    let session = connector::session(connection);
+    execute_planned(&remote.output_schema, None, || {
+        SqlExecutor::<FixtureSql>::run(&session, &remote.query)
+    })
+    .unwrap()
 }
 
 fn batch(values: &[i64]) -> RecordBatch {

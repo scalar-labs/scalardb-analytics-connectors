@@ -1,29 +1,38 @@
-//! Connector-defined SQL rendering primitives.
+//! Processing shared by SQL-speaking Connectors.
 //!
-//! This crate composes dialect-rendered identifiers and typed literals with
-//! Connector-trusted SQL syntax into one non-parameterized statement. It does
-//! not define a SQL grammar.
+//! A Connector whose Data Source speaks SQL through an ADBC driver implements
+//! [`SqlConnector`] and names this crate's components: [`SqlCatalog`] runs its
+//! catalog reads (see [`catalog`]), [`SqlPlanner`] moves work into the remote SQL by the
+//! Connector's semantic decision and renders one non-parameterized statement
+//! from dialect-rendered identifiers and typed literals, and [`SqlExecutor`]
+//! sends that statement. This crate does not define a SQL grammar.
 
 #![forbid(unsafe_code)]
 
+pub mod catalog;
+mod connector;
+mod executor;
+pub mod literal;
+mod planner;
+mod read;
+mod step;
 mod translation;
 
-use std::sync::Arc;
+use connector_sdk::LiteralValue;
 
-use connector_adbc::{AdbcConnection, AdbcConnector};
-use connector_sdk::{
-    ConnectorError, ErrorKind, ExecutionOutput, LiteralValue, PortableQuery, RecordBatchStream,
-};
-
+pub use connector::{SqlCatalog, SqlConnector};
+pub use executor::SqlExecutor;
+pub use planner::{PlanningMetadata, SqlPlanner};
+pub use read::SqlRead;
 pub use translation::{TranslationError, translate};
 
 /// Connector-owned representation rules needed while rendering SQL.
 pub trait SqlDialect {
     /// Quotes one physical identifier according to the Data Source's rules.
-    fn quote_identifier(&self, identifier: &str) -> String;
+    fn quote_identifier(identifier: &str) -> String;
 
     /// Writes one validated typed literal according to the Data Source's rules.
-    fn write_literal(&self, literal: &LiteralValue, sql: &mut String);
+    fn write_literal(literal: &LiteralValue, sql: &mut String);
 }
 
 /// Connector-trusted syntax and dialect-rendered values composed as SQL text.
@@ -33,14 +42,14 @@ pub struct Fragment {
 
 impl Fragment {
     /// Renders a physical identifier only through the SQL dialect.
-    pub fn identifier<D: SqlDialect>(dialect: &D, identifier: &str) -> Self {
-        Self::text(dialect.quote_identifier(identifier))
+    pub fn identifier<D: SqlDialect>(identifier: &str) -> Self {
+        Self::text(D::quote_identifier(identifier))
     }
 
     /// Renders one typed scalar only through the SQL dialect.
-    pub fn literal<D: SqlDialect>(dialect: &D, value: &LiteralValue) -> Self {
+    pub fn literal<D: SqlDialect>(value: &LiteralValue) -> Self {
         let mut sql = String::new();
-        dialect.write_literal(value, &mut sql);
+        D::write_literal(value, &mut sql);
         Self::text(sql)
     }
 
@@ -129,7 +138,7 @@ impl Token {
     }
 }
 
-/// Immutable non-parameterized SQL consumed by a query execution boundary.
+/// Immutable non-parameterized SQL rendered from one remote plan.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RenderedQuery {
     pub sql: String,
@@ -141,46 +150,5 @@ impl std::fmt::Debug for RenderedQuery {
             .debug_struct("RenderedQuery")
             .field("sql_length", &self.sql.len())
             .finish()
-    }
-}
-
-/// Executes SQL-family planned queries through one ADBC connection of
-/// Connector `C`.
-pub struct SqlExecutor<C> {
-    connection: AdbcConnection<C>,
-}
-
-impl<C> SqlExecutor<C> {
-    /// Binds the shared SQL execution path to a session connection.
-    pub fn new(connection: AdbcConnection<C>) -> Self {
-        Self { connection }
-    }
-}
-
-/// Carries the rendered SQL text as UTF-8 bytes.
-impl PortableQuery for RenderedQuery {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.sql.as_bytes().to_vec()
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectorError> {
-        let sql = String::from_utf8(bytes.to_vec()).map_err(|_| {
-            ConnectorError::new(
-                ErrorKind::InvalidRequest,
-                false,
-                "the transported SQL query is not valid UTF-8",
-            )
-        })?;
-        Ok(Self { sql })
-    }
-}
-
-impl<C: AdbcConnector> SqlExecutor<C> {
-    /// Starts the planned statement and returns its unchecked stream.
-    pub fn execute(&self, query: &RenderedQuery) -> Result<ExecutionOutput, ConnectorError> {
-        let query = connector_adbc::query(&self.connection, query.sql.clone());
-        let cancel = Arc::new(query.cancel_handle());
-        let stream: RecordBatchStream = Box::pin(query);
-        Ok(ExecutionOutput::new(stream, cancel))
     }
 }

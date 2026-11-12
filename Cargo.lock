@@ -327,6 +327,8 @@ dependencies = [
  "connector-adbc",
  "connector-sdk",
  "futures-core",
+ "serde",
+ "serde_json",
  "substrait",
  "thiserror",
 ]
