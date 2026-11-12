@@ -290,7 +290,17 @@ dependencies = [
 name = "connector-postgresql"
 version = "0.1.0"
 dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "analytics-types",
+ "arrow-array",
+ "connector-adbc",
+ "connector-sdk",
  "connector-sql",
+ "futures-core",
+ "serde",
+ "serde_json",
+ "substrait",
 ]
 
 [[package]]

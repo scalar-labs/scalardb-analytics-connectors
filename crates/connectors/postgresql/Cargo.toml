@@ -8,7 +8,19 @@ repository.workspace = true
 description = "PostgreSQL connector for ScalarDB Analytics"
 
 [dependencies]
+adbc_core.workspace = true
+adbc_driver_manager.workspace = true
+analytics-types.workspace = true
+arrow-array.workspace = true
+connector-adbc.workspace = true
+connector-sdk.workspace = true
 connector-sql.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+futures-core.workspace = true
+serde_json.workspace = true
+substrait.workspace = true
 
 [lib]
 path = "src/lib.rs"

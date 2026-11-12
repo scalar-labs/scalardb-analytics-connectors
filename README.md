@@ -4,7 +4,8 @@ This repository contains the language-neutral connector contract, the Rust
 connector SDK, Connectors, and the C API library that assembles
 them. The shared Analytics type model and its Arrow schema conversion are
 implemented. The shared connector planning and execution boundaries are also
-implemented; Data Source-specific Connector behavior remains out of scope.
+implemented, and the PostgreSQL connector is implemented on them
+([crates/connectors/postgresql](crates/connectors/postgresql/README.md)).
 
 ## Workspace layout
 
@@ -47,7 +48,8 @@ direnv allow
 
 The workspace uses Rust 2024 and declares Rust 1.85 as its minimum supported
 version. The `msrv` shell supplies exactly Rust 1.85.0. Run the same checks as
-CI through the flake:
+CI through the flake. The PostgreSQL connector's tests also need Docker, which
+they use to start a PostgreSQL server:
 
 ```sh
 nix develop --command cargo fmt --all -- --check

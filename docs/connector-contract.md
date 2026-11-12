@@ -628,6 +628,12 @@ caller must keep comparing across such an update.
   libraries do not change the retrieved schema. The connector fixes the
   settings that change how types and values are produced, and raises its
   version when it changes them.
+- Where the source spells a type name relative to a session setting, such as
+  PostgreSQL `format_type`, which omits the schema of a type on the
+  `search_path`, the connector may accept that setting as a connection option.
+  The option changes only how Data Source types are spelled, never Analytics
+  types or values. When the option is omitted, the source's own setting
+  applies, so changing that setting at the source changes the spelling.
 - Excluded namespaces, such as PostgreSQL `pg_toast` and `pg_temp_*`, are
   listed by the connector as its own rule.
 
