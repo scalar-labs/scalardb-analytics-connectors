@@ -19,7 +19,7 @@ pub(crate) fn built_in_connectors() -> &'static [BuiltInConnector] {
     CONNECTORS.get_or_init(|| {
         vec![
             #[cfg(feature = "test-connector")]
-            BuiltInConnector::of::<connector_sdk::test_connector::TestConnectorLibrary>(),
+            BuiltInConnector::of::<connector_sdk::test_connector::TestConnector>(),
         ]
     })
 }

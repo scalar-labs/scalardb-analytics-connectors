@@ -1,9 +1,9 @@
-//! Object-safe views of the SDK lifecycle traits.
+//! Object-safe views of a Connector's units.
 //!
-//! The SDK traits carry associated types that differ per connector. The
-//! library holds connectors of different types in one registry and dispatches
-//! by Connector name at run time, so each trait is implemented once here for
-//! every SDK implementation and used only through `dyn`.
+//! A [`Connector`]'s units carry types that differ per connector. The library
+//! holds connectors of different types in one registry and dispatches by
+//! Connector name at run time, so each unit is implemented once here for every
+//! Connector and used only through `dyn`.
 
 use std::{
     any::Any,
@@ -12,10 +12,10 @@ use std::{
 };
 
 use crate::{
-    CatalogReader, Component, ConnectionOptions, ConnectorError, ConnectorLibrary, DataSource,
-    DataSourceSession, ErrorKind, ExecutionStream, LibrarySettings, PlanningError, PortableQuery,
-    PushdownRequest, PushdownResult, RemoteExecution, RequestError, SourceStream, execute_planned,
-    start_source_read,
+    Access, Catalog, Component, ConnectionOptions, Connector, ConnectorError, DataSource,
+    ErrorKind, ExecutionStream, LibrarySettings, PlannedRead, PlanningError, PortableQuery,
+    PushdownRequest, PushdownResult, RemoteExecution, RequestError, Session, SourceStream,
+    connector::ConnectorState, execute_planned, start_source_read,
 };
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -38,12 +38,7 @@ pub(crate) trait DynConnectorLibrary: Send + Sync {
     ) -> Result<Box<dyn DynDataSource>, ConnectorError>;
 }
 
-impl<L> DynConnectorLibrary for L
-where
-    L: ConnectorLibrary,
-    <<L::DataSource as DataSource>::Session as DataSourceSession>::Query:
-        PortableQuery + Send + Sync + 'static,
-{
+impl<C: Connector> DynConnectorLibrary for ConnectorState<C> {
     fn open_data_source(
         &self,
         connector: &str,
@@ -51,21 +46,16 @@ where
         connection_timeout: Option<Duration>,
     ) -> Result<Box<dyn DynDataSource>, ConnectorError> {
         let data_source =
-            ConnectorLibrary::open_data_source(self, connector, options, connection_timeout)?;
+            ConnectorState::open_data_source(self, connector, options, connection_timeout)?;
         Ok(Box::new(data_source))
     }
 }
 
 /// Creates one connector's process-level state from the library settings.
-pub(crate) fn create_library<L>(
+pub(crate) fn create_library<C: Connector>(
     settings: &LibrarySettings,
-) -> Result<Box<dyn DynConnectorLibrary>, ConnectorError>
-where
-    L: ConnectorLibrary,
-    <<L::DataSource as DataSource>::Session as DataSourceSession>::Query:
-        PortableQuery + Send + Sync + 'static,
-{
-    Ok(Box::new(L::new(settings)?))
+) -> Result<Box<dyn DynConnectorLibrary>, ConnectorError> {
+    Ok(Box::new(ConnectorState::<C>::new(settings)?))
 }
 
 /// A connector's Data Source behind one type.
@@ -73,11 +63,7 @@ pub(crate) trait DynDataSource: Send + Sync {
     fn open_session(&self) -> Result<Box<dyn DynSession>, ConnectorError>;
 }
 
-impl<D> DynDataSource for D
-where
-    D: DataSource,
-    <D::Session as DataSourceSession>::Query: PortableQuery + Send + Sync + 'static,
-{
+impl<C: Connector> DynDataSource for DataSource<C> {
     fn open_session(&self) -> Result<Box<dyn DynSession>, ConnectorError> {
         Ok(Box::new(DataSource::open_session(self)?))
     }
@@ -133,11 +119,7 @@ pub(crate) trait DynSession: Send + Sync {
     fn adbc_driver(&self) -> Option<Component>;
 }
 
-impl<S> DynSession for S
-where
-    S: DataSourceSession,
-    S::Query: PortableQuery + Send + Sync + 'static,
-{
+impl<C: Connector> DynSession for Session<C> {
     fn plan_pushdown(&self, offered_plan: &[u8]) -> Result<PlanningOutcome, ConnectorError> {
         let offered_plan = Plan::decode(offered_plan).map_err(|_| {
             ConnectorError::new(
@@ -146,9 +128,7 @@ where
                 "the offered plan is not a Substrait plan",
             )
         })?;
-        let result = PushdownRequest { offered_plan }
-            .plan(self.planner())
-            .map_err(planning_error)?;
+        let result = C::plan(self, PushdownRequest { offered_plan }).map_err(planning_error)?;
         Ok(match result {
             PushdownResult::Planned { pushdown } => PlanningOutcome::Planned {
                 remote_plan: pushdown.remote_plan.encode_to_vec(),
@@ -163,12 +143,12 @@ where
         &self,
         bytes: &[u8],
     ) -> Result<SharedRemoteExecution, ConnectorError> {
-        let remote = RemoteExecution::<S::Query>::from_bytes(bytes)?;
+        let remote = RemoteExecution::<PlannedRead<C::Query>>::from_bytes(bytes)?;
         Ok(SharedRemoteExecution(Arc::new(remote)))
     }
 
     fn check_remote_execution(&self, remote: &SharedRemoteExecution) -> Result<(), ConnectorError> {
-        typed_remote_execution::<S::Query>(remote).map(|_| ())
+        typed_remote_execution::<PlannedRead<C::Query>>(remote).map(|_| ())
     }
 
     fn execute(
@@ -176,11 +156,8 @@ where
         remote: &SharedRemoteExecution,
         deadline: Option<Instant>,
     ) -> Result<ExecutionStream, ConnectorError> {
-        execute_planned(
-            self.executor(),
-            typed_remote_execution::<S::Query>(remote)?,
-            deadline,
-        )
+        let remote = typed_remote_execution::<PlannedRead<C::Query>>(remote)?;
+        execute_planned(&remote.output_schema, deadline, || C::read(self, remote))
     }
 
     fn start_metadata(
@@ -189,25 +166,26 @@ where
         retrieval: Retrieval,
         deadline: Option<Instant>,
     ) -> Result<StartedStream, ConnectorError> {
-        let catalog = self.catalog();
         Ok(match request {
             MetadataRequest::NamespaceList { namespaces } => rows(
-                start_source_read(deadline, || catalog.list_namespaces(namespaces))?,
+                start_source_read(deadline, || C::Catalog::list_namespaces(self, namespaces))?,
                 namespace_row,
             ),
             MetadataRequest::TableList { namespaces, tables } => rows(
-                start_source_read(deadline, || catalog.list_tables(namespaces, tables))?,
+                start_source_read(deadline, || {
+                    C::Catalog::list_tables(self, namespaces, tables)
+                })?,
                 table_entry_row,
             ),
             MetadataRequest::TableMetadata { tables } => rows(
-                start_source_read(deadline, || catalog.read_tables(tables))?,
+                start_source_read(deadline, || C::Catalog::read_tables(self, tables))?,
                 move |record| table_row(record, &retrieval),
             ),
         })
     }
 
     fn adbc_driver(&self) -> Option<Component> {
-        DataSourceSession::adbc_driver(self)
+        C::Access::component(self.access())
     }
 }
 

@@ -130,7 +130,10 @@ fn translated_query_round_trips_through_adbc_execution() {
         arrow_array::RecordBatch::new_empty(Arc::new(pushdown.remote.output_schema.to_arrow()));
     let (fixture, connection) = Fixture::install(FixtureExecution::Batches(vec![batch.clone()]));
     let executor = sql_executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown.remote, None).unwrap();
+    let mut stream = execute_planned(&pushdown.remote.output_schema, None, || {
+        executor.execute(&pushdown.remote.query)
+    })
+    .unwrap();
     let mut context = Context::from_waker(Waker::noop());
 
     assert!(fixture.events().is_empty());
@@ -151,7 +154,10 @@ fn translated_query_round_trips_through_adbc_execution() {
     drop(stream);
     let (_fixture, connection) = Fixture::install(FixtureExecution::Fail);
     let executor = sql_executor(connection);
-    let mut stream = execute_planned(&executor, &pushdown.remote, None).unwrap();
+    let mut stream = execute_planned(&pushdown.remote.output_schema, None, || {
+        executor.execute(&pushdown.remote.query)
+    })
+    .unwrap();
     let Poll::Ready(Some(Err(error))) = Stream::poll_next(Pin::new(&mut stream), &mut context)
     else {
         panic!("the translated query should preserve its ADBC execution error");

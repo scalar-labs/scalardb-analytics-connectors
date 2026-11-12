@@ -11,10 +11,10 @@ use std::{
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    CatalogReader, Column, ColumnAttribute, ColumnChange, ColumnType, ConnectorError, Constraint,
-    ConstraintKind, Difference, ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter,
-    NamespacePath, Reported, SourceStream, SourceTableMetadata, TableEntry, TableKind,
-    TableMetadata, TableRecord, TableReference, UniqueKind, UnsupportedReason, start_source_read,
+    Column, ColumnAttribute, ColumnChange, ColumnType, ConnectorError, Constraint, ConstraintKind,
+    Difference, ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter, NamespacePath,
+    Reported, SourceStream, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
+    TableReference, UniqueKind, UnsupportedReason, start_source_read,
 };
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
@@ -381,9 +381,8 @@ impl FakeReader {
     }
 }
 
-impl CatalogReader for FakeReader {
-    type Table = FakeTable;
-
+/// The three catalog reads, shaped as a Connector's catalog returns them.
+impl FakeReader {
     fn list_namespaces(
         &self,
         _filter: &NameFilter,

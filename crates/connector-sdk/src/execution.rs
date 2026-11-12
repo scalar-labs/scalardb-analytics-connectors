@@ -3,14 +3,16 @@
 use std::{
     pin::Pin,
     sync::{Arc, OnceLock},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Instant,
 };
 
 use arrow_array::RecordBatch;
 use futures_core::Stream;
 
-use crate::{ConnectorError, ErrorKind, PortableQuery, RemoteExecution};
+use analytics_types::AnalyticsSchema;
+
+use crate::{ConnectorError, ErrorKind};
 
 /// Pull-based stream of items read from the Data Source by a connector.
 pub type ConnectorStream<T> =
@@ -43,27 +45,41 @@ impl<T> ExecutionOutput<T> {
     pub fn new(stream: ConnectorStream<T>, cancel: Arc<dyn ExecutionCancel>) -> Self {
         Self { stream, cancel }
     }
-}
 
-/// Executes queries that have already passed connector planning.
-pub trait ConnectorExecutor: Send + Sync {
-    /// Connector-owned instructions shared with this Connector's planner.
-    ///
-    /// The query may have been planned in another process and restored with
-    /// [`PortableQuery::from_bytes`].
-    type Query: PortableQuery;
+    /// Separates the stream from its cancel, for a Connector that composes
+    /// one source read into a larger one.
+    pub fn into_parts(self) -> (ConnectorStream<T>, Arc<dyn ExecutionCancel>) {
+        (self.stream, self.cancel)
+    }
 
-    /// Starts the already planned remote query and returns its unchecked stream.
+    /// Reads every item on the calling thread, for a Connector's own reads
+    /// that no caller can cancel, such as planning facts.
     ///
-    /// The SDK wraps the returned stream to enforce lifecycle and schema
-    /// checks before batches are exposed to the caller, and stops the
-    /// execution through the returned [`ExecutionCancel`].
-    fn execute(&self, query: &Self::Query) -> Result<ExecutionOutput, ConnectorError>;
+    /// Data Source access is synchronous, so every pull completes before it
+    /// returns. The first error ends the read.
+    pub fn read_to_end(self) -> Result<Vec<T>, ConnectorError> {
+        let mut stream = self.stream;
+        let mut context = Context::from_waker(Waker::noop());
+        let mut items = Vec::new();
+        loop {
+            match stream.as_mut().poll_next(&mut context) {
+                Poll::Ready(Some(item)) => items.push(item?),
+                Poll::Ready(None) => return Ok(items),
+                Poll::Pending => {
+                    return Err(ConnectorError::new(
+                        ErrorKind::Internal,
+                        false,
+                        "a synchronous source read returned pending",
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Starts one source read and installs the shared cancellation and deadline boundary.
 ///
-/// `start` calls the connector, for example one of the `CatalogReader`
+/// `start` calls the connector, for example one of the [`crate::Catalog`]
 /// functions. It is not called when the deadline has already passed.
 /// A deadline that passes while a pull is blocked at the source takes effect
 /// only when the caller's timeout watcher calls [`ExecutionCancelHandle::expire`].
@@ -86,25 +102,22 @@ pub fn start_source_read<T>(
     })
 }
 
-/// Starts execution and installs the shared lifecycle and schema boundary.
+/// Starts a planned read and installs the shared lifecycle and schema boundary.
 ///
-/// `remote` is either [`PlannedPushdown::remote`] in the planning process or a
-/// value restored with [`RemoteExecution::from_bytes`] in another process.
-/// Cancellation and the deadline behave as in [`start_source_read`].
-///
-/// [`PlannedPushdown::remote`]: crate::PlannedPushdown::remote
-pub fn execute_planned<E>(
-    executor: &E,
-    remote: &RemoteExecution<E::Query>,
+/// `start` starts the read, such as [`crate::Connector::read`] on a remote
+/// execution from planning in this process or restored with
+/// [`crate::RemoteExecution::from_bytes`] in another. Every batch is checked
+/// against `output_schema`. Cancellation and the deadline behave as in
+/// [`start_source_read`].
+pub fn execute_planned(
+    output_schema: &AnalyticsSchema,
     deadline: Option<Instant>,
-) -> Result<ExecutionStream, ConnectorError>
-where
-    E: ConnectorExecutor,
-{
-    let inner = start_source_read(deadline, || executor.execute(&remote.query))?;
+    start: impl FnOnce() -> Result<ExecutionOutput, ConnectorError>,
+) -> Result<ExecutionStream, ConnectorError> {
+    let inner = start_source_read(deadline, start)?;
     Ok(ExecutionStream {
         inner,
-        expected_schema: remote.output_schema.to_arrow(),
+        expected_schema: output_schema.to_arrow(),
         terminated: false,
     })
 }
@@ -286,5 +299,43 @@ impl Stream for ExecutionStream {
             },
             polled => polled,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoCancel;
+
+    impl ExecutionCancel for NoCancel {
+        fn cancel(&self) -> Result<(), ConnectorError> {
+            Ok(())
+        }
+    }
+
+    struct Items(Vec<Result<u32, ConnectorError>>);
+
+    impl Stream for Items {
+        type Item = Result<u32, ConnectorError>;
+
+        fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let items = &mut self.get_mut().0;
+            Poll::Ready((!items.is_empty()).then(|| items.remove(0)))
+        }
+    }
+
+    fn output(items: Vec<Result<u32, ConnectorError>>) -> ExecutionOutput<u32> {
+        ExecutionOutput::new(Box::pin(Items(items)), Arc::new(NoCancel))
+    }
+
+    #[test]
+    fn reading_to_the_end_collects_items_or_stops_at_the_first_error() {
+        assert_eq!(output(vec![Ok(1), Ok(2)]).read_to_end(), Ok(vec![1, 2]));
+        let failure = ConnectorError::new(ErrorKind::DataSource, false, "failed");
+        assert_eq!(
+            output(vec![Ok(1), Err(failure.clone()), Ok(3)]).read_to_end(),
+            Err(failure)
+        );
     }
 }

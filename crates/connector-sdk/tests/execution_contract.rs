@@ -2,8 +2,8 @@ mod support;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use connector_sdk::{
-    ConnectorError, ConnectorExecutor, ErrorKind, ExecutionCancel, ExecutionOutput, PortableQuery,
-    RecordBatchStream, RemoteExecution, execute_planned,
+    ConnectorError, ErrorKind, ExecutionCancel, ExecutionOutput, PortableQuery, RecordBatchStream,
+    RemoteExecution, execute_planned,
 };
 use futures_core::Stream;
 use std::{
@@ -21,7 +21,10 @@ use support::{planner::complete_pushdown, substrait_plan::requested_plan};
 fn execution_enforces_the_planned_schema() {
     let remote = remote_execution();
     let executor = BatchExecutor::new(valid_batch(&remote));
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
     assert!(matches!(
         pull(&mut stream),
         Poll::Ready(Some(Ok(batch))) if batch.num_rows() == 1
@@ -38,7 +41,10 @@ fn execution_rejects_a_batch_with_a_different_schema() {
     )])
     .unwrap();
     let executor = BatchExecutor::new(wrong_batch);
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
     assert!(matches!(
         pull(&mut stream),
         Poll::Ready(Some(Err(error))) if error.kind() == ErrorKind::Internal && !error.retryable()
@@ -49,7 +55,10 @@ fn execution_rejects_a_batch_with_a_different_schema() {
 fn cancelling_stops_the_connector_execution_and_ends_the_stream() {
     let remote = remote_execution();
     let executor = BatchExecutor::new(valid_batch(&remote));
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
 
     stream.cancel_handle().cancel().unwrap();
 
@@ -65,7 +74,10 @@ fn cancelling_stops_the_connector_execution_and_ends_the_stream() {
 fn expiry_reports_timeout_and_the_first_stop_reason_wins() {
     let remote = remote_execution();
     let executor = BatchExecutor::new(valid_batch(&remote));
-    let mut stream = execute_planned(&executor, &remote, None).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, None, || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
     let handle = stream.cancel_handle();
 
     handle.expire().unwrap();
@@ -83,13 +95,18 @@ fn a_passed_deadline_is_a_timeout() {
     let remote = remote_execution();
     let executor = BatchExecutor::new(valid_batch(&remote));
 
-    let error = execute_planned(&executor, &remote, Some(Instant::now()))
-        .err()
-        .unwrap();
+    let error = execute_planned(&remote.output_schema, Some(Instant::now()), || {
+        executor.execute(&remote.query)
+    })
+    .err()
+    .unwrap();
     assert_eq!(error.kind(), ErrorKind::Timeout);
 
     let deadline = Instant::now() + Duration::from_millis(20);
-    let mut stream = execute_planned(&executor, &remote, Some(deadline)).unwrap();
+    let mut stream = execute_planned(&remote.output_schema, Some(deadline), || {
+        executor.execute(&remote.query)
+    })
+    .unwrap();
     std::thread::sleep(Duration::from_millis(30));
     assert!(matches!(
         pull(&mut stream),
@@ -105,7 +122,10 @@ fn a_remote_execution_round_trips_through_bytes() {
 
     assert!(restored == remote);
     let executor = BatchExecutor::new(valid_batch(&restored));
-    let mut stream = execute_planned(&executor, &restored, None).unwrap();
+    let mut stream = execute_planned(&restored.output_schema, None, || {
+        executor.execute(&restored.query)
+    })
+    .unwrap();
     assert!(matches!(
         pull(&mut stream),
         Poll::Ready(Some(Ok(batch))) if batch.num_rows() == 1
@@ -189,9 +209,7 @@ impl PortableQuery for TestQuery {
     }
 }
 
-impl ConnectorExecutor for BatchExecutor {
-    type Query = TestQuery;
-
+impl BatchExecutor {
     fn execute(&self, query: &TestQuery) -> Result<ExecutionOutput, ConnectorError> {
         assert!(!query.0.is_empty());
         let stream: RecordBatchStream = Box::pin(OneBatchStream(Some(Ok(self.batch.clone()))));

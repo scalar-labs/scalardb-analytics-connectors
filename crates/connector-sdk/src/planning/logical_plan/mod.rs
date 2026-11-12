@@ -196,6 +196,19 @@ impl LogicalPlan {
     pub(crate) fn terminal_relation(&self) -> &LogicalRelation {
         self.relation.terminal()
     }
+
+    /// Returns the table binding and base schema of the table this plan
+    /// reads, or `None` when it consumes a remote result instead.
+    pub fn table_read(&self) -> Option<(&TableBinding, &AnalyticsSchema)> {
+        match self.terminal_relation() {
+            LogicalRelation::Read {
+                table_binding,
+                base_schema,
+                ..
+            } => Some((table_binding, base_schema)),
+            _ => None,
+        }
+    }
 }
 
 impl LogicalRelation {

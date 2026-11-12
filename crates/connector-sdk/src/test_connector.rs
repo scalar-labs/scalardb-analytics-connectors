@@ -15,7 +15,8 @@
 //! | `panic-planning` | Planning panics |
 //! | anything else | Planning returns unsupported |
 //!
-//! Every plan's output columns must be 64-bit integers.
+//! Every plan reads one non-null 64-bit integer column `value`. A planned read
+//! checks it against the catalog's table `["test", "reads"]`.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -29,12 +30,12 @@ use std::{
 };
 
 use crate::{
-    CatalogReader, Column, ColumnType, Component, ConnectionOptions, ConnectorDescriptor,
-    ConnectorError, ConnectorExecutor, ConnectorLibrary, ConnectorPlanner, Constraint,
-    ConstraintKind, DataSource, DataSourceAccess, DataSourceSession, DiagnosticEntry,
-    DiagnosticValue, ErrorKind, ExecutionCancel, ExecutionOutput, LibrarySettings, Listed,
+    Access, Catalog, Column, ColumnType, Component, ConnectionOptions, Connector,
+    ConnectorDescriptor, ConnectorError, Constraint, ConstraintKind, DataSourceAccess,
+    DiagnosticEntry, DiagnosticValue, ErrorClass, ErrorKind, ExecutableQueryResult,
+    ExecutionCancel, ExecutionOutput, Executor, GenericErrorHandler, LibrarySettings, Listed,
     LogicalPlan, LogicalRelation, NameFilter, NamespacePath, OptionDescriptor, OptionValue,
-    OptionValueType, PlannedPushdown, PlanningError, PortableQuery, PushdownResult, Reported,
+    OptionValueType, Planner, PlanningError, PortableQuery, Reported, RewriteRuleSet, Session,
     SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
     UniqueKind, UnsupportedReason,
 };
@@ -64,10 +65,19 @@ pub fn probe(label: &str) -> Arc<Probe> {
     Arc::clone(probes.entry(label.to_owned()).or_default())
 }
 
-pub struct TestConnectorLibrary;
+/// The test Connector.
+pub struct TestConnector;
 
-impl ConnectorLibrary for TestConnectorLibrary {
-    type DataSource = TestDataSource;
+/// The table every planned read checks its schema against.
+const READS: [&str; 2] = ["test", "reads"];
+
+impl Connector for TestConnector {
+    type Access = TestAccess;
+    type Catalog = TestCatalog;
+    type Planner = TestPlanner;
+    type Executor = TestExecutor;
+    type ErrorHandler = GenericErrorHandler<ConnectorError>;
+    type Query = TestQuery;
 
     fn descriptor() -> ConnectorDescriptor {
         ConnectorDescriptor {
@@ -93,81 +103,65 @@ impl ConnectorLibrary for TestConnectorLibrary {
                     description: "A credential the source never reveals.".to_owned(),
                 },
             ],
-            access: DataSourceAccess::Direct,
+            access: TestAccess::description(),
         }
     }
 
-    fn new(_settings: &LibrarySettings) -> Result<Self, ConnectorError> {
-        Ok(Self)
+    fn convert_column(
+        column: &ArrayRef,
+        _target: &AnalyticsType,
+    ) -> Result<ArrayRef, ConnectorError> {
+        Ok(Arc::clone(column))
+    }
+}
+
+/// Direct access to the in-memory source: a Data Source and its sessions
+/// share the probe their `label` option names.
+pub struct TestAccess;
+
+impl Access<TestConnector> for TestAccess {
+    type Library = ();
+    type DataSource = Arc<Probe>;
+    type Session = Arc<Probe>;
+    /// The source's errors arrive already classified.
+    type Diagnostic = ConnectorError;
+
+    fn description() -> DataSourceAccess {
+        DataSourceAccess::Direct
+    }
+
+    fn open_library(_settings: &LibrarySettings) -> Result<(), ConnectorError> {
+        Ok(())
     }
 
     fn open_data_source(
-        &self,
+        _library: &(),
         _connector: &str,
         options: ConnectionOptions,
         _connection_timeout: Option<Duration>,
-    ) -> Result<TestDataSource, ConnectorError> {
+    ) -> Result<Arc<Probe>, ConnectorError> {
         let Some(OptionValue::Plain(label)) = options.get("label") else {
             unreachable!("the descriptor requires a plain label");
         };
-        Ok(TestDataSource {
-            probe: probe(label),
-        })
-    }
-}
-
-pub struct TestDataSource {
-    probe: Arc<Probe>,
-}
-
-impl DataSource for TestDataSource {
-    type Session = TestSession;
-
-    fn open_session(&self) -> Result<TestSession, ConnectorError> {
-        Ok(TestSession {
-            planner: TestPlanner,
-            executor: TestExecutor {
-                probe: Arc::clone(&self.probe),
-            },
-            catalog: TestCatalog {
-                probe: Arc::clone(&self.probe),
-            },
-        })
-    }
-}
-
-pub struct TestSession {
-    planner: TestPlanner,
-    executor: TestExecutor,
-    catalog: TestCatalog,
-}
-
-impl DataSourceSession for TestSession {
-    type Query = TestQuery;
-    type Catalog = TestCatalog;
-    type Planner = TestPlanner;
-    type Executor = TestExecutor;
-
-    fn catalog(&self) -> &TestCatalog {
-        &self.catalog
+        Ok(probe(label))
     }
 
-    fn planner(&self) -> &TestPlanner {
-        &self.planner
+    fn open_session(data_source: &Arc<Probe>) -> Result<Arc<Probe>, ConnectorError> {
+        Ok(Arc::clone(data_source))
     }
 
-    fn executor(&self) -> &TestExecutor {
-        &self.executor
-    }
-
-    fn adbc_driver(&self) -> Option<Component> {
+    fn component(_session: &Arc<Probe>) -> Option<Component> {
         None
+    }
+
+    fn error(diagnostic: ConnectorError, _class: Option<ErrorClass>) -> ConnectorError {
+        diagnostic
     }
 }
 
 /// What a planned read does at the Data Source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Behavior {
+pub enum Behavior {
     Batches(u32),
     Block,
     Fail,
@@ -212,27 +206,31 @@ impl PortableQuery for TestQuery {
     }
 }
 
+/// Plans a whole read remotely; its binding selects the read's behavior.
 pub struct TestPlanner;
 
-impl ConnectorPlanner for TestPlanner {
-    type Query = TestQuery;
+impl Planner<TestConnector> for TestPlanner {
+    /// The read's behavior, or `None` when the binding names no behavior.
+    type Facts = Option<Behavior>;
 
-    fn plan(&self, offered_plan: &LogicalPlan) -> Result<PushdownResult<TestQuery>, PlanningError> {
-        let LogicalRelation::Read { table_binding, .. } = offered_plan.relation() else {
-            return Ok(PushdownResult::Unsupported {
-                reason: "the test connector plans only table reads".to_owned(),
-            });
+    fn planning_facts(
+        _session: &Session<TestConnector>,
+        offered_plan: &LogicalPlan,
+    ) -> Result<(TableReference, Option<Behavior>), PlanningError> {
+        let reads = TableReference::new(names(&READS)).expect("fixture names are non-empty");
+        let Some((table_binding, _)) = offered_plan.table_read() else {
+            return Ok((reads, None));
         };
         let behavior = match table_binding.components() {
             [name, count] if name == "batches" => {
-                Behavior::Batches(count.parse().map_err(|_| {
+                Some(Behavior::Batches(count.parse().map_err(|_| {
                     ConnectorError::new(ErrorKind::InvalidRequest, false, "invalid batch count")
-                })?)
+                })?))
             }
-            [name] if name == "block" => Behavior::Block,
-            [name] if name == "fail" => Behavior::Fail,
-            [name] if name == "break-connection" => Behavior::BreakConnection,
-            [name] if name == "panic" => Behavior::Panic,
+            [name] if name == "block" => Some(Behavior::Block),
+            [name] if name == "fail" => Some(Behavior::Fail),
+            [name] if name == "break-connection" => Some(Behavior::BreakConnection),
+            [name] if name == "panic" => Some(Behavior::Panic),
             [name] if name == "panic-planning" => panic!("the test connector panicked in planning"),
             [name] if name == "break-connection-planning" => {
                 return Err(PlanningError::Connector(ConnectorError::new(
@@ -241,42 +239,56 @@ impl ConnectorPlanner for TestPlanner {
                     "the test connection broke while planning",
                 )));
             }
-            _ => {
-                return Ok(PushdownResult::Unsupported {
-                    reason: "the test connector does not know this table".to_owned(),
-                });
+            _ => None,
+        };
+        Ok((reads, behavior))
+    }
+
+    fn rewrite_rules() -> RewriteRuleSet<Option<Behavior>> {
+        RewriteRuleSet::new()
+    }
+
+    fn generate_query(
+        remote_plan: &LogicalPlan,
+        behavior: &Option<Behavior>,
+    ) -> Result<ExecutableQueryResult<TestQuery>, PlanningError> {
+        Ok(match behavior {
+            Some(behavior) if matches!(remote_plan.relation(), LogicalRelation::Read { .. }) => {
+                ExecutableQueryResult::Executable(TestQuery {
+                    behavior: *behavior,
+                    schema: remote_plan.output_schema().to_arrow(),
+                })
             }
-        };
-        let query = TestQuery {
-            behavior,
-            schema: offered_plan.output_schema().to_arrow(),
-        };
-        let pushdown = PlannedPushdown::try_new(offered_plan, offered_plan.clone(), None, query)?;
-        Ok(PushdownResult::Planned {
-            pushdown: Box::new(pushdown),
+            Some(_) => ExecutableQueryResult::Unsupported {
+                reason: "the test connector plans only table reads".to_owned(),
+            },
+            None => ExecutableQueryResult::Unsupported {
+                reason: "the test connector does not know this table".to_owned(),
+            },
         })
     }
 }
 
-pub struct TestExecutor {
-    probe: Arc<Probe>,
-}
+/// Runs a test query; the query counts as sent at its first pull.
+pub struct TestExecutor;
 
-impl ConnectorExecutor for TestExecutor {
-    type Query = TestQuery;
-
-    fn execute(&self, query: &TestQuery) -> Result<ExecutionOutput, ConnectorError> {
-        self.probe.sent.fetch_add(1, Ordering::SeqCst);
+impl Executor<TestConnector> for TestExecutor {
+    fn run(
+        session: &Session<TestConnector>,
+        query: &TestQuery,
+    ) -> Result<ExecutionOutput, ConnectorError> {
+        let probe = session.access();
         let stop = Arc::new(Stop::default());
         let stream = TestStream {
             behavior: query.behavior,
             produced: 0,
+            started: false,
             schema: Arc::new(query.schema.clone()),
-            probe: Arc::clone(&self.probe),
+            probe: Arc::clone(probe),
             stop: Arc::clone(&stop),
         };
         let cancel = TestCancel {
-            probe: Arc::clone(&self.probe),
+            probe: Arc::clone(probe),
             stop,
         };
         Ok(ExecutionOutput::new(Box::pin(stream), Arc::new(cancel)))
@@ -345,6 +357,7 @@ impl ExecutionCancel for TestCancel {
 struct TestStream {
     behavior: Behavior,
     produced: u32,
+    started: bool,
     schema: SchemaRef,
     probe: Arc<Probe>,
     stop: Arc<Stop>,
@@ -368,6 +381,10 @@ impl Stream for TestStream {
 
     fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if !this.started {
+            this.started = true;
+            this.probe.sent.fetch_add(1, Ordering::SeqCst);
+        }
         match this.behavior {
             Behavior::Batches(count) if this.produced < count => {
                 let batch = this.batch();
@@ -405,15 +422,16 @@ impl Drop for TestStream {
 /// | `orders` | `public`, as a table | Complete: every column type state and constraint kind |
 /// | `order_view` | `public`, as a view | Complete, with nothing offered beyond columns |
 /// | `events` | `sales`, as another kind | Incomplete: every item that can be missing is missing |
+/// | `reads` | — | Complete: the one `value` column every planned read checks |
 /// | `missing` | — | Does not exist |
 /// | `secret` | — | Could not be read |
 ///
 /// A name `block`, `fail`, or `panic` in a filter or a table metadata request
 /// makes the read, after the items before it, block until stopped, fail with
 /// a Data Source error, or panic.
-pub struct TestCatalog {
-    probe: Arc<Probe>,
-}
+///
+/// A catalog read counts as sent at its first pull.
+pub struct TestCatalog;
 
 /// The test source metadata: which fixture table was read.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -429,6 +447,7 @@ pub enum TestFixture {
     Orders,
     OrderView,
     Events,
+    Reads,
 }
 
 impl SourceTableMetadata for TestTable {
@@ -442,6 +461,22 @@ impl SourceTableMetadata for TestTable {
                 Reported::NotOffered,
                 vec![column(
                     "id",
+                    1,
+                    Reported::NotOffered,
+                    ColumnType::Mapped {
+                        data_source_type: "int8".to_owned(),
+                        analytics_type: AnalyticsType::BigInt,
+                    },
+                )],
+                false,
+                Reported::NotOffered,
+            ),
+            TestFixture::Reads => TableMetadata::new(
+                table,
+                TableKind::Table,
+                Reported::NotOffered,
+                vec![column(
+                    "value",
                     1,
                     Reported::NotOffered,
                     ColumnType::Mapped {
@@ -603,18 +638,19 @@ fn filter_steps<T>(filter: &NameFilter) -> impl Iterator<Item = CatalogStep<T>> 
 
 impl TestCatalog {
     fn read<T: Send + 'static>(
-        &self,
+        session: &Session<TestConnector>,
         steps: impl IntoIterator<Item = CatalogStep<T>>,
     ) -> ExecutionOutput<T> {
-        self.probe.sent.fetch_add(1, Ordering::SeqCst);
+        let probe = session.access();
         let stop = Arc::new(Stop::default());
         let stream = CatalogStream {
             steps: steps.into_iter().collect(),
-            probe: Arc::clone(&self.probe),
+            started: false,
+            probe: Arc::clone(probe),
             stop: Arc::clone(&stop),
         };
         let cancel = TestCancel {
-            probe: Arc::clone(&self.probe),
+            probe: Arc::clone(probe),
             stop,
         };
         ExecutionOutput::new(Box::pin(stream), Arc::new(cancel))
@@ -625,11 +661,16 @@ const PUBLIC: [&str; 2] = ["test", "public"];
 const SALES: [&str; 2] = ["test", "sales"];
 const RESTRICTED: [&str; 2] = ["test", "restricted"];
 
-impl CatalogReader for TestCatalog {
+impl Catalog<TestConnector> for TestCatalog {
     type Table = TestTable;
+    type Context = ();
+
+    fn open_context(_session: &Arc<Probe>) -> Result<(), ConnectorError> {
+        Ok(())
+    }
 
     fn list_namespaces(
-        &self,
+        session: &Session<TestConnector>,
         filter: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError> {
         let mut steps: Vec<_> = [PUBLIC, SALES]
@@ -650,11 +691,11 @@ impl CatalogReader for TestCatalog {
             }));
         }
         steps.extend(filter_steps(filter));
-        Ok(self.read(steps))
+        Ok(Self::read(session, steps))
     }
 
     fn list_tables(
-        &self,
+        session: &Session<TestConnector>,
         namespaces: &NameFilter,
         tables: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError> {
@@ -691,11 +732,11 @@ impl CatalogReader for TestCatalog {
         }
         steps.extend(filter_steps(namespaces));
         steps.extend(filter_steps(tables));
-        Ok(self.read(steps))
+        Ok(Self::read(session, steps))
     }
 
     fn read_tables(
-        &self,
+        session: &Session<TestConnector>,
         tables: &[TableReference],
     ) -> Result<ExecutionOutput<TableRecord<TestTable>>, ConnectorError> {
         let steps: Vec<_> = tables
@@ -714,6 +755,7 @@ impl CatalogReader for TestCatalog {
                         "orders" => read(TestFixture::Orders),
                         "order_view" => read(TestFixture::OrderView),
                         "events" => read(TestFixture::Events),
+                        "reads" => read(TestFixture::Reads),
                         "secret" => TableRecord::Unavailable {
                             table: table.clone(),
                             reason: "permission denied for the table".to_owned(),
@@ -725,13 +767,14 @@ impl CatalogReader for TestCatalog {
                 })
             })
             .collect();
-        Ok(self.read(steps))
+        Ok(Self::read(session, steps))
     }
 }
 
 /// A catalog read's items, produced one per pull.
 struct CatalogStream<T> {
     steps: VecDeque<CatalogStep<T>>,
+    started: bool,
     probe: Arc<Probe>,
     stop: Arc<Stop>,
 }
@@ -743,6 +786,10 @@ impl<T> Stream for CatalogStream<T> {
 
     fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if !this.started {
+            this.started = true;
+            this.probe.sent.fetch_add(1, Ordering::SeqCst);
+        }
         Poll::Ready(this.steps.pop_front().map(|step| match step {
             CatalogStep::Item(item) => Ok(item),
             CatalogStep::Block => Err(this.stop.wait()),

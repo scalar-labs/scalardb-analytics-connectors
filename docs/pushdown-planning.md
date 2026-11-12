@@ -121,7 +121,8 @@ reason for separating the two representations is recorded in
 `PlannedPushdown` is the boundary domain model. Data Source-specific planning
 metadata is a Connector-private, per-call value used while rewriting and generating the
 executable query. It is dropped before the result is returned and is not stored
-in `PlannedPushdown` or exposed through `ConnectorPlanner`.
+in `PlannedPushdown`; the SDK sees it only as the Connector `Planner`'s opaque
+`Facts` type.
 
 Rewrite rules describe tree transformations and return new immutable
 `LogicalPlan` values. They do not separately maintain plan-level derived state:
@@ -132,10 +133,12 @@ and consumes that schema. When no local plan exists, remote output is the final
 result.
 
 `RemoteExecution<Q>` is the part of the planned pushdown that execution needs:
-the Connector-owned query `Q` and the remote output schema. `Q` remains a
-concrete type shared by the session's planner and executor. A SQL Connector
-uses `RenderedQuery`, which contains one complete non-parameterized SQL
-statement whose typed literals were already rendered by its dialect. It
+the query `Q` and the remote output schema. For a Connector, `Q` is the SDK's
+`PlannedRead`, which holds the table it reads, the registered schema of the
+base columns for the schema check, and the Connector-owned query, a concrete
+type shared by the Connector's planner and executor. A SQL Connector's query
+is `SqlRead`, which contains one complete non-parameterized SQL statement
+whose typed literals were already rendered by its dialect. It
 contains no credentials, live connections, or process-local pointers, so it
 can cross a process boundary ([Execution in another process](#execution-in-another-process)).
 
@@ -144,20 +147,21 @@ can cross a process boundary ([Execution in another process](#execution-in-anoth
 Spark plans on the driver and reads on executors; Trino plans on the
 coordinator and reads on workers. The planning process therefore hands the
 reading process `RemoteExecution::to_bytes`, and the reading process restores
-it with `RemoteExecution::from_bytes` and passes it to `execute_planned` on a
-session it opened itself:
+it with `RemoteExecution::from_bytes` and reads it on a session it opened
+itself, through `execute_planned` with `Connector::read`:
 
 ~~~text
 planning process                       reading process
 PlannedPushdown.remote                 opens its own Data Source and session
   -> to_bytes                            from its registration settings
   -> byte[] inside the Adapter's         RemoteExecution::from_bytes
-     split or partition  ------------->   -> execute_planned(executor, remote, deadline)
+     split or partition  ------------->   -> execute_planned(output_schema, deadline,
+                                               start = Connector::read(session, remote))
 ~~~
 
-- The SDK frames the remote output schema together with the Connector's query
-  bytes. The Connector encodes and decodes only its own `Q` through
-  `PortableQuery`.
+- The SDK frames the remote output schema, and the planned read's table and
+  base schema, together with the Connector's query bytes. The Connector
+  encodes and decodes only its own query through `PortableQuery`.
 - The bytes are opaque to the Adapter and are valid only for the library
   version that produced them. The planning and reading processes run the same
   library because the library and its callers are updated together
@@ -197,12 +201,11 @@ diagnostics, and resource release.
 Catalog and capability I/O is allowed during Connector planning. The required
 facts are only known after the offered plan is available. Prefetching and caches
 are implementation strategies, not a required `PlanningSnapshot` protocol.
-The standard `RewriteRuleConnectorPlanner` keeps this control flow in the SDK;
-the Connector supplies metadata loading, its ordered rule set, and executable
-query generation. Because the initial `QueryPlan` is already complete, this
-flow returns `Planned` on success even when every rule is a no-op. The basic
-`ConnectorPlanner` remains available for Connectors whose Data Source requires
-a different planning flow or an explicit `Unsupported` result.
+The SDK's `Connector::plan` keeps this control flow in the SDK; the
+Connector's `Planner` supplies metadata loading, its ordered rule set, and
+executable query generation, which may return `Unsupported`. Because the
+initial `QueryPlan` is already complete, this flow returns `Planned` on success
+even when every rule is a no-op.
 
 ## Execution flow
 
@@ -359,5 +362,5 @@ Before this boundary conversion, `PlannedPushdown` construction asserts the
 remote-to-local schema and final offered output schema on the internal plans.
 An unchanged decomposition is a no-op rather than a distinct planning result.
 The remote/local model does not encode this initial limitation in
-`ConnectorPlanner`; adding aggregate, join, and other rules adds explicitly
+the planning interfaces; adding aggregate, join, and other rules adds explicitly
 ordered logical shapes without changing the planning result type.
