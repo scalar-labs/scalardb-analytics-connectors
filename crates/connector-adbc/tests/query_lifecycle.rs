@@ -22,9 +22,15 @@ use adbc_driver_manager::ManagedDriver;
 use adbc_ffi::FFI_AdbcDriverInitFunc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
-use connector_adbc::{AdbcQueryStream, query};
+use connector_adbc::{AdbcConnection, AdbcDiagnostic, AdbcQueryStream, query};
 use connector_sdk::{ConnectorError, ErrorKind};
+use connector_sdk::{ErrorHandler, GenericErrorHandler};
 use futures_core::Stream;
+
+#[path = "support/connector.rs"]
+mod connector;
+
+connector::adbc_test_connector!(Generic, error_handler = GenericErrorHandler<AdbcDiagnostic>);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Event {
@@ -50,7 +56,7 @@ enum BlockAt {
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 type QueryPull = Poll<Option<std::result::Result<RecordBatch, ConnectorError>>>;
-type PullWorker = thread::JoinHandle<(QueryPull, AdbcQueryStream)>;
+type PullWorker = thread::JoinHandle<(QueryPull, AdbcQueryStream<Generic>)>;
 
 #[test]
 fn public_query_covers_the_managed_connection_lifecycle() {
@@ -58,6 +64,7 @@ fn public_query_covers_the_managed_connection_lifecycle() {
     execute_failure_is_not_retried();
     abandonment_releases_the_reader_first();
     stream_error_releases_the_reader_first();
+    stream_errors_pass_through_the_connector_redaction();
     cancellation_before_first_read_avoids_source_io();
     cancellation_during_statement_creation_waits_for_creation_to_return();
     cancellation_interrupts_startup();
@@ -73,7 +80,10 @@ fn public_query_covers_the_managed_connection_lifecycle() {
 fn happy_path_is_lazy_and_ordered() {
     let fixture = Fixture::batches(vec![batch(&[10, 20]), batch(&[30])]);
     let connection = managed_connection();
-    let mut stream = query(connection, "select value where value = 7");
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(connection),
+        "select value where value = 7",
+    );
 
     assert_eq!(fixture.events(), Vec::<Event>::new());
     assert_eq!(pull(&mut stream), Poll::Ready(Some(Ok(batch(&[10, 20])))));
@@ -100,7 +110,10 @@ fn happy_path_is_lazy_and_ordered() {
 
 fn execute_failure_is_not_retried() {
     let fixture = Fixture::failing_execute();
-    let mut stream = query(managed_connection(), "select broken");
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select broken",
+    );
 
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("first pull should return the fixture execution error");
@@ -115,7 +128,10 @@ fn execute_failure_is_not_retried() {
 
 fn abandonment_releases_the_reader_first() {
     let fixture = Fixture::batches(vec![batch(&[1]), batch(&[2])]);
-    let mut stream = query(managed_connection(), "select value");
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
 
     assert!(matches!(pull(&mut stream), Poll::Ready(Some(Ok(_)))));
     drop(stream);
@@ -123,9 +139,50 @@ fn abandonment_releases_the_reader_first() {
     assert_release_order(&fixture);
 }
 
+// Removes a fixture marker from every driver message.
+struct RedactFixtureMarkerHandler;
+
+impl ErrorHandler for RedactFixtureMarkerHandler {
+    type Diagnostic = AdbcDiagnostic;
+
+    fn redact(diagnostic: AdbcDiagnostic) -> AdbcDiagnostic {
+        AdbcDiagnostic::new(
+            diagnostic.status(),
+            diagnostic.message().replace("fixture", "<redacted>"),
+            *diagnostic.sqlstate_bytes(),
+            diagnostic.vendor_code(),
+            diagnostic.details().clone(),
+        )
+    }
+}
+
+connector::adbc_test_connector!(
+    RedactFixtureMarker,
+    error_handler = RedactFixtureMarkerHandler
+);
+
+fn stream_errors_pass_through_the_connector_redaction() {
+    let _fixture = Fixture::stream_error();
+    let mut stream = query(
+        &AdbcConnection::<RedactFixtureMarker>::new(managed_connection()),
+        "select broken stream",
+    );
+
+    let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
+        panic!("first pull should return the fixture stream error");
+    };
+    assert_eq!(error.kind(), ErrorKind::DataSource);
+    let message = error.data_source_message().unwrap();
+    assert!(message.contains("<redacted> stream failure"), "{message}");
+    assert!(!message.contains("fixture"), "{message}");
+}
+
 fn stream_error_releases_the_reader_first() {
     let fixture = Fixture::stream_error();
-    let mut stream = query(managed_connection(), "select broken stream");
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select broken stream",
+    );
 
     let Poll::Ready(Some(Err(error))) = pull(&mut stream) else {
         panic!("first pull should return the fixture stream error");
@@ -149,7 +206,10 @@ fn stream_error_releases_the_reader_first() {
 
 fn cancellation_before_first_read_avoids_source_io() {
     let fixture = Fixture::batches(vec![batch(&[1])]);
-    let mut stream = query(managed_connection(), "select value");
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
 
     cancel.try_cancel().unwrap();
@@ -162,7 +222,10 @@ fn cancellation_before_first_read_avoids_source_io() {
 
 fn cancellation_during_statement_creation_waits_for_creation_to_return() {
     let fixture = Fixture::blocking(BlockAt::NewStatement, vec![batch(&[1])]);
-    let stream = query(managed_connection(), "select value");
+    let stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
     let worker = pull_on_worker(stream);
 
@@ -181,7 +244,10 @@ fn cancellation_during_statement_creation_waits_for_creation_to_return() {
 
 fn cancellation_interrupts_startup() {
     let fixture = Fixture::blocking(BlockAt::SetSql, vec![batch(&[1])]);
-    let stream = query(managed_connection(), "select value");
+    let stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
     let worker = pull_on_worker(stream);
 
@@ -199,7 +265,10 @@ fn cancellation_interrupts_startup() {
 
 fn cancellation_interrupts_execute_without_waiting_for_completion() {
     let fixture = Fixture::blocking(BlockAt::Execute, vec![batch(&[1])]);
-    let stream = query(managed_connection(), "select value");
+    let stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
     let worker = pull_on_worker(stream);
 
@@ -217,7 +286,10 @@ fn cancellation_interrupts_execute_without_waiting_for_completion() {
 
 fn cancellation_interrupts_result_pull() {
     let fixture = Fixture::blocking(BlockAt::Pull, vec![batch(&[1])]);
-    let stream = query(managed_connection(), "select value");
+    let stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
     let worker = pull_on_worker(stream);
 
@@ -233,7 +305,10 @@ fn cancellation_interrupts_result_pull() {
 
 fn failed_native_cancellation_preserves_the_query() {
     let fixture = Fixture::blocking_with_failing_cancel(BlockAt::Pull, vec![batch(&[1])]);
-    let stream = query(managed_connection(), "select value");
+    let stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
     let worker = pull_on_worker(stream);
 
@@ -254,13 +329,16 @@ fn failed_native_cancellation_preserves_the_query() {
 fn cancellation_is_scoped_to_one_execution() {
     let fixture = Fixture::blocking(BlockAt::Pull, vec![batch(&[1])]);
     let connection = managed_connection();
-    let first = query(connection.clone(), "select first");
+    let first = query(
+        &AdbcConnection::<Generic>::new(connection.clone()),
+        "select first",
+    );
     let first_cancel = first.cancel_handle();
     let first_worker = pull_on_worker(first);
 
     fixture.wait_until_blocked(0);
 
-    let mut second = query(connection, "select second");
+    let mut second = query(&AdbcConnection::<Generic>::new(connection), "select second");
     assert_eq!(pull(&mut second), Poll::Ready(Some(Ok(batch(&[1])))));
 
     first_cancel.try_cancel().unwrap();
@@ -275,13 +353,16 @@ fn cancellation_is_scoped_to_one_execution() {
 fn cancellation_after_completion_is_a_noop_for_the_next_query() {
     let fixture = Fixture::batches(vec![]);
     let connection = managed_connection();
-    let mut first = query(connection.clone(), "select first");
+    let mut first = query(
+        &AdbcConnection::<Generic>::new(connection.clone()),
+        "select first",
+    );
     let late_cancel = first.cancel_handle();
 
     assert_eq!(pull(&mut first), Poll::Ready(None));
     late_cancel.try_cancel().unwrap();
 
-    let mut second = query(connection, "select second");
+    let mut second = query(&AdbcConnection::<Generic>::new(connection), "select second");
     assert_eq!(pull(&mut second), Poll::Ready(None));
     assert_eq!(fixture.count(Event::Cancel), 0);
     assert_eq!(fixture.count(Event::Execute), 2);
@@ -289,7 +370,10 @@ fn cancellation_after_completion_is_a_noop_for_the_next_query() {
 
 fn cancellation_between_reads_releases_resources_without_native_cancellation() {
     let fixture = Fixture::batches(vec![batch(&[1]), batch(&[2])]);
-    let mut stream = query(managed_connection(), "select value");
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
     let cancel = stream.cancel_handle();
 
     assert!(matches!(pull(&mut stream), Poll::Ready(Some(Ok(_)))));
@@ -306,7 +390,10 @@ fn cancellation_between_reads_releases_resources_without_native_cancellation() {
 fn cancellation_and_drop_are_linearized() {
     for _ in 0..100 {
         let fixture = Fixture::batches(vec![batch(&[1]), batch(&[2])]);
-        let mut stream = query(managed_connection(), "select value");
+        let mut stream = query(
+            &AdbcConnection::<Generic>::new(managed_connection()),
+            "select value",
+        );
         let cancel = stream.cancel_handle();
         assert!(matches!(pull(&mut stream), Poll::Ready(Some(Ok(_)))));
 
@@ -331,7 +418,7 @@ fn cancellation_and_drop_are_linearized() {
     }
 }
 
-fn pull_on_worker(mut stream: AdbcQueryStream) -> PullWorker {
+fn pull_on_worker(mut stream: AdbcQueryStream<Generic>) -> PullWorker {
     thread::spawn(move || {
         let result = pull(&mut stream);
         (result, stream)

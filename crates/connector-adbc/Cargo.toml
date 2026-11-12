@@ -14,9 +14,13 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 connector-sdk.workspace = true
 futures-core.workspace = true
+# Reads the version an ADBC driver manifest declares.
+toml.workspace = true
 
 [dev-dependencies]
 adbc_ffi.workspace = true
+analytics-types.workspace = true
+connector-sdk = { workspace = true, features = ["test-connector"] }
 
 [lib]
 path = "src/lib.rs"

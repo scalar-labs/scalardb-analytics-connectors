@@ -16,6 +16,11 @@ use futures_core::Stream;
 
 #[path = "support/adbc.rs"]
 mod adbc;
+#[path = "support/adbc_connector.rs"]
+mod adbc_connector;
+
+use adbc_connector::FixtureAdbc;
+use connector_adbc::AdbcConnection;
 
 use adbc::{Event, Fixture, FixtureExecution};
 
@@ -222,8 +227,8 @@ fn remote_query(sql: &str) -> RemoteExecution<RenderedQuery> {
     }
 }
 
-fn executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
-    SqlExecutor::new(connection)
+fn executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor<FixtureAdbc> {
+    SqlExecutor::new(AdbcConnection::new(connection))
 }
 
 fn batch(values: &[i64]) -> RecordBatch {

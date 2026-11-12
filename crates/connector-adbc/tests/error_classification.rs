@@ -1,7 +1,13 @@
 use std::os::raw::c_char;
 
 use adbc_core::error::{Error, Status};
-use connector_adbc::{AdbcDetail, AdbcDetails, AdbcDiagnostic, AdbcStatus, classify_error};
+use connector_adbc::{AdbcDetail, AdbcDetails, AdbcDiagnostic, AdbcStatus};
+use connector_sdk::{Connector, ErrorClass, ErrorHandler, GenericErrorHandler};
+
+#[path = "support/connector.rs"]
+mod connector;
+
+connector::adbc_test_connector!(Generic, error_handler = GenericErrorHandler<AdbcDiagnostic>);
 use connector_sdk::{ConnectorError, DiagnosticValue, ErrorKind};
 
 fn diagnostic(status: AdbcStatus, sqlstate: [u8; 5]) -> AdbcDiagnostic {
@@ -35,7 +41,7 @@ fn classifies_standard_sqlstate_classes() {
     ];
 
     for (sqlstate, expected_kind, expected_retryable) in cases {
-        let error = classify_error(diagnostic(AdbcStatus::Known(Status::InvalidData), sqlstate));
+        let error = Generic::classify(diagnostic(AdbcStatus::Known(Status::InvalidData), sqlstate));
 
         assert_eq!(error.kind(), expected_kind, "SQLSTATE {sqlstate:?}");
         assert_eq!(
@@ -52,7 +58,7 @@ fn classifies_standard_sqlstate_classes() {
 
 #[test]
 fn preserves_user_meaningful_fields_in_cross_language_diagnostics() {
-    let error = classify_error(AdbcDiagnostic::new(
+    let error = Generic::classify(AdbcDiagnostic::new(
         AdbcStatus::Known(Status::InvalidData),
         "value 42 is out of range",
         *b"22003",
@@ -109,7 +115,7 @@ fn preserves_user_meaningful_fields_in_cross_language_diagnostics() {
 
 #[test]
 fn missing_sqlstate_uses_status_without_erasing_raw_value() {
-    let error = classify_error(AdbcDiagnostic::new(
+    let error = Generic::classify(AdbcDiagnostic::new(
         AdbcStatus::Known(Status::Timeout),
         "request exceeded deadline",
         [0; 5],
@@ -172,7 +178,7 @@ fn malformed_diagnostics_become_internal_without_dropping_captured_fields() {
         let expected_sqlstate = diagnostic.sqlstate_bytes().to_vec();
         let expected_vendor = diagnostic.vendor_code();
         let expected_message = diagnostic.message().to_owned();
-        let error = classify_error(diagnostic);
+        let error = Generic::classify(diagnostic);
 
         assert_eq!(error.kind(), ErrorKind::Internal, "case {index}");
         assert!(!error.retryable(), "case {index}");
@@ -201,7 +207,7 @@ fn malformed_diagnostics_become_internal_without_dropping_captured_fields() {
         );
     }
 
-    let malformed_details = classify_error(AdbcDiagnostic::new(
+    let malformed_details = Generic::classify(AdbcDiagnostic::new(
         AdbcStatus::Known(Status::InvalidData),
         "bad details",
         *b"22003",
@@ -241,7 +247,7 @@ fn converts_adbc_error_without_losing_duplicate_details() {
         ]),
     };
 
-    let error = classify_error(source.into());
+    let error = Generic::classify(source.into());
 
     assert_eq!(error.data_source_message(), Some("duplicate detail keys"));
     assert_eq!(
@@ -267,4 +273,61 @@ fn captured_diagnostic_debug_output_is_redacted() {
     assert!(!debug.contains("secret"));
     assert!(!debug.contains("22003"));
     assert!(!debug.contains("1234"));
+}
+
+// A Connector's error table and redaction for a driver that copies its
+// statement into messages.
+struct VendorErrorHandler;
+
+impl ErrorHandler for VendorErrorHandler {
+    type Diagnostic = AdbcDiagnostic;
+
+    fn classify(diagnostic: &AdbcDiagnostic) -> Option<ErrorClass> {
+        (diagnostic.sqlstate_bytes() == b"42501").then_some(ErrorClass {
+            kind: ErrorKind::Permission,
+            retryable: false,
+            safe_message: "permission denied",
+        })
+    }
+
+    fn redact(diagnostic: AdbcDiagnostic) -> AdbcDiagnostic {
+        let message = diagnostic
+            .message()
+            .split("\nQuery was:")
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        AdbcDiagnostic::new(
+            diagnostic.status(),
+            message,
+            *diagnostic.sqlstate_bytes(),
+            diagnostic.vendor_code(),
+            diagnostic.details().clone(),
+        )
+    }
+}
+
+connector::adbc_test_connector!(VendorConnector, error_handler = VendorErrorHandler);
+
+#[test]
+fn a_connector_error_table_precedes_sqlstate_classes_after_redaction() {
+    let error = VendorConnector::classify(AdbcDiagnostic::new(
+        AdbcStatus::Known(Status::Unauthorized),
+        "permission denied for table t\nQuery was: SELECT 'secret'",
+        *b"42501",
+        0,
+        AdbcDetails::Missing,
+    ));
+    assert_eq!(error.kind(), ErrorKind::Permission);
+    assert_eq!(error.safe_message(), "permission denied");
+    assert_eq!(
+        error.data_source_message(),
+        Some("permission denied for table t")
+    );
+
+    let unlisted = VendorConnector::classify(diagnostic(
+        AdbcStatus::Known(Status::InvalidData),
+        *b"42601",
+    ));
+    assert_eq!(unlisted.kind(), ErrorKind::Internal);
 }

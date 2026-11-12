@@ -24,6 +24,7 @@ mod support;
 use support::{
     TestDialect,
     adbc::{Event, Fixture, FixtureExecution},
+    adbc_connector::FixtureAdbc,
 };
 
 const COMPARISON_URI_ANCHOR: u32 = 1;
@@ -166,8 +167,8 @@ fn translated_query_round_trips_through_adbc_execution() {
     assert_eq!(error.data_source_message(), Some("fixture execute failure"));
 }
 
-fn sql_executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor {
-    SqlExecutor::new(connection)
+fn sql_executor(connection: adbc_driver_manager::ManagedConnection) -> SqlExecutor<FixtureAdbc> {
+    SqlExecutor::new(connector_adbc::AdbcConnection::new(connection))
 }
 
 #[test]

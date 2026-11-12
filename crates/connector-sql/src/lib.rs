@@ -10,7 +10,7 @@ mod translation;
 
 use std::sync::Arc;
 
-use adbc_driver_manager::ManagedConnection;
+use connector_adbc::{AdbcConnection, AdbcConnector};
 use connector_sdk::{
     ConnectorError, ErrorKind, ExecutionOutput, LiteralValue, PortableQuery, RecordBatchStream,
 };
@@ -144,14 +144,15 @@ impl std::fmt::Debug for RenderedQuery {
     }
 }
 
-/// Executes SQL-family planned queries through one ADBC connection.
-pub struct SqlExecutor {
-    connection: ManagedConnection,
+/// Executes SQL-family planned queries through one ADBC connection of
+/// Connector `C`.
+pub struct SqlExecutor<C> {
+    connection: AdbcConnection<C>,
 }
 
-impl SqlExecutor {
+impl<C> SqlExecutor<C> {
     /// Binds the shared SQL execution path to a session connection.
-    pub fn new(connection: ManagedConnection) -> Self {
+    pub fn new(connection: AdbcConnection<C>) -> Self {
         Self { connection }
     }
 }
@@ -174,10 +175,10 @@ impl PortableQuery for RenderedQuery {
     }
 }
 
-impl SqlExecutor {
+impl<C: AdbcConnector> SqlExecutor<C> {
     /// Starts the planned statement and returns its unchecked stream.
     pub fn execute(&self, query: &RenderedQuery) -> Result<ExecutionOutput, ConnectorError> {
-        let query = connector_adbc::query(self.connection.clone(), query.sql.clone());
+        let query = connector_adbc::query(&self.connection, query.sql.clone());
         let cancel = Arc::new(query.cancel_handle());
         let stream: RecordBatchStream = Box::pin(query);
         Ok(ExecutionOutput::new(stream, cancel))

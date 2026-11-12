@@ -3,7 +3,11 @@
 use std::fmt;
 
 use adbc_core::error::{Error, Status};
-use connector_sdk::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind};
+use connector_sdk::{
+    ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorClass, ErrorHandler, ErrorKind,
+};
+
+use crate::AdbcConnector;
 
 const SQLSTATE_LENGTH: usize = 5;
 const DETAIL_PREFIX: &str = "adbc.detail/";
@@ -154,31 +158,25 @@ impl From<Error> for AdbcDiagnostic {
     }
 }
 
-pub(crate) fn stream_fallback_error(message: String) -> ConnectorError {
+/// Classifies a mid-stream failure that arrives as text without ADBC status,
+/// SQLSTATE, or details.
+///
+/// The text still passes through the Connector's redaction, because a driver
+/// may copy statement text into it; the classification stays `data-source`.
+pub(crate) fn stream_fallback_error<C: AdbcConnector>(message: String) -> ConnectorError {
+    let redacted = <C::ErrorHandler as ErrorHandler>::redact(AdbcDiagnostic::new(
+        AdbcStatus::Known(Status::Unknown),
+        message,
+        [0; SQLSTATE_LENGTH],
+        0,
+        AdbcDetails::Missing,
+    ));
     ConnectorError::new(
         ErrorKind::DataSource,
         false,
         "the data source result stream failed without structured diagnostics",
     )
-    .with_data_source_error(None, Some(message))
-}
-
-/// A connector-level classification selected by a generic rule.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Classification {
-    kind: ErrorKind,
-    retryable: bool,
-    safe_message: String,
-}
-
-impl Classification {
-    fn new(kind: ErrorKind, retryable: bool, safe_message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            retryable,
-            safe_message: safe_message.into(),
-        }
-    }
+    .with_data_source_error(None, Some(redacted.message))
 }
 
 enum Sqlstate {
@@ -187,29 +185,37 @@ enum Sqlstate {
     Malformed,
 }
 
-/// Classifies one captured ADBC diagnostic into the existing connector error model.
+/// Builds the connector error for one captured ADBC diagnostic.
 ///
-/// A malformed diagnostic becomes a non-retryable internal connector error
-/// while retaining every source field that was captured successfully.
-pub fn classify_error(diagnostic: AdbcDiagnostic) -> ConnectorError {
+/// `class` is the Connector's classification, when its error table matched;
+/// otherwise the diagnostic is classified by SQL-standard SQLSTATE class and
+/// ADBC status. A malformed diagnostic becomes a non-retryable internal
+/// connector error whatever the table says, while retaining every source
+/// field that was captured successfully.
+pub(crate) fn to_connector_error(
+    diagnostic: AdbcDiagnostic,
+    class: Option<ErrorClass>,
+) -> ConnectorError {
     let sqlstate = parse_sqlstate(&diagnostic.sqlstate);
     let structurally_valid = matches!(diagnostic.status, AdbcStatus::Known(status) if status != Status::Ok)
         && !matches!(&sqlstate, Sqlstate::Malformed)
         && !matches!(&diagnostic.details, AdbcDetails::Malformed { .. });
 
     let classification = if !structurally_valid {
-        Classification::new(
+        ErrorClass::new(
             ErrorKind::Internal,
             false,
             "the ADBC driver returned an invalid error diagnostic",
         )
+    } else if let Some(class) = class {
+        class
     } else if let Sqlstate::Valid(sqlstate) = &sqlstate {
         classify_sqlstate(sqlstate)
     } else {
         classify_status(diagnostic.status)
     };
 
-    to_connector_error(diagnostic, sqlstate, classification)
+    build_error(diagnostic, sqlstate, classification)
 }
 
 fn parse_sqlstate(bytes: &[u8; SQLSTATE_LENGTH]) -> Sqlstate {
@@ -225,34 +231,34 @@ fn parse_sqlstate(bytes: &[u8; SQLSTATE_LENGTH]) -> Sqlstate {
     Sqlstate::Malformed
 }
 
-fn classify_sqlstate(sqlstate: &str) -> Classification {
+fn classify_sqlstate(sqlstate: &str) -> ErrorClass {
     match &sqlstate[..2] {
-        "08" => Classification::new(
+        "08" => ErrorClass::new(
             ErrorKind::Connection,
             true,
             "the data source connection failed",
         ),
-        "28" => Classification::new(
+        "28" => ErrorClass::new(
             ErrorKind::Authentication,
             false,
             "the data source rejected authentication",
         ),
-        "22" => Classification::new(
+        "22" => ErrorClass::new(
             ErrorKind::DataSource,
             false,
             "the data source could not process a value",
         ),
-        "40" => Classification::new(
+        "40" => ErrorClass::new(
             ErrorKind::DataSource,
             true,
             "the data source rolled back the request",
         ),
-        "42" => Classification::new(
+        "42" => ErrorClass::new(
             ErrorKind::Internal,
             false,
             "the connector issued a request the data source could not execute",
         ),
-        _ => Classification::new(
+        _ => ErrorClass::new(
             ErrorKind::DataSource,
             false,
             "the data source could not run the request",
@@ -260,29 +266,29 @@ fn classify_sqlstate(sqlstate: &str) -> Classification {
     }
 }
 
-fn classify_status(status: AdbcStatus) -> Classification {
+fn classify_status(status: AdbcStatus) -> ErrorClass {
     match status {
-        AdbcStatus::Known(Status::IO) => Classification::new(
+        AdbcStatus::Known(Status::IO) => ErrorClass::new(
             ErrorKind::Connection,
             true,
             "the data source connection failed",
         ),
-        AdbcStatus::Known(Status::Unauthenticated) => Classification::new(
+        AdbcStatus::Known(Status::Unauthenticated) => ErrorClass::new(
             ErrorKind::Authentication,
             false,
             "the data source rejected authentication",
         ),
-        AdbcStatus::Known(Status::Unauthorized) => Classification::new(
+        AdbcStatus::Known(Status::Unauthorized) => ErrorClass::new(
             ErrorKind::Permission,
             false,
             "the data source denied access to the requested target",
         ),
-        AdbcStatus::Known(Status::Cancelled) => Classification::new(
+        AdbcStatus::Known(Status::Cancelled) => ErrorClass::new(
             ErrorKind::Cancellation,
             false,
             "the data source request was cancelled",
         ),
-        AdbcStatus::Known(Status::Timeout) => Classification::new(
+        AdbcStatus::Known(Status::Timeout) => ErrorClass::new(
             ErrorKind::Timeout,
             true,
             "the data source request timed out",
@@ -292,7 +298,7 @@ fn classify_status(status: AdbcStatus) -> Classification {
             | Status::InvalidArguments
             | Status::InvalidState
             | Status::Internal,
-        ) => Classification::new(
+        ) => ErrorClass::new(
             ErrorKind::Internal,
             false,
             "the connector or data source driver failed",
@@ -303,12 +309,12 @@ fn classify_status(status: AdbcStatus) -> Classification {
             | Status::AlreadyExists
             | Status::InvalidData
             | Status::Integrity,
-        ) => Classification::new(
+        ) => ErrorClass::new(
             ErrorKind::DataSource,
             false,
             "the data source could not run the request",
         ),
-        AdbcStatus::Known(Status::Ok) | AdbcStatus::Unknown(_) => Classification::new(
+        AdbcStatus::Known(Status::Ok) | AdbcStatus::Unknown(_) => ErrorClass::new(
             ErrorKind::Internal,
             false,
             "the ADBC driver returned an invalid error diagnostic",
@@ -323,10 +329,10 @@ fn status_code(status: AdbcStatus) -> u8 {
     }
 }
 
-fn to_connector_error(
+fn build_error(
     diagnostic: AdbcDiagnostic,
     sqlstate: Sqlstate,
-    classification: Classification,
+    classification: ErrorClass,
 ) -> ConnectorError {
     let source_code = match &sqlstate {
         Sqlstate::Valid(sqlstate) => Some(sqlstate.clone()),
