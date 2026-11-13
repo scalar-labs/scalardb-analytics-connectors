@@ -1,4 +1,4 @@
-//! Calls the C ABI the way a C caller does, for the test Connector.
+//! Calls the C ABI the way a C caller does, for the built-in Connectors.
 
 #![allow(dead_code)]
 
@@ -108,7 +108,13 @@ pub fn unique_label() -> String {
 pub struct DataSource(pub *mut ScalardbAnalyticsConnectorDataSource);
 
 impl DataSource {
+    /// Opens a Data Source of the test Connector.
     pub fn open(options: &[(&str, &str)]) -> Result<Self, Error> {
+        Self::open_connector("test", options)
+    }
+
+    /// Opens a Data Source of the named Connector.
+    pub fn open_connector(connector: &str, options: &[(&str, &str)]) -> Result<Self, Error> {
         let texts: Vec<_> = options
             .iter()
             .map(|(key, value)| (text(key), text(value)))
@@ -120,7 +126,7 @@ impl DataSource {
                 value: value.as_ptr(),
             })
             .collect();
-        let connector = text("test");
+        let connector = text(connector);
         let mut data_source = ptr::null_mut();
         // SAFETY: every input lives for the call and the output is writable.
         check(unsafe {

@@ -6,6 +6,8 @@ them. The shared Analytics type model and its Arrow schema conversion are
 implemented. The shared connector planning and execution boundaries are also
 implemented, and the PostgreSQL connector is implemented on them
 ([crates/connectors/postgresql](crates/connectors/postgresql/README.md)).
+The C API library includes a Connector when it is built with that Connector's
+feature, such as `cargo build -p connector-api --features postgresql`.
 
 ## Workspace layout
 
@@ -48,13 +50,15 @@ direnv allow
 
 The workspace uses Rust 2024 and declares Rust 1.85 as its minimum supported
 version. The `msrv` shell supplies exactly Rust 1.85.0. Run the same checks as
-CI through the flake. The PostgreSQL connector's tests also need Docker, which
-they use to start a PostgreSQL server:
+CI through the flake. The PostgreSQL connector's tests, and the library's tests
+with its `postgresql` feature, also need Docker, which they use to start a
+PostgreSQL server:
 
 ```sh
 nix develop --command cargo fmt --all -- --check
 nix develop --command cargo build --workspace --all-targets
 nix develop --command cargo test --workspace
+nix develop --command cargo test -p connector-api --features postgresql
 nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
 nix develop .#msrv --command cargo build --workspace --all-targets
 nix develop .#msrv --command cargo test --workspace

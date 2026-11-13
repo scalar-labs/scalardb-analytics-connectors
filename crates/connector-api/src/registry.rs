@@ -20,6 +20,8 @@ pub(crate) fn built_in_connectors() -> &'static [BuiltInConnector] {
         vec![
             #[cfg(feature = "test-connector")]
             BuiltInConnector::of::<connector_sdk::test_connector::TestConnector>(),
+            #[cfg(feature = "postgresql")]
+            BuiltInConnector::of::<connector_postgresql::PostgresConnector>(),
         ]
     })
 }
