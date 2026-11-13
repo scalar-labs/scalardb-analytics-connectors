@@ -32,11 +32,11 @@ pub use lifecycle::{
     OptionDescriptor, OptionValue, OptionValueType, SecretString,
 };
 pub use metadata::{
-    Column, ColumnAttribute, ColumnChange, ColumnType, Completeness, Constraint, ConstraintChange,
-    ConstraintChanges, ConstraintKind, Difference, Listed, NameFilter, NamespacePath, Reported,
-    Side, SourceTableMetadata, TableAttribute, TableChanges, TableComparison, TableEntry,
-    TableKind, TableMetadata, TableRecord, TableReference, TableState, UniqueKind,
-    UnsupportedReason, check_schema,
+    Change, Column, ColumnAttribute, ColumnType, Constraint, ConstraintAttribute, ConstraintKind,
+    JsonDifference, Listed, NameFilter, NamespacePath, Reported, SourceMetadataDifferences,
+    SourceTableMetadata, TableAttribute, TableEntry, TableKind, TableMetadata,
+    TableMetadataDifferences, TableRecord, TableReference, UniqueKind, UnsupportedReason,
+    check_schema,
 };
 pub use planning::{
     BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, ConnectorPlanner,

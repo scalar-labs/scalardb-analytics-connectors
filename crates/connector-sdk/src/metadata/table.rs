@@ -15,11 +15,11 @@ use crate::RequestError;
 /// [`TableRecord::Read`].
 ///
 /// Only the connector knows this shape, so comparing source metadata depends on
-/// the connector: a stored document is restored to this type, two values are
-/// the same exactly when they are equal, and what changed is found by
-/// comparing the table metadata derived from both.
+/// the connector: a stored document is restored to this type, and two values
+/// are compared as their documents and through the table metadata derived
+/// from both ([`crate::Catalog::compare_source_metadata`]).
 pub trait SourceTableMetadata:
-    serde::Serialize + serde::de::DeserializeOwned + PartialEq + Send + 'static
+    serde::Serialize + serde::de::DeserializeOwned + Send + 'static
 {
     /// Derives the source-independent table metadata from this source metadata.
     ///

@@ -1,374 +1,212 @@
-use std::time::{Duration, SystemTime};
+//! The comparison of two observations of one table: only values observed on
+//! both sides are compared, and only facts are reported.
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    Column, ColumnAttribute, ColumnChange, ColumnType, Completeness, Constraint, ConstraintChange,
-    ConstraintChanges, ConstraintKind, Difference, Reported, Side, TableAttribute, TableChanges,
-    TableComparison, TableKind, TableMetadata, TableRecord, TableReference, TableState, UniqueKind,
-    UnsupportedReason,
+    Change, Column, ColumnAttribute, ColumnType, Constraint, ConstraintAttribute, ConstraintKind,
+    Reported, TableAttribute, TableKind, TableMetadata, TableMetadataDifferences, TableReference,
+    UniqueKind, UnsupportedReason,
 };
 
 #[test]
-fn identical_retrievals_at_different_times_have_no_changes() {
-    let stored = Table::orders().retrieved();
-    let mut newer = Table::orders();
-    newer.read_at += Duration::from_secs(3600);
-
-    assert_eq!(
-        stored.compare(&newer.retrieved()),
-        compared(Completeness::Complete, Completeness::Complete, no_changes())
-    );
+fn two_identical_observations_have_no_differences() {
+    assert_eq!(Table::orders().compare(&Table::orders()), None);
 }
 
 #[test]
-fn a_column_with_the_same_source_id_and_a_new_name_is_renamed() {
-    let stored = Table::orders().retrieved();
+fn a_column_with_the_same_source_id_and_a_new_name_is_matched_with_its_name_changed() {
     let mut newer = Table::orders();
     newer.columns[1].name = "amount".to_owned();
 
-    let changes = changes_of(stored.compare(&newer.retrieved()));
-
     assert_eq!(
-        changes.columns,
-        vec![ColumnChange::Changed {
+        columns(Table::orders().compare(&newer)),
+        vec![Change::Matched {
             before: Table::orders().columns[1].clone(),
             after: newer.columns[1].clone(),
-            attributes: vec![Difference::Changed(ColumnAttribute::Name)],
+            attributes: vec![ColumnAttribute::Name],
         }]
     );
 }
 
 #[test]
-fn a_column_with_the_same_name_and_a_new_source_id_is_dropped_and_recreated() {
-    let stored = Table::orders().retrieved();
+fn a_column_with_the_same_name_and_a_new_source_id_is_removed_and_added() {
     let mut newer = Table::orders();
     newer.columns[1].source_id = id("9");
 
-    let changes = changes_of(stored.compare(&newer.retrieved()));
-
     assert_eq!(
-        changes.columns,
+        columns(Table::orders().compare(&newer)),
         vec![
-            ColumnChange::Removed(Table::orders().columns[1].clone()),
-            ColumnChange::Added(newer.columns[1].clone()),
+            Change::Removed(Table::orders().columns[1].clone()),
+            Change::Added(newer.columns[1].clone()),
         ]
     );
 }
 
 #[test]
-fn a_table_with_a_new_source_id_is_reported_as_recreated() {
-    let stored = Table::orders().retrieved();
+fn columns_of_a_table_with_a_new_source_id_are_matched_by_name() {
+    // A re-created table reuses column identifiers that are unique only
+    // within one table, such as PostgreSQL attnums.
     let mut newer = Table::orders();
-    newer.source_id = id("16500");
+    newer.source_id = id("16999");
+    newer.columns[1].name = "price".to_owned();
 
-    let changes = changes_of(stored.compare(&newer.retrieved()));
+    let differences = Table::orders().compare(&newer).unwrap();
 
+    assert_eq!(differences.table, vec![TableAttribute::SourceId]);
     assert_eq!(
-        changes.table,
-        vec![Difference::Changed(TableAttribute::SourceId)]
+        differences.columns,
+        vec![
+            Change::Removed(Table::orders().columns[1].clone()),
+            Change::Added(newer.columns[1].clone()),
+        ]
     );
 }
 
 #[test]
 fn columns_without_source_ids_are_matched_by_name() {
-    let mut stored = Table::orders();
-    let mut newer = Table::orders();
-    for table in [&mut stored, &mut newer] {
+    let without_ids = || {
+        let mut table = Table::orders();
         for column in &mut table.columns {
             column.source_id = Reported::NotOffered;
         }
-    }
-    newer.columns[1].nullable = true;
-    newer.columns.push(column(
-        3,
-        "note",
-        mapped("text", AnalyticsType::Text),
-        Reported::NotOffered,
-    ));
-
-    let changes = changes_of(stored.retrieved().compare(&newer.retrieved()));
+        table
+    };
+    let mut renamed = without_ids();
+    renamed.columns[1].name = "amount".to_owned();
+    let mut nullable = without_ids();
+    nullable.columns[1].nullable = true;
 
     assert_eq!(
-        changes.columns,
+        columns(without_ids().compare(&renamed)),
         vec![
-            ColumnChange::Changed {
-                before: stored.columns[1].clone(),
-                after: newer.columns[1].clone(),
-                attributes: vec![Difference::Changed(ColumnAttribute::Nullable)],
-            },
-            ColumnChange::Added(newer.columns[2].clone()),
+            Change::Removed(without_ids().columns[1].clone()),
+            Change::Added(renamed.columns[1].clone()),
         ]
+    );
+    assert_eq!(
+        columns(without_ids().compare(&nullable)),
+        vec![Change::Matched {
+            before: without_ids().columns[1].clone(),
+            after: nullable.columns[1].clone(),
+            attributes: vec![ColumnAttribute::Nullable],
+        }]
     );
 }
 
 #[test]
 fn a_changed_mapping_of_the_same_source_type_changes_only_the_analytics_type() {
-    let stored = Table::orders().retrieved();
     let mut newer = Table::orders();
     newer.columns[1].ty = ColumnType::Unsupported {
         data_source_type: "text".to_owned(),
         reason: UnsupportedReason::MappingNotImplemented,
     };
 
-    let changes = changes_of(stored.compare(&newer.retrieved()));
-
     assert_eq!(
-        changes.columns,
-        vec![ColumnChange::Changed {
-            before: Table::orders().columns[1].clone(),
-            after: newer.columns[1].clone(),
-            attributes: vec![Difference::Changed(ColumnAttribute::AnalyticsType)],
-        }]
+        attributes(Table::orders().compare(&newer)),
+        vec![vec![ColumnAttribute::AnalyticsType]]
     );
 }
 
 #[test]
-fn information_missing_on_either_side_is_unknown_rather_than_changed() {
-    let stored = Table::orders().retrieved();
+fn items_not_observed_on_both_sides_are_not_compared() {
     let mut newer = Table::orders();
     newer.source_id = missing();
     newer.columns[0].source_id = missing();
     newer.columns[1].ty = ColumnType::Unread {
         reason: "permission denied".to_owned(),
     };
+    newer.columns_may_be_hidden = true;
     newer.constraints = missing();
 
-    let comparison = stored.compare(&newer.retrieved());
-
-    let TableComparison::Compared { after, changes, .. } = comparison else {
-        panic!("both sides were read");
-    };
-    assert_eq!(after, Completeness::Incomplete);
-    assert_eq!(
-        changes.table,
-        vec![Difference::Unknown(TableAttribute::SourceId)]
-    );
-    let attributes: Vec<Vec<Difference<ColumnAttribute>>> = changes
-        .columns
-        .into_iter()
-        .map(|change| match change {
-            ColumnChange::Changed { attributes, .. } => attributes,
-            other => panic!("matched columns stay matched: {other:?}"),
-        })
-        .collect();
-    assert_eq!(
-        attributes,
-        vec![
-            vec![Difference::Unknown(ColumnAttribute::SourceId)],
-            vec![
-                Difference::Unknown(ColumnAttribute::DataSourceType),
-                Difference::Unknown(ColumnAttribute::AnalyticsType),
-            ],
-        ]
-    );
-    assert_eq!(changes.constraints, ConstraintChanges::Unknown);
+    assert_eq!(Table::orders().compare(&newer), None);
+    assert_eq!(newer.compare(&Table::orders()), None);
 }
 
 #[test]
-fn items_offered_on_only_one_side_are_unknown_and_on_neither_side_equal() {
-    let mut stored = Table::orders();
-    stored.constraints = Reported::NotOffered;
-    let mut newer = Table::orders();
-    newer.constraints = Reported::NotOffered;
-
-    assert_eq!(
-        changes_of(Table::orders().retrieved().compare(&newer.retrieved())).constraints,
-        ConstraintChanges::Unknown
-    );
-    assert_eq!(
-        changes_of(stored.retrieved().compare(&newer.retrieved())).constraints,
-        ConstraintChanges::Listed(Vec::new())
-    );
-}
-
-#[test]
-fn a_column_absent_where_columns_may_be_hidden_is_unknown() {
-    let stored = Table::orders();
+fn a_column_observed_on_one_side_only_is_added_or_removed_even_where_columns_may_be_hidden() {
     let mut newer = Table::orders();
     newer.columns.pop();
     newer.columns_may_be_hidden = true;
 
-    let changes = changes_of(stored.retrieved().compare(&newer.retrieved()));
     assert_eq!(
-        changes.columns,
-        vec![ColumnChange::Unknown {
-            column: stored.columns[1].clone(),
-            present_in: Side::Before,
-        }]
-    );
-
-    let changes = changes_of(newer.retrieved().compare(&stored.retrieved()));
-    assert_eq!(
-        changes.columns,
-        vec![ColumnChange::Unknown {
-            column: stored.columns[1].clone(),
-            present_in: Side::After,
-        }]
+        columns(Table::orders().compare(&newer)),
+        vec![Change::Removed(Table::orders().columns[1].clone())]
     );
 }
 
 #[test]
-fn a_renamed_column_whose_source_id_is_missing_is_not_reported_as_dropped() {
-    let stored = Table::orders();
+fn a_changed_kind_is_a_table_difference() {
     let mut newer = Table::orders();
-    newer.columns[1].name = "amount".to_owned();
-    newer.columns[1].source_id = missing();
-
-    let changes = changes_of(stored.retrieved().compare(&newer.retrieved()));
+    newer.kind = TableKind::View;
 
     assert_eq!(
-        changes.columns,
-        vec![
-            ColumnChange::Unknown {
-                column: stored.columns[1].clone(),
-                present_in: Side::Before,
-            },
-            ColumnChange::Unknown {
-                column: newer.columns[1].clone(),
-                present_in: Side::After,
-            },
-        ]
+        Table::orders().compare(&newer).unwrap().table,
+        vec![TableAttribute::Kind]
     );
 }
 
 #[test]
-fn ordinals_shifted_where_columns_may_be_hidden_are_unknown() {
-    let stored = Table::orders();
+fn constraints_are_matched_by_kind_and_name_and_report_their_changed_attributes() {
     let mut newer = Table::orders();
-    newer.columns.remove(0);
-    newer.columns[0].ordinal = 1;
-    newer.columns_may_be_hidden = true;
-
-    let changes = changes_of(stored.retrieved().compare(&newer.retrieved()));
-
-    assert_eq!(
-        changes.columns,
-        vec![
-            ColumnChange::Unknown {
-                column: stored.columns[0].clone(),
-                present_in: Side::Before,
-            },
-            ColumnChange::Changed {
-                before: stored.columns[1].clone(),
-                after: newer.columns[0].clone(),
-                attributes: vec![Difference::Unknown(ColumnAttribute::Ordinal)],
-            },
-        ]
-    );
-}
-
-#[test]
-fn constraints_are_matched_by_kind_and_name() {
-    let stored = Table::orders();
-    let mut newer = Table::orders();
-    newer.constraints = Reported::Value(vec![
-        Constraint {
-            name: "orders_pkey".to_owned(),
-            enforced: false,
-            kind: ConstraintKind::PrimaryKey {
-                columns: vec!["id".to_owned()],
-            },
-        },
-        Constraint {
-            name: "orders_total_check".to_owned(),
-            enforced: true,
-            kind: ConstraintKind::Check {
-                expression: "total >= 0".to_owned(),
-            },
-        },
-    ]);
-
-    let changes = changes_of(stored.retrieved().compare(&newer.retrieved()));
-
-    let Reported::Value(before) = &stored.constraints else {
-        unreachable!()
+    let Reported::Value(constraints) = &mut newer.constraints else {
+        unreachable!("the fixture reads constraints");
     };
-    let Reported::Value(after) = &newer.constraints else {
-        unreachable!()
+    constraints[1].enforced = false;
+    constraints[1].kind = ConstraintKind::Unique {
+        columns: vec!["total".to_owned()],
+        kind: UniqueKind::Index,
+        condition: Some("total > 0".to_owned()),
     };
+    constraints.push(check("orders_total_check"));
+
     assert_eq!(
-        changes.constraints,
-        ConstraintChanges::Listed(vec![
-            ConstraintChange::Changed {
-                before: before[0].clone(),
-                after: after[0].clone(),
+        Table::orders().compare(&newer).unwrap().constraints,
+        vec![
+            Change::Matched {
+                before: Table::orders().constraint(1),
+                after: newer.constraint(1),
+                attributes: vec![
+                    ConstraintAttribute::Enforced,
+                    ConstraintAttribute::Condition
+                ],
             },
-            ConstraintChange::Removed(before[1].clone()),
-            ConstraintChange::Added(after[1].clone()),
-        ])
+            Change::Added(check("orders_total_check")),
+        ]
     );
 }
 
 #[test]
 fn a_constraint_of_another_kind_with_the_same_name_is_a_different_constraint() {
-    let stored = Table::orders();
     let mut newer = Table::orders();
-    let unique_as_check = Constraint {
-        name: "orders_total_key".to_owned(),
-        enforced: true,
-        kind: ConstraintKind::Check {
-            expression: "total <> ''".to_owned(),
-        },
-    };
     let Reported::Value(constraints) = &mut newer.constraints else {
-        unreachable!()
+        unreachable!("the fixture reads constraints");
     };
-    constraints[1] = unique_as_check.clone();
+    constraints[1] = check("orders_total_key");
 
-    let changes = changes_of(stored.retrieved().compare(&newer.retrieved()));
-
-    let Reported::Value(before) = &stored.constraints else {
-        unreachable!()
-    };
     assert_eq!(
-        changes.constraints,
-        ConstraintChanges::Listed(vec![
-            ConstraintChange::Removed(before[1].clone()),
-            ConstraintChange::Added(unique_as_check),
-        ])
+        Table::orders().compare(&newer).unwrap().constraints,
+        vec![
+            Change::Removed(Table::orders().constraint(1)),
+            Change::Added(check("orders_total_key")),
+        ]
     );
 }
 
-#[test]
-fn tables_that_do_not_exist_or_could_not_be_read_are_not_compared() {
-    let stored = Table::orders().retrieved();
-    let not_found = TableRecord::NotFound {
-        table: orders_reference(),
-    };
-    let unavailable = TableRecord::Unavailable {
-        table: orders_reference(),
-        reason: "permission denied".to_owned(),
-    };
-
-    assert_eq!(
-        stored.compare(&not_found),
-        TableComparison::NotCompared {
-            before: TableState::Read(Completeness::Complete),
-            after: TableState::NotFound,
-        }
-    );
-    assert_eq!(
-        unavailable.compare(&stored),
-        TableComparison::NotCompared {
-            before: TableState::Unavailable,
-            after: TableState::Read(Completeness::Complete),
-        }
-    );
-}
-
-/// The fields of one read table and its retrieval time, kept editable so each
-/// test states its change.
+/// The items of one observed table, kept editable so each test states its
+/// change.
+#[derive(Clone)]
 struct Table {
+    kind: TableKind,
     source_id: Reported<String>,
     columns: Vec<Column>,
     columns_may_be_hidden: bool,
     constraints: Reported<Vec<Constraint>>,
-    read_at: SystemTime,
 }
 
 impl Table {
     fn orders() -> Self {
         Self {
+            kind: TableKind::Table,
             source_id: id("16384"),
             columns: vec![
                 column(1, "id", mapped("int8", AnalyticsType::BigInt), id("1")),
@@ -393,23 +231,44 @@ impl Table {
                     },
                 },
             ]),
-            read_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         }
     }
 
-    fn retrieved(&self) -> TableRecord<TableMetadata> {
-        TableRecord::Read {
-            metadata: TableMetadata::new(
-                orders_reference(),
-                TableKind::Table,
-                self.source_id.clone(),
-                self.columns.clone(),
-                self.columns_may_be_hidden,
-                self.constraints.clone(),
-            ),
-            read_at: self.read_at,
-        }
+    fn metadata(&self) -> TableMetadata {
+        TableMetadata::new(
+            TableReference::new(vec!["public".to_owned(), "orders".to_owned()]).unwrap(),
+            self.kind.clone(),
+            self.source_id.clone(),
+            self.columns.clone(),
+            self.columns_may_be_hidden,
+            self.constraints.clone(),
+        )
     }
+
+    fn compare(&self, newer: &Self) -> Option<TableMetadataDifferences> {
+        self.metadata().compare(&newer.metadata())
+    }
+
+    fn constraint(&self, index: usize) -> Constraint {
+        let Reported::Value(constraints) = &self.constraints else {
+            unreachable!("the fixture reads constraints");
+        };
+        constraints[index].clone()
+    }
+}
+
+fn columns(differences: Option<TableMetadataDifferences>) -> Vec<Change<Column, ColumnAttribute>> {
+    differences.expect("the observations differ").columns
+}
+
+fn attributes(differences: Option<TableMetadataDifferences>) -> Vec<Vec<ColumnAttribute>> {
+    columns(differences)
+        .into_iter()
+        .map(|change| match change {
+            Change::Matched { attributes, .. } => attributes,
+            other => panic!("the column stays matched: {other:?}"),
+        })
+        .collect()
 }
 
 fn column(ordinal: u32, name: &str, ty: ColumnType, source_id: Reported<String>) -> Column {
@@ -429,40 +288,22 @@ fn mapped(data_source_type: &str, analytics_type: AnalyticsType) -> ColumnType {
     }
 }
 
-fn id(value: &str) -> Reported<String> {
-    Reported::Value(value.to_owned())
+fn check(name: &str) -> Constraint {
+    Constraint {
+        name: name.to_owned(),
+        enforced: true,
+        kind: ConstraintKind::Check {
+            expression: "total <> ''".to_owned(),
+        },
+    }
 }
 
-fn orders_reference() -> TableReference {
-    TableReference::new(vec!["public".to_owned(), "orders".to_owned()])
-        .expect("the reference has non-empty names")
+fn id(value: &str) -> Reported<String> {
+    Reported::Value(value.to_owned())
 }
 
 fn missing<T>() -> Reported<T> {
     Reported::Missing {
         reason: "permission denied".to_owned(),
-    }
-}
-
-fn no_changes() -> TableChanges {
-    TableChanges {
-        table: Vec::new(),
-        columns: Vec::new(),
-        constraints: ConstraintChanges::Listed(Vec::new()),
-    }
-}
-
-fn compared(before: Completeness, after: Completeness, changes: TableChanges) -> TableComparison {
-    TableComparison::Compared {
-        before,
-        after,
-        changes,
-    }
-}
-
-fn changes_of(comparison: TableComparison) -> TableChanges {
-    match comparison {
-        TableComparison::Compared { changes, .. } => changes,
-        TableComparison::NotCompared { .. } => panic!("both sides were read"),
     }
 }

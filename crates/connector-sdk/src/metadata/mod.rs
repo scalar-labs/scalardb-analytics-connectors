@@ -10,9 +10,10 @@ mod listing;
 mod schema_check;
 mod table;
 
+pub(crate) use comparison::compare_source_metadata;
 pub use comparison::{
-    ColumnAttribute, ColumnChange, Completeness, ConstraintChange, ConstraintChanges, Difference,
-    Side, TableAttribute, TableChanges, TableComparison, TableState,
+    Change, ColumnAttribute, ConstraintAttribute, JsonDifference, SourceMetadataDifferences,
+    TableAttribute, TableMetadataDifferences,
 };
 pub use listing::{Listed, NameFilter, NamespacePath, TableEntry};
 pub use schema_check::check_schema;

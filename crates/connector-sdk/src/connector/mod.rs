@@ -36,7 +36,8 @@ use crate::{
     Component, ConnectionOptions, ConnectorDescriptor, ConnectorError, DataSourceAccess,
     ExecutableQueryResult, ExecutionOutput, LibrarySettings, Listed, LogicalPlan, NameFilter,
     NamespacePath, PlanningError, PortableQuery, PushdownRequest, PushdownResult, RemoteExecution,
-    RewriteRuleSet, SourceTableMetadata, TableEntry, TableRecord, TableReference,
+    RewriteRuleSet, SourceMetadataDifferences, SourceTableMetadata, TableEntry, TableRecord,
+    TableReference,
 };
 
 /// The diagnostic a Connector's access reports for a Data Source error.
@@ -201,6 +202,20 @@ pub trait Catalog<C: Connector>: 'static {
         session: &Session<C>,
         tables: &[TableReference],
     ) -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
+
+    /// Compares two observations of one table's source metadata; `None` when
+    /// they do not differ.
+    ///
+    /// The documents are compared as JSON, which also covers what table
+    /// metadata does not hold, and the table metadata derived from both is
+    /// compared item by item. Every catalog shares this comparison; restoring
+    /// stored documents to [`Catalog::Table`] is the caller's.
+    fn compare_source_metadata(
+        before: &Self::Table,
+        after: &Self::Table,
+    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError> {
+        crate::metadata::compare_source_metadata(before, after)
+    }
 }
 
 /// How a Connector decomposes an offered plan and generates its query.

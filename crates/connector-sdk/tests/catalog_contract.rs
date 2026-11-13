@@ -11,9 +11,9 @@ use std::{
 
 use analytics_types::AnalyticsType;
 use connector_sdk::{
-    Column, ColumnAttribute, ColumnChange, ColumnType, ConnectorError, Constraint, ConstraintKind,
-    Difference, ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter, NamespacePath,
-    Reported, SourceStream, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
+    Change, Column, ColumnAttribute, ColumnType, ConnectorError, Constraint, ConstraintKind,
+    ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter, NamespacePath, Reported,
+    SourceStream, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
     TableReference, UniqueKind, UnsupportedReason, start_source_read,
 };
 use futures_core::Stream;
@@ -120,21 +120,19 @@ fn stored_source_metadata_is_compared_through_the_connector_type() {
 
     assert_eq!(restored, source_table());
     assert_ne!(restored, changed);
-    let changes = restored
+    let differences = restored
         .to_table_metadata()
-        .compare(&changed.to_table_metadata());
-    let attributes: Vec<_> = changes
+        .compare(&changed.to_table_metadata())
+        .expect("the nullability changed");
+    let attributes: Vec<_> = differences
         .columns
         .iter()
         .map(|change| match change {
-            ColumnChange::Changed { attributes, .. } => attributes.as_slice(),
+            Change::Matched { attributes, .. } => attributes.as_slice(),
             other => panic!("the column stays matched: {other:?}"),
         })
         .collect();
-    assert_eq!(
-        attributes,
-        vec![[Difference::Changed(ColumnAttribute::Nullable)].as_slice()]
-    );
+    assert_eq!(attributes, vec![[ColumnAttribute::Nullable].as_slice()]);
 }
 
 #[test]
