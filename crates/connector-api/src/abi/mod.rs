@@ -12,19 +12,22 @@
 //! - Output text is UTF-8 with a length and a NUL terminator after it; absent
 //!   output text has a null `data`.
 //! - Text inside structures, in both directions, is a
-//!   `ScalardbAnalyticsConnectorString`.
+//!   `ScalardbAnalyticsConnectorString`, so an output structure can be passed
+//!   back unchanged as an input.
 //! - Binary data, such as Substrait plans, carries a length and no terminator.
 //! - The library copies every input during the call.
 //! - A timeout of 0 milliseconds means no limit.
 //! - An output structure tree passes to the caller, which frees it once with
 //!   the free function named for its root; that frees the whole tree.
 
+mod comparison;
 mod error;
 mod metadata;
 mod owned;
 mod stream;
 mod text;
 
+pub use comparison::*;
 pub use error::{
     ScalardbAnalyticsConnectorDiagnostic, ScalardbAnalyticsConnectorDiagnosticPayload,
     ScalardbAnalyticsConnectorDiagnosticType, ScalardbAnalyticsConnectorError,
@@ -54,7 +57,7 @@ use connector_sdk::{
 
 use crate::{library, registry};
 use error::OwnedError;
-use metadata::read_table_reference;
+use metadata::{read_source_metadata, read_table_metadata, read_table_reference};
 use owned::{Arena, Owned};
 use text::{TerminatedText, read_optional_text, read_secret_text, read_text};
 
@@ -707,6 +710,10 @@ pub unsafe extern "C" fn scalardb_analytics_connector_table_list_free(
 /// that do not exist or could not be read. Otherwise as
 /// `scalardb_analytics_connector_namespace_list`.
 ///
+/// A record's `table_metadata` and `source_metadata` are passed unchanged to
+/// `scalardb_analytics_connector_table_metadata_compare` and
+/// `scalardb_analytics_connector_source_metadata_compare`.
+///
 /// # Safety
 ///
 /// `session` is an open handle, `tables` points to `table_count` valid name
@@ -756,6 +763,124 @@ pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_result_free
 ) {
     // SAFETY: forwarded from the caller.
     unsafe { Owned::free(result) }
+}
+
+/// Compares two observations of one table's table metadata that the caller
+/// paired, such as a stored one and a newly retrieved one.
+///
+/// Only values observed on both sides are compared. `out_differences`
+/// receives null when no value differs. Input that is not valid table
+/// metadata is `invalid request`. It needs no handle.
+///
+/// # Safety
+///
+/// `before` and `after` point to valid table metadata, and `out_differences`
+/// is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_compare(
+    before: *const ScalardbAnalyticsConnectorTableMetadata,
+    after: *const ScalardbAnalyticsConnectorTableMetadata,
+    out_differences: *mut *mut ScalardbAnalyticsConnectorTableMetadataDifferences,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        // The output is checked first, so a null pointer is rejected before
+        // the source is queried or a result is built.
+        require_output(out_differences, "out_differences")?;
+        // SAFETY: the caller passes valid table metadata.
+        let (before, after) = unsafe {
+            (
+                read_table_metadata(reference(before, "before")?)?,
+                read_table_metadata(reference(after, "after")?)?,
+            )
+        };
+        let differences = before.compare(&after).map(|differences| {
+            let mut arena = Arena::default();
+            let view = arena.table_metadata_differences(&differences);
+            Owned::into_raw(view, arena)
+        });
+        // SAFETY: the caller passes a writable output pointer.
+        unsafe {
+            write(
+                out_differences,
+                differences.unwrap_or(ptr::null_mut()),
+                "out_differences",
+            )
+        }
+    })
+}
+
+/// Frees table metadata differences.
+///
+/// # Safety
+///
+/// `differences` is null or a live result, not used after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_differences_free(
+    differences: *mut ScalardbAnalyticsConnectorTableMetadataDifferences,
+) {
+    // SAFETY: forwarded from the caller.
+    unsafe { Owned::free(differences) }
+}
+
+/// Compares two observations of one table's source metadata through the
+/// connector that produced them, which restores both documents.
+///
+/// `out_differences` receives null when neither the documents nor the table
+/// metadata derived from them differ. Documents of different connectors, of
+/// a connector not built into the library, or that the connector cannot
+/// restore, such as one stored before a connector update changed its shape,
+/// are `invalid request`. It needs an initialized library and no handle.
+///
+/// # Safety
+///
+/// `before` and `after` point to valid source metadata, and `out_differences`
+/// is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_source_metadata_compare(
+    before: *const ScalardbAnalyticsConnectorSourceMetadata,
+    after: *const ScalardbAnalyticsConnectorSourceMetadata,
+    out_differences: *mut *mut ScalardbAnalyticsConnectorSourceMetadataDifferences,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        // The output is checked first, so a null pointer is rejected before
+        // the source is queried or a result is built.
+        require_output(out_differences, "out_differences")?;
+        // SAFETY: the caller passes valid source metadata.
+        let (before, after) = unsafe {
+            (
+                read_source_metadata(reference(before, "before")?)?,
+                read_source_metadata(reference(after, "after")?)?,
+            )
+        };
+        let differences = library::current()?
+            .compare_source_metadata(&before, &after)?
+            .map(|differences| {
+                let mut arena = Arena::default();
+                let view = arena.source_metadata_differences(&differences);
+                Owned::into_raw(view, arena)
+            });
+        // SAFETY: the caller passes a writable output pointer.
+        unsafe {
+            write(
+                out_differences,
+                differences.unwrap_or(ptr::null_mut()),
+                "out_differences",
+            )
+        }
+    })
+}
+
+/// Frees source metadata differences.
+///
+/// # Safety
+///
+/// `differences` is null or a live result, not used after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_source_metadata_differences_free(
+    differences: *mut ScalardbAnalyticsConnectorSourceMetadataDifferences,
+) {
+    // SAFETY: forwarded from the caller.
+    unsafe { Owned::free(differences) }
 }
 
 /// Writes an output tree to a required output pointer, freeing it when the

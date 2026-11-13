@@ -24,7 +24,8 @@ header = """
  *   U+0000 is complete only through `length`. Absent output text has a NULL
  *   `data`.
  * - Text inside structures, in both directions, is a
- *   ScalardbAnalyticsConnectorString.
+ *   ScalardbAnalyticsConnectorString, so an output structure can be passed
+ *   back unchanged as an input.
  * - Binary data, such as Substrait plans, carries a length and no terminator.
  * - The library copies every input during the call.
  * - A timeout of 0 milliseconds means no limit.

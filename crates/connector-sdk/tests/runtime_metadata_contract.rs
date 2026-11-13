@@ -155,6 +155,7 @@ fn table_metadata_returns_one_record_per_table_in_request_order() {
         let source = TestTable {
             table: names(&["test", "public", "orders"]),
             fixture,
+            note: None,
         };
         TableRecord::Read {
             metadata: TableRead {
@@ -198,6 +199,70 @@ fn table_metadata_returns_one_record_per_table_in_request_order() {
             library_version: LIBRARY_VERSION.to_owned(),
         }
     );
+}
+
+#[test]
+fn a_retrieved_record_compares_with_a_later_one_without_conversion() {
+    let library = library();
+    let options = vec![(
+        "label".to_owned(),
+        SecretString::new("metadata-compare".to_owned()),
+    )];
+    let session = library
+        .open_data_source("test", options, None)
+        .unwrap()
+        .open_session()
+        .unwrap();
+    let read = |name: &str| match records(&session, &[name]).pop().unwrap() {
+        TableRecord::Read { metadata, .. } => metadata,
+        other => panic!("{name} was read: {other:?}"),
+    };
+    let stored = read("orders");
+    let fresh = read("orders");
+
+    assert_eq!(stored.table_metadata.compare(&fresh.table_metadata), None);
+    assert_eq!(
+        library
+            .compare_source_metadata(&stored.source_metadata, &fresh.source_metadata)
+            .unwrap(),
+        None
+    );
+    let renamed = read("orders_renamed");
+    assert!(
+        library
+            .compare_source_metadata(&stored.source_metadata, &renamed.source_metadata)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn source_metadata_of_another_or_unknown_connector_is_an_invalid_request() {
+    let library = library();
+    let document = |connector: &str, document: &str| SourceMetadata {
+        connector: connector.to_owned(),
+        document: document.to_owned(),
+    };
+    let orders = serde_json::to_string(&TestTable {
+        table: names(&["test", "public", "orders"]),
+        fixture: TestFixture::Orders,
+        note: None,
+    })
+    .unwrap();
+
+    for (before, after) in [
+        (document("test", &orders), document("other", &orders)),
+        (document("other", &orders), document("other", &orders)),
+        (document("test", &orders), document("test", "{}")),
+    ] {
+        assert_eq!(
+            library
+                .compare_source_metadata(&before, &after)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidRequest
+        );
+    }
 }
 
 #[test]

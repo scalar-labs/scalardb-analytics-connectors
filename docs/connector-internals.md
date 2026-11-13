@@ -69,11 +69,11 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads and metadata requests, the Arrow rows of metadata results, cancellation, the timeout watcher, and panic containment | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, the comparison of two observations of one table, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads, synchronous metadata requests and the cancellations callers pass to them, cancellation, the timeout watcher, and panic containment | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: the `AdbcConnector` trait and the `Adbc<C>` access component built from it (loading drivers through the ADBC driver manager and checking their versions, passing options, opening Data Sources and connecting sessions), running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by ADBC status and SQL-standard SQLSTATE class where the Connector's error table does not match ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
 | `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: the `SqlConnector` trait and the catalog, planner, and executor components built from it, running catalog queries, the filter and projection rewrite rules over the Connector's semantic decisions, generating SQL from remote `LogicalPlan` values with the Connector's dialect, and sending the planned statement | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its `Connector` implementation and its declarations to the layer traits, written as Rust code and constant tables. An ADBC-access Connector also implements `AdbcConnector`, and a SQL-speaking one also `SqlConnector`; a direct-access Connector supplies its own components and reads the Data Source itself. | Knowledge of other Connectors |
-| `connector-api` | The connector API's C ABI and its header, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
+| `connector-api` | The connector API's C ABI and its header, the C structures of metadata and comparisons and their conversion to and from the SDK's types, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
 | `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
 | `conformance` | The runner that tests the contract through the connector API only, and per-Connector fixtures | Dependencies on Connector internals |
 
@@ -87,6 +87,7 @@ such as adapters and the Physical Catalog, use the typed connector API.
 connector-api --> connectors/<connector> (SQL family) --> connector-sql --> connector-adbc --> connector-sdk --> analytics-types
 connector-api --> connectors/<connector> (direct access) ----------------------------------> connector-sdk
 connector-api --> connector-sdk
+connector-api --> analytics-types   (Analytics types in metadata structures)
 connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
 conformance --> connector-api C ABI and contract
 ~~~
@@ -314,6 +315,9 @@ Catalog<C>:
     namespace_list(session, filter) -> ExecutionOutput<Listed<NamespacePath>>
     table_list(session, namespaces, tables) -> ExecutionOutput<Listed<TableEntry>>
     table_metadata(session, tables) -> ExecutionOutput<TableRecord<Table>>
+    provided:
+    compare_source_metadata(before Table, after Table)
+        -> no difference | SourceMetadataDifferences
 
 Planner<C>:
     type Facts                            Connector-private planning metadata
@@ -587,12 +591,16 @@ pub trait Catalog<C: Connector>: 'static {
     /// One record per requested table.
     fn table_metadata(session: &Session<C>, tables: &[TableReference])
         -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
+
+    /// Provided: compares two observations of one table's source metadata.
+    fn compare_source_metadata(before: &Self::Table, after: &Self::Table)
+        -> Result<Option<SourceMetadataDifferences>, ConnectorError>;
 }
 
 /// Serialized as the source metadata JSON document; the connector decides its
 /// shape. A stored document is restored to this type to compare it.
 pub trait SourceTableMetadata:
-    serde::Serialize + serde::de::DeserializeOwned + PartialEq + Send + 'static
+    serde::Serialize + serde::de::DeserializeOwned + Send + 'static
 {
     /// The connector applies its type mapping here.
     fn to_table_metadata(&self) -> TableMetadata;
@@ -633,7 +641,7 @@ per namespace, its `ExecutionCancel` stops the execution in progress. Each
 function receives the SDK's `Session<C>`, which carries the access's session
 state and the context the catalog read when the session opened.
 
-The three `TableRecord` states correspond one to one to the contract's row
+The three `TableRecord` states correspond one to one to the contract's record
 states: `Read` is complete or incomplete, `NotFound` is "does not exist", and
 `Unavailable` is "could not be read"
 ([Missing information](connector-contract.md#missing-information)). Whether
@@ -647,22 +655,31 @@ Source metadata and table metadata hold only what the source states, so equal
 source state gives equal values. The retrieval time is retrieval info, not
 content, and travels beside them in `TableRecord::Read`.
 
-Comparing two retrievals of one table follows the same split. Table metadata
-has one shape for every connector, so the SDK compares it without any
-connector: `TableMetadata::compare` compares two reads, and
-`TableRecord<TableMetadata>::compare` adds the table states
+Comparing two observations of one table follows the same split
 ([Comparing table metadata](connector-contract.md#comparing-table-metadata)).
-Source metadata has the connector's shape, so only that connector's type can
-restore a stored document. Two restored values are the same exactly when they
-are equal, and what changed is found by comparing the table metadata derived
-from both.
+Both comparisons return `None` when nothing differs, and otherwise only
+values observed on both sides that differ. Table metadata has one shape for
+every connector, so the SDK compares it without any connector:
+`TableMetadata::compare` returns `TableMetadataDifferences`, whose columns
+and constraints are each a `Change` (added, removed, or matched with the
+attributes that differ). Source metadata has the connector's shape, so its
+comparison belongs to the component that defines that shape:
+`Catalog::compare_source_metadata` takes two values of `Catalog::Table`,
+compares them as JSON documents, and compares the table metadata derived from
+both. Every catalog shares this provided function. A table metadata result
+carries each table's source metadata as `SourceMetadata`, its connector's name
+and its JSON document. The runtime's `Library::compare_source_metadata` finds
+the built-in connector of that name and restores both documents to its
+`Catalog::Table`; documents of different connectors, an unknown connector, or
+a document that cannot be restored is `invalid request`.
 
 Retrieval info is assembled from each table's `read_at`, the connector's name
 and version in its `ConnectorDescriptor`, and the driver component the
 access reports for the session through `Access::component` (with ADBC access,
-the ADBC driver's name and version). The
-connector API adds the library version and converts table metadata and source
-metadata to the Arrow output.
+the ADBC driver's name and version). The runtime adds the library version and
+returns `TableMetadataResult`: the records, each read table as `TableRead`
+with its table metadata and source metadata, and the retrieval info.
+`connector-api` converts it to C structures.
 
 ## Connector behavior as code
 
@@ -695,8 +712,9 @@ them through the C ABI.
   second initialization returns `invalid state`.
 - **Static information:** assembled from the registered connectors'
   `ConnectorDescriptor` values.
-- **The C representation:** handles, error structures, text conventions, and
-  the Arrow C stream.
+- **The C representation:** handles, error structures, text conventions, the
+  Arrow C stream of read results, and the C structures of metadata and
+  comparisons with their conversion to and from the SDK's types.
 
 The runtime owns the contract's semantics:
 
@@ -709,17 +727,21 @@ The runtime owns the contract's semantics:
   form, is `invalid settings` naming the option. Every value is held in an
   erasing secret type while it is checked, and the values of options marked
   secret stay in that type.
-- **Unit management:** the library, data sources, sessions, operations, and
-  result streams are managed as described in [Lifetimes](#lifetimes). A read
-  and the three metadata requests are one kind of operation: they differ only
-  in the request sent at the first pull, so the session lease, cancellation,
-  the timeout, and panic containment apply to them alike.
-- **Metadata rows:** each catalog item becomes one row of its request's fixed
-  Arrow schema ([Metadata schemas](connector-contract.md#metadata-schemas)) as
-  it is pulled. A connector's source metadata type is erased at this point:
-  the runtime serializes it as the JSON document and derives the table
-  metadata from it, and adds retrieval info from the data source's connector,
-  the session's ADBC driver, and the library version.
+- **Unit management:** the library, data sources, sessions, read operations,
+  and result streams are managed as described in [Lifetimes](#lifetimes).
+- **Metadata requests:** `SessionState::namespace_list`, `table_list`, and
+  `table_metadata` are synchronous calls. Each takes the session lease for
+  the call, reads the catalog to its end, and returns the whole result or only
+  an error. The timeout counts from the call, and a caller's `Cancellation`
+  stops the catalog read from any thread. A connector's source metadata type
+  is erased here: the runtime serializes it as the JSON document, derives the
+  table metadata from it, and adds retrieval info from the data source's
+  connector, the session's ADBC driver, and the library version.
+- **Source metadata comparison:** `Library::compare_source_metadata`
+  dispatches by the connector name the source metadata carries, restores both
+  documents to that connector's `Catalog::Table`, the only place that type is
+  known behind the object-safe view, and calls
+  `Catalog::compare_source_metadata`.
 - **Planning errors:** a Connector's planning failure carries a
   `ConnectorError`, so `plan_pushdown` returns its kind, retryability, and
   Data Source details unchanged.
@@ -738,6 +760,28 @@ cbindgen, and a test fails when the committed header differs from the
 generated one. Every C function contains panics; a function that fails returns
 an error the caller frees, and an operation's error is owned by the operation.
 
+The C structures of metadata mirror the SDK's types but have a different
+role. The SDK's types are validated domain values and know nothing of C; the
+dependency runs one way, from `connector-api` to `connector-sdk`. The C
+structures are non-owning memory layouts:
+
+- **Output:** the library converts an SDK value into a tree of C views in
+  the shape of an ordinary C API and passes it to the caller, which then owns
+  the duty to free it. Every allocation the views point to is kept in an
+  arena behind the root view, invisible to C, so the root's free function
+  releases the whole tree at once instead of walking it.
+- **Input:** the library reads the caller's structures during the call,
+  checks them, and builds SDK values; anything not valid, including an
+  enumerated value outside its constants, is `invalid request`. Enumerated
+  fields and truth values are integer newtypes with named constants rather
+  than Rust enums and `bool`, because an input may hold any bit pattern.
+
+Because output text and input text use the same string structure, a
+retrieved record's table metadata or source metadata is passed back to a
+comparison unchanged. A unit test writes SDK values covering every variant
+of the mirrored enums to C structures and reads them back, asserting that they
+equal the originals, so drift between the two sets of types fails a test.
+
 ## Lifetimes
 
 | Unit | Created | Holds | Released |
@@ -745,8 +789,10 @@ an error the caller frees, and an operation's error is owned by the operation.
 | Library | At initialization | Settings, each registered Connector's access library state (with ADBC access, the ADBC driver, loaded when the first Data Source opens), and the timeout watcher thread | Closed at shutdown; its state, including the watcher, lives until its last Data Source, session, and operation are released, so running reads still stop at their deadlines. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
 | Data source | When opened | The selected connector, validated connection settings and credentials, and, with ADBC access, its ADBC database | When the data source and every session using it are closed |
 | Session | When opened | Its `Session<C>`: the access's session state (with ADBC access, an ADBC connection and the driver component), the catalog's context read when it opened, and the planner's rewrite rules | When closed, releasing its `Session<C>` |
-| Operation | When started: validates the request and takes a session lease | Data Source resources: the session lease and, after resolution or first pull, its execution/read state and `CancelHandle`; also cancellation, deadline, and error state | When closed, releasing every Data Source resource. Metadata/read resources are also released, and the lease returned, when the stream ends or is released. |
-| Result stream | When a metadata or read operation starts | A reference to the operation, conversion state, expected output schema, and cancellation/deadline state. It holds no Data Source resources. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
+| Operation | When a read starts: validates the request and takes a session lease | Data Source resources: the session lease and, after the first pull, its read state and `CancelHandle`; also cancellation, deadline, and error state | When closed, releasing every Data Source resource. Read resources are also released, and the lease returned, when the stream ends or is released. |
+| Result stream | When a read starts | A reference to the operation, conversion state, expected output schema, and cancellation/deadline state. It holds no Data Source resources. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
+| Cancellation | When the caller creates it | Whether it was cancelled, and the cancel handles of the catalog reads running with it | When the caller frees it, after no request runs with it |
+| Metadata result, comparison differences | When a metadata request or a comparison returns | The C views and the arena they point into; no Data Source resources | When the caller frees the root with its free function |
 
 The caller-visible rules (one running operation per session, no pool, release
 order) are in [Units and concurrency](connector-contract.md#units-and-concurrency).
@@ -768,7 +814,8 @@ They are realized as follows:
 | Internal state of connector API units | The library | Released by the matching close function |
 | `ArrowArrayStream` | The caller that received it | The caller calls the stream's `release`; the library then releases the stream returned by Data Source access and stops the query |
 | `ArrowArray` and `ArrowSchema` | The caller that received them | Each array is released individually, per the Arrow C data interface. Unconverted columns pass on the buffers Data Source access returned; converted columns pass buffers the library created. |
-| Strings and bytes the caller passes (option values, Substrait plans) | The caller | The library copies them during the call and does not refer to them afterwards |
+| Strings, bytes, and structures the caller passes (option values, Substrait plans, table names, table metadata, source metadata) | The caller | The library reads or copies them during the call and does not refer to them afterwards |
+| Metadata results and comparison differences | The caller that received them | The library allocates the tree and passes it to the caller, which frees it once with the free function of its root; that releases the whole tree, and no pointer into it stays valid afterwards |
 | Error structures | The library | Valid until the caller calls the release function; an operation's error is valid until the operation is closed |
 | Credentials | The data source | [Credential boundary](#credential-boundary) |
 
@@ -790,11 +837,14 @@ built into the library and have no such problem.
 Data Source access is synchronous. ADBC is a synchronous C API, and the
 connector SDK has no asynchronous runtime. Starting an operation only validates
 the request (including the checks in [Read representation](#read-representation))
-and does not call Data Source access. Read and metadata Data Source access is
-called from the caller's thread inside a stream pull; planning resolution may
-also call it from `plan_pushdown`. At the first pull, the connector SDK translates the
-request, starts the catalog read or `Connector::read`, stores the returned execution and its
-cancel handle in the operation, and then pulls its stream. A direct-access
+and does not call Data Source access. A read's Data Source access is called
+from the caller's thread inside a stream pull, and a metadata request's inside
+the call itself; planning resolution may also call it from `plan_pushdown`. At
+a read's first pull, the connector SDK translates the request, starts
+`Connector::read`, stores the returned execution and its cancel handle in the
+operation, and then pulls its stream. A metadata request starts the catalog
+read, registers its cancel handle with the timeout watcher and with the
+caller's cancellation, and pulls it to the end before returning. A direct-access
 implementation that uses an asynchronous reader crate keeps that runtime inside
 the implementation and waits for results within the component call; the
 runtime never leaves the component.
@@ -832,6 +882,7 @@ the statement concurrently.
 | --- | --- |
 | Library, data source | Allowed from several threads |
 | Session, operation, result stream | One at a time ([Units and concurrency](connector-contract.md#units-and-concurrency)), except that an operation may be cancelled from another thread |
+| Cancellation | Allowed from several threads; it is cancelled from another thread while a metadata request runs with it |
 
 A data source is used from several threads. The access's Data Source state
 (`Access::DataSource`) is `Send + Sync`, and a direct-access implementation
@@ -843,7 +894,8 @@ functions (creating connections). The `Connector` trait is also `Send + Sync`.
 
 Cancellation propagates in this order:
 
-1. The caller cancels an operation from any thread.
+1. The caller cancels a read operation, or the cancellation a metadata
+   request was given, from any thread.
 2. The caller's `ExecutionCancelHandle` records cancellation and calls the
    `ExecutionCancel` the connector returned with that execution
    (`ExecutionOutput`).
@@ -866,7 +918,13 @@ Cancellation propagates in this order:
    - **Direct access:** the implementation's `ExecutionCancel` stops file
      reads and source calls in progress.
 4. The pull in progress, or the stream's next pull, returns `cancellation`,
-   whatever the source returned after being cancelled.
+   whatever the source returned after being cancelled. A metadata request
+   returns `cancellation`.
+
+A cancellation is never reset. Cancelling it stops every catalog read
+registered with it, and a later request given it returns `cancellation`
+before sending anything; a cancellation that arrives while a catalog read is
+being registered stops that read at once.
 
 An operation cancelled before its first pull only records
 the cancellation flag; that call returns `cancellation` without sending a
@@ -880,8 +938,9 @@ cancellation are left to the implementation.
 
 For timeouts, the library's watcher thread finds operations past their deadline
 and stops them the same way through `ExecutionCancelHandle::expire`, so the
-result is `timeout`. The deadline counts from the first pull, when the query is
-sent ([Cancellation and timeouts](connector-contract.md#cancellation-and-timeouts)).
+result is `timeout`. A read's deadline counts from the first pull, when the
+query is sent, and a metadata request's from the call
+([Cancellation and timeouts](connector-contract.md#cancellation-and-timeouts)).
 The SDK also checks the deadline whenever a pull starts, but it does not run a
 timer per execution; stopping a pull that is blocked at the source is the
 watcher's job. Connectors do not set source query time limits, such as
@@ -981,4 +1040,4 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
 | [Metadata retrieval](connector-contract.md#metadata-retrieval) | The Connector's `Catalog` component and source metadata type with its type mapping, and the connector SDK's table metadata model, its comparison, and the source-read boundary |
 | [Data read](connector-contract.md#data-read) | The Connector's `Planner` and `Executor` components and value conversion, and the connector SDK's planning and read flows with their schema and lifecycle checks |
 | [Read request representation](connector-contract.md#read-request-representation) | The SDK's Substrait validation, `LogicalPlan` conversion, and application of the Connector-supplied rules, plus the Connector's plan-aware semantics |
-| [Connector API](connector-contract.md#connector-api) | `connector-api` and its public C header, and the connector SDK runtime's metadata schemas |
+| [Connector API](connector-contract.md#connector-api) | `connector-api`, its public C header, and its C structures of metadata and comparisons |

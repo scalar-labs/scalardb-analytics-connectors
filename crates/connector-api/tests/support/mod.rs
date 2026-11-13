@@ -465,6 +465,42 @@ impl Drop for Cancellation {
     }
 }
 
+/// Compares two table metadata structures as a C caller does.
+pub fn compare_table_metadata(
+    before: &ScalardbAnalyticsConnectorTableMetadata,
+    after: &ScalardbAnalyticsConnectorTableMetadata,
+) -> Result<Option<Owned<ScalardbAnalyticsConnectorTableMetadataDifferences>>, Error> {
+    let mut differences = ptr::null_mut();
+    // SAFETY: both inputs are valid for the call and the output is writable.
+    check(unsafe {
+        scalardb_analytics_connector_table_metadata_compare(before, after, &mut differences)
+    })?;
+    Ok((!differences.is_null()).then(|| {
+        Owned::new(
+            differences,
+            scalardb_analytics_connector_table_metadata_differences_free,
+        )
+    }))
+}
+
+/// Compares two source metadata structures as a C caller does.
+pub fn compare_source_metadata(
+    before: &ScalardbAnalyticsConnectorSourceMetadata,
+    after: &ScalardbAnalyticsConnectorSourceMetadata,
+) -> Result<Option<Owned<ScalardbAnalyticsConnectorSourceMetadataDifferences>>, Error> {
+    let mut differences = ptr::null_mut();
+    // SAFETY: both inputs are valid for the call and the output is writable.
+    check(unsafe {
+        scalardb_analytics_connector_source_metadata_compare(before, after, &mut differences)
+    })?;
+    Ok((!differences.is_null()).then(|| {
+        Owned::new(
+            differences,
+            scalardb_analytics_connector_source_metadata_differences_free,
+        )
+    }))
+}
+
 /// A name filter as a C caller builds it; `None` is passed as a null pointer.
 pub struct NameFilter {
     // The filter points into these; moving the vectors keeps their buffers.

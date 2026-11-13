@@ -9,14 +9,14 @@ use std::{
 };
 
 use super::{
-    DataSourceState,
+    DataSourceState, SourceMetadata,
     connector::{DynConnectorLibrary, create_library},
     contain_panic, invalid_state,
     watcher::Watcher,
 };
 use crate::{
     Component, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ErrorKind,
-    LibrarySettings, SecretString,
+    LibrarySettings, SecretString, SourceMetadataDifferences,
 };
 
 /// One connector built into a library, registered before initialization.
@@ -120,5 +120,41 @@ impl Library {
             connector,
             data_source,
         )))
+    }
+
+    /// Compares two observations of one table's source metadata; `None` when
+    /// neither the documents nor the table metadata derived from them differ.
+    ///
+    /// The connector that produced both documents restores them. Documents of
+    /// different connectors, of a connector not built into this library, or
+    /// that the connector cannot restore are invalid requests.
+    pub fn compare_source_metadata(
+        &self,
+        before: &SourceMetadata,
+        after: &SourceMetadata,
+    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError> {
+        self.ensure_open()?;
+        if before.connector != after.connector {
+            return Err(ConnectorError::new(
+                ErrorKind::InvalidRequest,
+                false,
+                "the source metadata documents are of different connectors",
+            ));
+        }
+        let (_, library) = self
+            .connectors
+            .iter()
+            .find(|(descriptor, _)| descriptor.name == before.connector)
+            .ok_or_else(|| {
+                ConnectorError::new(
+                    ErrorKind::InvalidRequest,
+                    false,
+                    format!(
+                        "connector `{}` is not built into this library",
+                        before.connector
+                    ),
+                )
+            })?;
+        contain_panic(|| library.compare_source_metadata(&before.document, &after.document))
     }
 }

@@ -47,7 +47,8 @@ How inputs and outputs cross the API is defined in
 
 Callers use a connector through the connector API: a typed C ABI exposed by the
 connector API library, which contains the connector SDK and the connectors
-built into it. Results cross it through the Arrow C data interface. A caller
+built into it. Read results cross it through the Arrow C stream interface,
+and metadata and comparisons as typed C structures. A caller
 names a Connector when it opens a data source, and the connector for that
 Connector handles all later requests on it. The reason the connector API is
 not ADBC is recorded in
@@ -118,16 +119,20 @@ and [Data read](#data-read), and the concrete API shape is in
 ### Units and concurrency
 
 Callers use the following units of the connector API. Functions that open a
-data source, a session, or an operation return a handle, and later functions
-name their target by handle.
+data source, a session, or a read operation return a handle, and later
+functions name their target by handle.
 
 | Unit | Meaning |
 | --- | --- |
 | Library | Initialized once per process. Receives the location of ADBC drivers and logging settings. The application initializes and shuts it down. |
 | Data source | Holds one data source's connection settings and credentials. One is opened per registered data source and reopened when connection settings change. |
-| Session | One connection to that data source. For a direct-access source without connections, the unit that runs one operation at a time. Callers open as many as they want concurrent operations. |
-| Operation | One metadata request or read request. Owns cancellation and error retrieval. Source resources are created at the first pull. |
-| Result stream | The result of a metadata or read operation, as an Arrow `ArrowArrayStream`. It owns no resources and only pulls results from the operation's resources. |
+| Session | One connection to that data source. For a direct-access source without connections, the unit that runs one request at a time. Callers open as many as they want concurrent requests. |
+| Operation | One read request. Owns cancellation and error retrieval. Source resources are created at the first pull. |
+| Result stream | The result of a read operation, as an Arrow `ArrowArrayStream`. It owns no resources and only pulls results from the operation's resources. |
+| Cancellation | A caller's means of cancelling metadata requests, passed to them and cancelled from any thread. |
+
+A metadata request is one call that returns its whole result
+([Requests and results](#requests-and-results)); it has no operation or stream.
 
 If a stream is released without ever being pulled, nothing was sent to the
 source. If an operation is cancelled before its first pull, the first pull
@@ -152,11 +157,10 @@ Concurrency follows these rules:
 - A caller does not call one session, operation, or result stream from several
   threads at once. The exception is cancellation, which any thread may call
   ([Cancellation and timeouts](#cancellation-and-timeouts)).
-- A session runs at most one operation at a time. Starting another operation on
-  the same session before the previous result stream has been fully pulled or
-  released returns `invalid state` for the new request and leaves the previous
-  stream running. Waiting instead would block a caller that reads the previous
-  stream on the same thread.
+- A session runs at most one request at a time. Sending a request on a session
+  whose read stream has not been fully pulled or released returns
+  `invalid state` for the new request and leaves the stream running. Waiting
+  instead would block a caller that reads the stream on the same thread.
 - A connector holds at most one source connection per session and has no
   connection pool. A caller that needs concurrency opens that many sessions
   and decides whether to reuse them.
@@ -196,54 +200,72 @@ Credentials are handled as follows:
 
 ### Requests and results
 
-A function that starts an operation validates the request and immediately
-returns the operation handle. Metadata and read operations also return a result
-stream; their query is sent to the source when its first batch is pulled.
+Reads and metadata requests return their results differently, because only a
+read needs to be started before it is consumed:
+
+- **A read** is started by a function that validates the request and
+  immediately returns an operation handle and an Arrow result stream; the query
+  is sent to the source when the first batch is pulled. An adapter starts a
+  read while planning and pulls it later, and a read's rows are columnar data
+  that can exceed memory.
+- **A metadata request** is one call that sends the request, reads the catalog
+  to the end, and returns the whole result as typed structures
+  ([Functions](#functions)). Metadata is read to be held whole, and each
+  target's own failure is already part of the result
+  ([Missing information](#missing-information)), so streaming it would add
+  release cases without letting a caller act on part of it.
+
 `plan_pushdown` may call Data Source access while resolving a validated plan.
 
-- Validation errors (`invalid request`, `invalid state`) are
-  returned immediately by the function that starts the operation.
-- Errors at the source are returned as pull failures, or directly by
-  `plan_pushdown` during resolution. The caller retrieves
-  their structured details the same way as failures in the middle of a stream
+- Validation errors (`invalid request`, `invalid state`) are returned
+  immediately by the function that starts a read, and by a metadata request
+  before anything is sent.
+- Errors at the source are returned as pull failures of a read, by the
+  metadata request itself, or directly by `plan_pushdown` during resolution.
+  The caller retrieves a read's structured error from its operation
   ([Errors in the API](#errors-in-the-api)).
-- A stream's schema is available before the source is queried. For data read
-  it follows from the request and the expected schema
-  ([Read request](#read-request), [Schema check](#schema-check)); for
-  metadata retrieval it is fixed by this contract
-  ([Functions](#functions)).
+- A read stream's schema is available before the source is queried; it follows
+  from the request and the expected schema ([Read request](#read-request),
+  [Schema check](#schema-check)).
 
-For metadata and reads, creating and executing are not separate steps because a
+For reads, creating and executing are not separate steps because a
 created-but-not-run state would add another set of release cases.
 
-Results are returned as an Arrow stream pulled in order. A caller may release
-the stream before receiving every batch; release means the rest is not wanted,
-and the connector stops the source query and returns its resources. A session
-whose stream was released early accepts the next request.
+A read stream is pulled in order. A caller may release it before receiving
+every batch; release means the rest is not wanted, and the connector stops the
+source query and returns its resources. A session whose stream was released
+early accepts the next request.
 
-An operation is complete only when its stream has been pulled to the end
-without an error. A
-caller never treats the result of an operation that ended
-by cancellation, timeout, or error as complete. How much of a partial result is
-valid is defined for
-[metadata retrieval](#cancellation-and-errors-for-metadata) and
-[data read](#incomplete-reads).
+A read is complete only when its stream has been pulled to the end without an
+error. A caller never treats the result of a read that ended by cancellation,
+timeout, or error as complete; how much of it is valid is defined in
+[Incomplete reads](#incomplete-reads). A metadata request that fails returns
+only its error, never part of its result.
 
 ### Cancellation and timeouts
 
-A caller can cancel any running operation from any thread, including while the
-first pull waits for the source. On cancellation the connector promptly stops
-the source query and its own reading. With ADBC access it uses the driver's
-cancellation, and only drivers whose cancellation stops the query at the source
-are used ([Data Source access rules](#data-source-access-rules)). With direct
-access the connector itself stops reads and source calls in progress. The next pull of a cancelled stream returns `cancellation`.
+A caller can cancel any running request from any thread: a read through its
+operation, including while the first pull waits for the source, and a metadata
+request through the cancellation it was given. On cancellation the connector
+promptly stops the source query and its own reading. With ADBC access it uses
+the driver's cancellation, and only drivers whose cancellation stops the query
+at the source are used ([Data Source access rules](#data-source-access-rules)).
+With direct access the connector itself stops reads and source calls in
+progress. The next pull of a cancelled stream, or the cancelled metadata
+request, returns `cancellation`.
 
-The caller specifies a timeout per request. It counts from sending the query to
-the source at the first pull until the stream has been pulled to the end. An
-operation that exceeds it is stopped the same way as a cancellation and
-returns `timeout`. The timeout does not count from starting the operation so
-that an adapter that starts an operation while planning and reads it later does
-not time out before reading.
+A cancellation is not reset: once cancelled, it stops every metadata request
+running with it, and every later request given it returns `cancellation`
+before anything is sent to the source. A caller that cancels requests one at a
+time creates one cancellation per request.
+
+The caller specifies a timeout per request. For a read it counts from sending
+the query to the source at the first pull until the stream has been pulled to
+the end; it does not count from starting the operation, so that an adapter that
+starts an operation while planning and reads it later does not time out before
+reading. For a metadata request it counts from the call. A request that
+exceeds its timeout is stopped the same way as a cancellation and returns
+`timeout`.
 
 A separate connection timeout is set by an option when opening a data source.
 Opening a data source or a session connects before returning a handle (for
@@ -323,13 +345,16 @@ or item is added to the connector API.
 
 These tests check the calling conventions and the ADBC driver version check
 ([Data Source access rules](#data-source-access-rules)) for every connector, regardless
-of Connector. Cancellation, timeout, and stream release are tested with both
-metadata and read requests.
+of Connector. Cancellation and timeout are tested with both metadata and read
+requests; stream release applies to reads.
 
 | Action | Expected result |
 | --- | --- |
 | Release a parent before its child, then call the child | `invalid state` |
-| Start a second operation on a session before the first stream ends | The second request returns `invalid state` and the first stream continues |
+| Send a request on a session before its read stream ends | The new request returns `invalid state` and the stream continues |
+| Cancel a cancellation, then send a metadata request with it | The request returns `cancellation` and no query was sent to the source |
+| Cancel from another thread while a metadata request waits for the source | The request returns `cancellation` and the source query has stopped |
+| Fail a metadata request partway | The request returns only its error, and the session accepts the next request unless the connection broke |
 | Cancel from another thread before the first pull | The first pull ends with `cancellation` and no query was sent to the source |
 | Release a stream without pulling | Nothing was sent to the source |
 | Cancel from another thread during a pull, including while the first pull waits for the source | The next pull ends with `cancellation` and the source query has stopped |
@@ -353,7 +378,8 @@ This section does not define:
   delivery to the Semantic Catalog; these belong to the Physical Catalog's own
   input and reference contracts. How stored metadata is compared with a newer
   retrieval is defined here
-  ([Comparing table metadata](#comparing-table-metadata));
+  ([Comparing table metadata](#comparing-table-metadata)), and what a
+  difference means to a receiver is the receiver's;
 - reading rows, which is [Data read](#data-read) and
   [Read request representation](#read-request-representation);
 - how the connector SDK and connectors are built, which is
@@ -379,12 +405,11 @@ The table list can span namespaces. When a source cannot list several
 namespaces in one query, the connector queries each namespace internally and
 returns one result, so callers never need to call per namespace.
 
-Outputs are streams pulled in order, and a caller need not receive everything
-at once. There is no cursor to continue across calls; a caller that needs the
-rest narrows the request and sends it again.
+Each request returns its whole result when it returns. There is no cursor to
+continue across calls; a caller that wants a smaller result narrows the request.
 
 A list is not a snapshot of the source at one point in time; the source may
-change while it is being pulled. The point in time of table metadata is given
+change while it is being read. The point in time of table metadata is given
 by each table's retrieval time
 ([Retrieval info and determinism](#retrieval-info-and-determinism)).
 
@@ -473,8 +498,9 @@ or an Iceberg table UUID and field ID.
 
 A connector returns one only when the source provides it and it is readable
 with the retrieval privileges. It is the source's own value, never a value
-synthesized by the connector. Comparison uses it to tell a rename from a drop
-and re-creation ([Comparing table metadata](#comparing-table-metadata)). How it
+synthesized by the connector. Comparison uses it to match columns across two
+observations of a table ([Comparing table metadata](#comparing-table-metadata));
+what a match or its absence means is the receiver's. How it
 determines Physical Catalog resource identifiers belongs to the Physical
 Catalog's contracts.
 
@@ -524,94 +550,111 @@ recorded as dropped columns or tables.
 | Columns were read but constraints, source identifiers, or some Data Source types could not be | The table metadata is returned as incomplete, naming the missing items |
 | The catalog silently omits columns without privilege (such as PostgreSQL `information_schema.columns`) and the connector read it in a way that cannot detect missing columns | The table metadata is returned as incomplete |
 | A namespace or table list cannot be read | The unreadable range is returned and no targets in it |
-| The operation ended partway | The rules in [Cancellation and errors for metadata](#cancellation-and-errors-for-metadata) apply |
+| The request failed partway | The rules in [Cancellation and errors for metadata](#cancellation-and-errors-for-metadata) apply |
 
 An item the connector never returns for its Connector, such as constraints for
 Parquet, is not a missing item. Table metadata records it as "not offered",
 distinct from incomplete. Incomplete
-table metadata asserts nothing about its missing items. The Physical Catalog
-never infers a drop or a change from incomplete table metadata; a dropped table
-is inferred only from "does not exist", never from "could not be read".
+table metadata asserts nothing about its missing items, and a comparison never
+reports a missing item as a difference
+([Comparing table metadata](#comparing-table-metadata)). A comparison does
+report a column absent from a read that may hide columns as removed: that is
+an observation, not a drop, and the receiver decides what it means. A dropped
+table is indicated only by "does not exist", never by "could not be read".
 
 ### Comparing table metadata
 
 A receiver that needs to detect changes stores the metadata it based its
 decisions on and later passes it, with a newly retrieved one, to the library's
-comparison. Each receiver stores what it uses: the Physical Catalog stores
-table metadata, and the Semantic Catalog stores source metadata. One set of
+comparison. Each receiver uses the part of a table's record it needs: the
+Physical Catalog table metadata, and the Semantic Catalog source metadata. One set of
 rules serves every receiver, so the same source change is reported as the same
-change whoever asks. If each receiver compared on its own, differences in how
-it matched items, which values it ignored, and how it read incomplete metadata
-would turn one change into different changes.
+difference whoever asks. If each receiver compared on its own, differences in
+how it matched items and read incomplete metadata would turn one change into
+different changes.
 
-Callers store metadata in the output format of the
-[Connector API](#connector-api); this contract defines no other storage format,
-digest, or schema version. Storing it and choosing which stored table pairs
-with which new one belong to the caller. Neither comparison needs a data
-source or session.
+A comparison reports only facts: values observed on both sides that differ.
+A connector cannot observe why it could not read something, such as missing
+privileges, so the comparison infers nothing from what was not observed: not
+a drop, a rename, or a change of privileges. What a difference means is for
+the receiver to decide. Its first question is whether anything differs, so a
+comparison with no difference returns no result, and the receiver needs to
+inspect nothing else.
+
+A comparison takes the table metadata or source metadata of a retrieved record
+exactly as the [Connector API](#connector-api) returned it, so a freshly
+retrieved value is passed without conversion. How a caller stores a value and
+rebuilds it for a later comparison, including across processes or networks,
+is the caller's; this contract defines no storage format, digest, or schema
+version. Choosing which stored table pairs with which new one belongs to the
+caller, who pairs them by table name. Only a table that was read has table
+metadata and source metadata, so only tables read on both sides are compared;
+that a table does not exist or could not be read is already known to the
+caller from its records.
 
 The two comparisons differ in what they depend on:
 
 - **Table metadata** has one shape for every Connector, so its comparison
-  depends on no Connector. It reports item by item what changed, as below.
+  depends on no Connector. It reports item by item what differs, as below.
 - **Source metadata** has the shape its connector defines, so its comparison
-  depends on that connector. Each side is a table's state with, when the table
-  was read, its source metadata document. When either side does not exist or
-  could not be read, only the states are returned, by the same rules as for
-  table metadata. Otherwise the producing connector restores both documents to
-  its own source metadata type; they are the same exactly when the restored
-  values are equal, and what changed is reported by comparing the table
-  metadata the connector derives from both. A connector that cannot restore a
-  stored document, for example after it changed the document's shape, rejects
-  the comparison as an `invalid request`.
+  depends on that connector. Source metadata names its connector, and that
+  connector, which must be built into the library, restores both documents to
+  its source metadata type; no data source is needed. The two are compared as
+  JSON documents, which covers what table metadata does not hold, and the
+  table metadata the connector derives from both is compared as below.
+  Documents of different connectors, or a document the connector cannot
+  restore, for example one stored before an update that changed its shape,
+  make the comparison an `invalid request`.
 
 Retrieval info, such as the retrieval time and the producer, is never part of
 either comparison: it changes without a change at the source. A caller that
 needs to know whether the producer changed compares the retrieval info itself.
 
+An item is compared only when both sides observed it. An item missing on
+either side, "not offered" on either side, or a Data Source type that was not
+read on either side is not compared and yields no difference. Whether columns
+may be hidden describes how the connector read, not the table, and is not
+compared either.
+
 Within a table metadata pair, items are matched as follows:
 
-- Columns are matched by source identifier when both sides have one, and
-  otherwise by name. A column with the same source identifier and a different
-  name is a changed column whose name changed: a rename. A column with the same
-  name and different source identifiers is one removed and one added column: a
-  drop and re-creation.
+- Columns are matched by source identifier when both tables have the same
+  source identifier and both columns have one, and by name otherwise. A column
+  identifier, such as a PostgreSQL `attnum`, identifies a column only within
+  its table, so the columns of a table with a new source identifier are matched
+  by name. A column matched by source identifier under a new name has its name
+  changed. Under the same table source identifier, columns of one name with
+  different source identifiers are a removed and an added column.
+- A column on only one side is added or removed. It is the observation that
+  differs, whatever the reason.
 - Constraints are matched by kind and name.
-- The table's own name and source identifier are compared as items. Different
-  source identifiers on both sides mean the table was dropped and re-created.
+- The table's kind and source identifier are compared as attributes. Its name
+  is not: the caller pairs the two sides by name.
 
-Table metadata comparison returns, per pair:
+Table metadata comparison returns, per pair, either no result or:
 
 | Part | Result |
 | --- | --- |
-| Table state | The state of each side: complete, incomplete, "could not be read", or "does not exist" ([Missing information](#missing-information)) |
-| Table | Whether the name, kind, and source identifier changed or are unknown |
-| Columns | Each added, removed, changed, or unknown column; a changed column carries both versions and names each attribute that changed or is unknown: name, ordinal, nullability, Data Source type, Analytics type or unsupported reason, and source identifier |
-| Constraints | Each added, removed, or changed constraint, with both versions of a changed one, or that the constraints are unknown |
+| Table | The table attributes whose values differ: kind and source identifier |
+| Columns | Each added, removed, or matched column with differing attributes. A matched column carries both versions and names each attribute that differs: name, ordinal, nullability, Data Source type, Analytics type or unsupported reason, and source identifier |
+| Constraints | Each added, removed, or matched constraint with differing attributes, carrying both versions of a matched one and naming each attribute that differs: enforcement, columns, unique kind, condition, referenced table, referenced columns, and expression |
 
-Unchanged items are not listed.
+Unchanged items are not listed, and a part without differences is empty.
+Source metadata comparison returns, per pair, either no result or the parts
+above for the derived table metadata together with the differences of the
+documents. Each document difference names its location as a JSON Pointer and
+carries the older value, the newer value, or both. Object members are compared
+by name. Array elements are matched by equality along their longest common
+subsequence, so an inserted or removed element does not make the elements after
+it differ. Between two matched elements, unmatched elements are paired in order
+as changed elements located in the older document, and the remaining ones are
+removed elements located in the older document or added elements located in
+the newer one.
 
-Table metadata comparison never reports a change it cannot observe, following
-[Missing information](#missing-information):
-
-- When either side is "could not be read" or "does not exist", only the table
-  states are returned. A drop is indicated only by "does not exist" on the new
-  side.
-- An item that is missing on either side, or "not offered" on only one side, is
-  unknown, never added, removed, or changed. An item "not offered" on both sides
-  is unchanged. When constraints are unknown, no constraint is listed.
-- A column whose Data Source type is unread on either side has its Data Source
-  type and Analytics type unknown; its other attributes are still compared.
-- A column present on only one side is unknown rather than added or removed
-  when the other side may have hidden columns, or when an unmatched column on
-  the other side cannot be told apart by source identifier, because the two may
-  be one renamed column.
-- When either side may have hidden columns, an ordinal difference is unknown,
-  because a hidden column shifts the ordinals after it.
-
-Comparison accepts only table metadata in this library's output schema, and
-only source metadata documents the producing connector can restore. Metadata
-stored before a library update that changed either cannot be compared.
+Comparison accepts only table metadata that is valid in this library's
+structures, and only source metadata documents the producing connector can
+restore. Metadata stored before a library update that changed either cannot be
+compared.
 [Compatibility and versions](#compatibility-and-versions) defines no version
 skew, and stored metadata is the one place where output outlives a library
 update; rules for comparing across library versions will be added when a
@@ -693,13 +736,10 @@ rules and the [error kinds](#errors). Errors reach as follows:
 
 | Error kinds | Reach |
 | --- | --- |
-| `authentication`, `invalid request`, `invalid state` | The whole operation fails |
-| `permission` | Recorded per target as "could not be read" ([Missing information](#missing-information)); the operation does not fail |
-| `connection`, `cancellation`, `timeout`, `resource`, `data-source`, `internal` | Before the first result, the whole operation fails. Partway, the table metadata completed so far is returned and the whole operation is incomplete. |
+| `permission` | Recorded per target as "could not be read" ([Missing information](#missing-information)); the request does not fail |
+| `authentication`, `invalid request`, `invalid state`, `connection`, `cancellation`, `timeout`, `resource`, `data-source`, `internal` | The whole request fails and returns only its error, never the targets read before it ([Requests and results](#requests-and-results)) |
 
-An incomplete operation is indicated by the stream ending with an error
-([Requests and results](#requests-and-results)). `stale registration` and `data`
-do not occur in metadata retrieval.
+`stale registration` and `data` do not occur in metadata retrieval.
 
 ### Metadata conformance tests
 
@@ -1179,8 +1219,12 @@ generated from the library's declarations and versioned with the library.
 - The connector API is a C ABI. Callers in other languages, such as the C++
   DuckDB adapter and the Java Physical Catalog, use it directly or through a
   per-language binding that wraps it.
-- Result streams and tabular inputs, such as a set of tables, use the Arrow C
-  data interface (`ArrowArrayStream`, `ArrowArray`, `ArrowSchema`).
+- Read results use the Arrow C stream interface (`ArrowArrayStream`); Arrow
+  is used for read results only.
+- Metadata requests, their inputs, and comparisons exchange typed C
+  structures ([Metadata structures](#metadata-structures)), including
+  Analytics types. The connector API defines no serialization of them; a
+  caller that stores or sends metadata chooses its own form.
 - Read requests are serialized Substrait plans (protobuf bytes).
 - Static information is a versioned JSON document whose required content is
   defined in its section below.
@@ -1209,32 +1253,34 @@ The connector API has these functions:
   plans plus the executable query. Metadata loading follows the
   ordinary planning timeout and cancellation rules. A Connector may use a
   session-local cache, but no cache identity crosses the API boundary.
-- **Start an operation.** Every one takes a request timeout, validates the
-  request, and immediately returns the operation handle and its result stream;
-  the query is sent at the first pull ([Requests and results](#requests-and-results)).
-  - Namespace list: a set of namespace names ([Metadata requests](#metadata-requests)).
-  - Table list: a set of namespace names and a set of table names.
-  - Table metadata: a set of tables, as Arrow rows.
-  - Read: the remote execution of an adopted `PlannedPushdown`, or one restored
-    from bytes.
+- **Create, cancel, and free a cancellation** for metadata requests
+  ([Cancellation and timeouts](#cancellation-and-timeouts)).
+- **Metadata requests.** Each takes a session, a timeout, and an optional
+  cancellation, and returns its whole result, which the caller frees
+  ([Requests and results](#requests-and-results),
+  [Metadata requests](#metadata-requests)):
+  - Namespace list: a name filter.
+  - Table list: a namespace name filter and a table name filter.
+  - Table metadata: the names of the requested tables.
+- **Start a read.** It takes a request timeout and the remote execution of an
+  adopted `PlannedPushdown`, or one restored from bytes, validates the
+  request, and immediately returns the operation handle and its result
+  stream; the query is sent at the first pull.
 - **Encode and restore a remote execution** as opaque bytes for another process
   ([Read request](#read-request)).
-- **Compare table metadata.** Input: two Arrow arrays of table metadata with
-  the same length; the tables at the same position form a pair. Output: an
-  Arrow array with one comparison result per pair
-  ([Comparing table metadata](#comparing-table-metadata)). It needs no
-  Connector, data source, or session. Arrays of different lengths, or rows not
-  in the table metadata output schema, are an `invalid request`.
-- **Compare source metadata.** Input: a Connector and two sides of one table,
-  each its state with, when it was read, its source metadata document. Output:
-  the states, and when both were read, whether they are the same and the
-  comparison of the table metadata the connector derives from them. It needs
-  no data source or session. A document the connector cannot restore is an
-  `invalid request`.
-- **Cancel an operation**, from any thread.
-- **Retrieve an operation's error**, in the structure of
+- **Compare table metadata.** Input: two table metadata of one table, such as
+  the table metadata of two retrieved records, or one built from the caller's
+  stored form. Output: the differences, or none
+  ([Comparing table metadata](#comparing-table-metadata)). It needs no handle.
+  Table metadata that is not valid is an `invalid request`.
+- **Compare source metadata.** Input: two source metadata of one table, each
+  its connector's name and document. The library's connector of that name
+  restores both. Output: the differences, or none. It needs no handle, but
+  the library must be initialized.
+- **Cancel a read operation**, from any thread.
+- **Retrieve a read operation's error**, in the structure of
   [Errors in the API](#errors-in-the-api), after a pull ends with an error.
-- **Close an operation.**
+- **Close a read operation.**
 
 At the language-neutral level, planning and read execution form this boundary:
 
@@ -1261,25 +1307,21 @@ the optimizer again, but its caller may retry the query and cause replanning.
 The complete responsibility and control flow are in
 [Pushdown planning](pushdown-planning.md).
 
-The Arrow schemas of the three metadata requests' inputs and outputs are the
-items of [Metadata retrieval](#metadata-retrieval) laid out as columns
-([Metadata schemas](#metadata-schemas)). Each
-request kind has a fixed output schema,
-so its stream can return the schema before the source is queried. Table
-metadata output has one row per table, with columns and constraints as nested
-columns and the source metadata as a JSON text column. A table that does not
-exist or could not be read has no source metadata. The table metadata
-comparison output is likewise the items of
-[Comparing table metadata](#comparing-table-metadata) laid out as columns, with
-a fixed schema.
+A metadata request returns its whole result, and both comparisons return
+their differences, as trees of C structures that pass to the caller, which
+frees each tree through its root ([Metadata structures](#metadata-structures)). A table metadata
+result has one record per requested table, in request order, and the
+retrieval info of the request. A record holds the table's state and name and,
+when the table was read, its table metadata, its source metadata, and the time
+it was read. A record's table metadata and source metadata are the
+comparisons' inputs as they are, so a caller compares what it retrieved without
+converting it.
 
 Namespaces are returned as sequences of names with no fixed depth. For sources
 with catalogs, the first element is the catalog.
 
-Each table metadata row states whether its table is complete, incomplete,
+Each table metadata record states whether its table is complete, incomplete,
 "could not be read", or "does not exist" ([Missing information](#missing-information)).
-An incomplete operation is indicated by the stream ending with an error; the
-rows returned before it are completed table metadata.
 
 Table metadata is one record per table. Fetching names, columns, types, and
 constraints through separate functions would let names and types of one table
@@ -1289,84 +1331,40 @@ For sources without namespace and table hierarchies, such as files and object
 storage, the path hierarchy under the registered location maps to namespaces
 and files or table-format tables map to tables.
 
-### Metadata schemas
+### Metadata structures
 
-The three metadata requests exchange these Arrow schemas. Every enumerated
-column is UTF-8 text with the values listed; a value outside them is a newer
-contract. A name path, such as a namespace or a table, is `list<utf8>` with
-non-null names. A nullable column is null when its row's state gives it no
-value.
+Metadata requests and comparisons exchange the C structures published in the
+header. Each mirrors one item of [Metadata retrieval](#metadata-retrieval) or
+[Comparing table metadata](#comparing-table-metadata):
 
-**Inputs.** A name filter of the namespace list or the table list is either
-absent, which matches every name, or a set of names, which matches exactly
-those names and may be empty. The tables of a table metadata request are Arrow
-rows with one non-null column `table` of type `list<utf8>`. A null table, a
-null or empty name, or another schema is an `invalid request`. The C functions
-pass a filter as a nullable pointer to an array of names and the tables as an
-`ArrowArrayStream` that the library takes and releases.
-
-**Namespace list.** One row per namespace or unreadable range.
-
-| Column | Type | Null | Content |
-| --- | --- | --- | --- |
-| `state` | utf8 | no | `listed` or `unreadable` |
-| `namespace` | name path | yes | The namespace, when `listed` |
-| `scope` | name path | yes | The range that could not be read, when `unreadable` |
-| `reason` | utf8 | yes | Why the range could not be read, when `unreadable` |
-
-**Table list.** One row per table or unreadable range.
-
-| Column | Type | Null | Content |
-| --- | --- | --- | --- |
-| `state` | utf8 | no | `listed` or `unreadable` |
-| `table` | name path | yes | The table, when `listed` |
-| `kind` | utf8 | yes | `table`, `view`, `external`, or `other`, when `listed` |
-| `source_kind` | utf8 | yes | The kind in the source's own term, when `kind` is `other` |
-| `scope` | name path | yes | The range that could not be read, when `unreadable` |
-| `reason` | utf8 | yes | Why the range could not be read, when `unreadable` |
-
-**Table metadata.** One row per requested table, in request order.
-
-| Column | Type | Null | Content |
-| --- | --- | --- | --- |
-| `state` | utf8 | no | `complete`, `incomplete`, `could_not_be_read`, or `does_not_exist` |
-| `table` | name path | no | The table |
-| `reason` | utf8 | yes | Why the table could not be read, when `could_not_be_read` |
-| `kind` | utf8 | yes | As in the table list |
-| `source_kind` | utf8 | yes | As in the table list |
-| `source_id` | reported utf8 | yes | The table's source identifier |
-| `columns` | list of column | yes | The columns in ordinal order |
-| `columns_may_be_hidden` | bool | yes | Whether the catalog may have omitted columns without privilege |
-| `constraints` | reported list of constraint | yes | The constraints in kind, name, and columns order |
-| `source_metadata` | utf8 | yes | The source metadata JSON document |
-| `retrieval` | retrieval | no | Retrieval info |
-
-`kind`, `source_id`, `columns`, `columns_may_be_hidden`, `constraints`, and
-`source_metadata` are non-null exactly when the table was read (`complete` or
-`incomplete`). The nested types are:
-
-| Type | Fields |
+| Structure | Content |
 | --- | --- |
-| reported `T` | `state` (utf8, not null): `value`, `missing`, or `not_offered`; `value` (`T`): present when `value`; `reason` (utf8): why it is `missing` |
-| column | `name` (utf8, not null), `ordinal` (uint32, not null), `nullable` (bool, not null), `source_id` (reported utf8, not null), `type` (column type, not null) |
-| column type | `state` (utf8, not null): `mapped`, `unsupported`, or `unread`; `data_source_type` (utf8): present unless `unread`; `analytics_type` (binary): present when `mapped`; `unsupported_reason` (utf8): `not_mapped`, `mapping_not_implemented`, or `parameter_out_of_range` when `unsupported`; `unread_reason` (utf8): when `unread` |
-| constraint | `name` (utf8, not null), `enforced` (bool, not null), `kind` (utf8, not null): `primary_key`, `unique`, `foreign_key`, or `check`; `columns` (name list): absent for `check`; `unique_kind` (utf8): `constraint` or `index` for `unique`; `condition` (utf8): a partial index's condition; `referenced_table` (name path) and `referenced_columns` (name list) for `foreign_key`; `expression` (utf8) for `check` |
-| retrieval | `connector` (struct of `name` and `version`, not null), `adbc_driver` (struct of `name` and `version`): present only with ADBC access; `library_version` (utf8, not null); `read_at` (timestamp in microseconds, UTC): when the table was read |
+| Names | A sequence of names: a namespace, a table, or column names. For sources with catalogs, the first name of a namespace or table is the catalog. |
+| Namespace list, table list | Their entries, each an item or a range that could not be read, with its reason |
+| Table metadata result | The records, and the retrieval info: the connector's name and version, the ADBC driver's name and version with ADBC access, and the library version |
+| Table record | The state (complete, incomplete, "could not be read", or "does not exist"), the table, and, when read, the table metadata, the source metadata, and the read time in microseconds since the Unix epoch, UTC; the reason when "could not be read" |
+| Table metadata | The items of [Table metadata](#table-metadata): kind, source identifier, columns in ordinal order, whether columns may be hidden, and constraints in kind, name, and columns order. Reported items carry a value, missing with a reason, or not offered. |
+| Column | Name, ordinal, nullability, source identifier, and type: mapped with its Data Source type and Analytics type, unsupported with its Data Source type and reason, or unread with a reason |
+| Analytics type | Its kind and the parameters of that kind: precision and scale, an element type and its nullability, a key and value type, fields, or enum members. Nested types are structures of the same kind, so no second type notation is needed at the boundary. |
+| Source metadata | The name of the connector that produced it and its JSON document |
+| Differences | The parts of the comparison result, as listed in [Comparing table metadata](#comparing-table-metadata) |
 
-A column's `analytics_type` is the encapsulated Arrow IPC schema message
-(continuation marker, length, and flatbuffer, as an IPC stream begins) of a
-schema with one field: the column's Analytics type in its
-[Arrow encoding](analytics-types.md#arrow-encodings), including extension
-metadata, with an empty name and nullable. The column's own name and
-nullability are the other fields of the column. Analytics types are recursive,
-so no fixed set of columns can hold them, and their Arrow encoding is already
-the one representation receivers share; the Arrow libraries of every caller
-language read this message, as Arrow Flight carries schemas the same way. A
-text notation of Analytics types would be a second type language to define
-and keep in step.
+The structures follow these rules:
 
-Retrieval info is repeated in each row rather than carried in the schema's
-metadata, which would make the schema differ by connector.
+- Every enumerated field and truth value is an unsigned integer with named
+  constants; a truth value is 0 or 1. On input, a value outside them is an
+  `invalid request`; on output, it is a newer contract.
+- A field that its structure's state does not use is ignored on input and
+  zero or absent on output.
+- Text inside a structure is UTF-8 with a length in both directions, so an
+  output structure can be passed back unchanged as an input.
+- An input structure is the caller's memory. The library reads and validates
+  it during the call and keeps no reference to it. Input that is not valid,
+  such as a null name, an empty table name, or a column type without the
+  fields its state requires, is an `invalid request`.
+- An output tree passes to the caller and stays valid until the caller
+  frees its root with the matching free function. A comparison with no
+  difference returns no tree.
 
 ### Errors in the API
 
@@ -1381,11 +1379,11 @@ Errors are returned as a structure with these items:
 | Diagnostics | Ordered entries of a key and a typed value (Boolean, integer, floating-point, UTF-8, or bytes) attached by the connector, such as a vendor code. Keys may repeat. They are details for people and restricted logs, kept out of ordinary logs like the Data Source message, and callers do not branch on them. |
 | Stale registration details | Per mismatched column, its name, the expected Analytics type and nullability, and the current Data Source type and nullability ([Schema check](#schema-check)); for missing tables or columns, their names |
 
-A failing function returns this structure. When a pull of a result stream fails,
-including when the first pull fails because of a source error, the Arrow stream
-can return only an error number and string, so the caller retrieves this
-structure through the operation's error retrieval function. An operation's
-error remains retrievable until the operation is closed.
+A failing function returns this structure. When a pull of a read's result
+stream fails, including when the first pull fails because of a source error,
+the Arrow stream can return only an error number and string, so the caller
+retrieves this structure through the read operation's error retrieval function.
+An operation's error remains retrievable until the operation is closed.
 
 ### Static information
 

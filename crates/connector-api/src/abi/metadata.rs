@@ -2,17 +2,23 @@
 //! records with their table metadata and source metadata, and Analytics types.
 //!
 //! Each structure mirrors one SDK type. The library writes trees of these
-//! structures as outputs; it reads the names of requested tables as input.
+//! structures as outputs, and reads the same structures as inputs, so a caller
+//! passes a value it received back unchanged, or one it built from its own
+//! stored form.
 //!
 //! Every enumerated field and truth value is an integer type with named
-//! constants rather than a Rust enum or `bool`, so the structures hold only
-//! values a C caller can write. A field that its structure's state does not
-//! use is zero or absent on output. Text inside these structures is a
-//! [`ScalardbAnalyticsConnectorString`].
+//! constants rather than a Rust enum or `bool`, because an input may hold any
+//! bit pattern; reading rejects values outside the constants as
+//! `invalid request`. A field that its
+//! structure's state does not use is ignored on input and zero or absent on
+//! output. Text inside these structures is a
+//! [`ScalardbAnalyticsConnectorString`] in both directions.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use analytics_types::AnalyticsType;
+use analytics_types::{
+    AnalyticsField, AnalyticsType, ArrayType, DecimalType, EnumType, MapType, StructType,
+};
 use connector_sdk::{
     Column, ColumnType, Component, ConnectorError, Constraint, ConstraintKind, Listed,
     NamespacePath, Reported, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
@@ -35,7 +41,9 @@ pub struct ScalardbAnalyticsConnectorNames {
 
 /// A truth value in a structure.
 ///
-/// It is an integer with named constants, like the enumerated fields.
+/// It is an integer rather than a Rust `bool`, which is undefined behaviour
+/// for any byte other than 0 and 1, because an input may hold any bit
+/// pattern; reading rejects other values as `invalid request`.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScalardbAnalyticsConnectorBool(pub u8);
@@ -43,6 +51,14 @@ pub struct ScalardbAnalyticsConnectorBool(pub u8);
 impl ScalardbAnalyticsConnectorBool {
     pub const FALSE: Self = Self(0);
     pub const TRUE: Self = Self(1);
+
+    fn read(self, what: &str) -> Result<bool, ConnectorError> {
+        match self {
+            Self::FALSE => Ok(false),
+            Self::TRUE => Ok(true),
+            other => Err(unknown(what, u32::from(other.0))),
+        }
+    }
 }
 
 impl From<bool> for ScalardbAnalyticsConnectorBool {
@@ -896,4 +912,567 @@ pub(super) unsafe fn read_table_reference(
     // SAFETY: forwarded from the caller.
     let names = unsafe { read_names(names, name) }?;
     TableReference::new(names).map_err(|error| invalid_request(&error.to_string()))
+}
+
+/// Reads source metadata.
+///
+/// # Safety
+///
+/// See the section comment.
+pub(super) unsafe fn read_source_metadata(
+    metadata: &ScalardbAnalyticsConnectorSourceMetadata,
+) -> Result<SourceMetadata, ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        Ok(SourceMetadata {
+            connector: read_string(metadata.connector, "the connector of source metadata")?,
+            document: read_string(metadata.document.text, "a source metadata document")?,
+        })
+    }
+}
+
+/// Reads table metadata.
+///
+/// # Safety
+///
+/// See the section comment.
+pub(super) unsafe fn read_table_metadata(
+    metadata: &ScalardbAnalyticsConnectorTableMetadata,
+) -> Result<TableMetadata, ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        let table = read_table_reference(&metadata.table, "the table")?;
+        let kind = read_table_kind(metadata.kind, metadata.other_kind)?;
+        let source_id = read_reported_text(&metadata.source_id, "the table's source identifier")?;
+        let columns = read_slice(metadata.columns, metadata.column_count, "the columns")?
+            .iter()
+            .map(|column| read_column(column))
+            .collect::<Result<_, _>>()?;
+        let constraints = match metadata.constraints_state {
+            ScalardbAnalyticsConnectorReportedState::VALUE => Reported::Value(
+                read_slice(
+                    metadata.constraints,
+                    metadata.constraint_count,
+                    "the constraints",
+                )?
+                .iter()
+                .map(|constraint| read_constraint(constraint))
+                .collect::<Result<_, _>>()?,
+            ),
+            ScalardbAnalyticsConnectorReportedState::MISSING => Reported::Missing {
+                reason: read_string(
+                    metadata.constraints_missing_reason,
+                    "the reason constraints are missing",
+                )?,
+            },
+            ScalardbAnalyticsConnectorReportedState::NOT_OFFERED => Reported::NotOffered,
+            other => return Err(unknown("constraints state", other.0)),
+        };
+        Ok(TableMetadata::new(
+            table,
+            kind,
+            source_id,
+            columns,
+            metadata
+                .columns_may_be_hidden
+                .read("columns_may_be_hidden value")?,
+            constraints,
+        ))
+    }
+}
+
+/// # Safety
+///
+/// See the section comment.
+unsafe fn read_table_kind(
+    kind: ScalardbAnalyticsConnectorTableKind,
+    other_kind: ScalardbAnalyticsConnectorString,
+) -> Result<TableKind, ConnectorError> {
+    Ok(match kind {
+        ScalardbAnalyticsConnectorTableKind::TABLE => TableKind::Table,
+        ScalardbAnalyticsConnectorTableKind::VIEW => TableKind::View,
+        ScalardbAnalyticsConnectorTableKind::EXTERNAL => TableKind::External,
+        ScalardbAnalyticsConnectorTableKind::OTHER => {
+            // SAFETY: forwarded from the caller.
+            TableKind::Other(unsafe { read_string(other_kind, "the other table kind") }?)
+        }
+        other => return Err(unknown("table kind", other.0)),
+    })
+}
+
+/// # Safety
+///
+/// See the section comment.
+unsafe fn read_reported_text(
+    item: &ScalardbAnalyticsConnectorReportedText,
+    name: &str,
+) -> Result<Reported<String>, ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        Ok(match item.state {
+            ScalardbAnalyticsConnectorReportedState::VALUE => {
+                Reported::Value(read_string(item.value, name)?)
+            }
+            ScalardbAnalyticsConnectorReportedState::MISSING => Reported::Missing {
+                reason: read_string(item.missing_reason, name)?,
+            },
+            ScalardbAnalyticsConnectorReportedState::NOT_OFFERED => Reported::NotOffered,
+            other => return Err(unknown("reported state", other.0)),
+        })
+    }
+}
+
+/// # Safety
+///
+/// See the section comment.
+unsafe fn read_column(column: &ScalardbAnalyticsConnectorColumn) -> Result<Column, ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        let ty = match column.type_state {
+            ScalardbAnalyticsConnectorColumnTypeState::MAPPED => ColumnType::Mapped {
+                data_source_type: read_string(column.data_source_type, "a Data Source type")?,
+                analytics_type: read_analytics_type(&column.analytics_type)?,
+            },
+            ScalardbAnalyticsConnectorColumnTypeState::UNSUPPORTED => ColumnType::Unsupported {
+                data_source_type: read_string(column.data_source_type, "a Data Source type")?,
+                reason: match column.unsupported_reason {
+                    ScalardbAnalyticsConnectorUnsupportedReason::NOT_MAPPED => {
+                        UnsupportedReason::NotMapped
+                    }
+                    ScalardbAnalyticsConnectorUnsupportedReason::MAPPING_NOT_IMPLEMENTED => {
+                        UnsupportedReason::MappingNotImplemented
+                    }
+                    ScalardbAnalyticsConnectorUnsupportedReason::PARAMETER_OUT_OF_RANGE => {
+                        UnsupportedReason::ParameterOutOfRange
+                    }
+                    other => return Err(unknown("unsupported reason", other.0)),
+                },
+            },
+            ScalardbAnalyticsConnectorColumnTypeState::UNREAD => ColumnType::Unread {
+                reason: read_string(column.unread_reason, "the reason a type is unread")?,
+            },
+            other => return Err(unknown("column type state", other.0)),
+        };
+        Ok(Column {
+            name: read_string(column.name, "a column name")?,
+            ordinal: column.ordinal,
+            nullable: column.nullable.read("column nullability")?,
+            source_id: read_reported_text(&column.source_id, "a column's source identifier")?,
+            ty,
+        })
+    }
+}
+
+/// # Safety
+///
+/// See the section comment; the type tree is acyclic.
+unsafe fn read_analytics_type(
+    analytics_type: &ScalardbAnalyticsConnectorAnalyticsType,
+) -> Result<AnalyticsType, ConnectorError> {
+    use ScalardbAnalyticsConnectorAnalyticsTypeKind as Kind;
+    // SAFETY: forwarded from the caller.
+    let child = |child: *const ScalardbAnalyticsConnectorAnalyticsType, name: &str| unsafe {
+        read_analytics_type(super::reference(child, name)?)
+    };
+    Ok(match analytics_type.kind {
+        Kind::BOOLEAN => AnalyticsType::Boolean,
+        Kind::BYTE => AnalyticsType::Byte,
+        Kind::SMALL_INT => AnalyticsType::SmallInt,
+        Kind::INT => AnalyticsType::Int,
+        Kind::BIG_INT => AnalyticsType::BigInt,
+        Kind::FLOAT => AnalyticsType::Float,
+        Kind::DOUBLE => AnalyticsType::Double,
+        Kind::DECIMAL => AnalyticsType::Decimal(
+            DecimalType::new(
+                analytics_type.decimal_precision,
+                analytics_type.decimal_scale,
+            )
+            .map_err(|error| invalid_request(&error.to_string()))?,
+        ),
+        Kind::TEXT => AnalyticsType::Text,
+        Kind::BLOB => AnalyticsType::Blob,
+        Kind::DATE => AnalyticsType::Date,
+        Kind::TIME => AnalyticsType::Time,
+        Kind::TIMESTAMP => AnalyticsType::Timestamp,
+        Kind::TIMESTAMP_TZ => AnalyticsType::TimestampTz,
+        Kind::DURATION => AnalyticsType::Duration,
+        Kind::INTERVAL => AnalyticsType::Interval,
+        Kind::ARRAY => AnalyticsType::Array(ArrayType::new(
+            child(analytics_type.element_type, "an array element type")?,
+            analytics_type
+                .element_nullable
+                .read("element nullability")?,
+        )),
+        Kind::MAP => AnalyticsType::Map(MapType::new(
+            child(analytics_type.key_type, "a map key type")?,
+            child(analytics_type.value_type, "a map value type")?,
+            analytics_type.value_nullable.read("value nullability")?,
+        )),
+        Kind::STRUCT => {
+            // SAFETY: forwarded from the caller.
+            let fields = unsafe {
+                read_slice(
+                    analytics_type.fields,
+                    analytics_type.field_count,
+                    "struct fields",
+                )?
+                .iter()
+                .map(|field| {
+                    Ok(AnalyticsField::new(
+                        read_string(field.name, "a struct field name")?,
+                        child(field.data_type, "a struct field type")?,
+                        field.nullable.read("struct field nullability")?,
+                    ))
+                })
+                .collect::<Result<_, ConnectorError>>()?
+            };
+            AnalyticsType::Struct(StructType::new(fields))
+        }
+        Kind::UUID => AnalyticsType::Uuid,
+        Kind::JSON => AnalyticsType::Json,
+        Kind::ENUM => {
+            // SAFETY: forwarded from the caller.
+            let members = unsafe {
+                read_slice(
+                    analytics_type.members,
+                    analytics_type.member_count,
+                    "enum members",
+                )?
+                .iter()
+                .map(|&member| read_string(member, "an enum member"))
+                .collect::<Result<_, _>>()?
+            };
+            AnalyticsType::Enum(EnumType::new(members))
+        }
+        Kind::YEAR => AnalyticsType::Year,
+        Kind::TIME_WITH_TIME_ZONE => AnalyticsType::TimeWithTimeZone,
+        other => return Err(unknown("Analytics type kind", other.0)),
+    })
+}
+
+/// # Safety
+///
+/// See the section comment.
+unsafe fn read_constraint(
+    constraint: &ScalardbAnalyticsConnectorConstraint,
+) -> Result<Constraint, ConnectorError> {
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        let columns = || read_names(&constraint.columns, "constraint columns");
+        let kind = match constraint.kind {
+            ScalardbAnalyticsConnectorConstraintKind::PRIMARY_KEY => ConstraintKind::PrimaryKey {
+                columns: columns()?,
+            },
+            ScalardbAnalyticsConnectorConstraintKind::UNIQUE => ConstraintKind::Unique {
+                columns: columns()?,
+                kind: match constraint.unique_kind {
+                    ScalardbAnalyticsConnectorUniqueKind::CONSTRAINT => UniqueKind::Constraint,
+                    ScalardbAnalyticsConnectorUniqueKind::INDEX => UniqueKind::Index,
+                    other => return Err(unknown("unique kind", other.0)),
+                },
+                condition: read_optional_string(constraint.condition, "a unique condition")?,
+            },
+            ScalardbAnalyticsConnectorConstraintKind::FOREIGN_KEY => ConstraintKind::ForeignKey {
+                columns: columns()?,
+                referenced_table: read_table_reference(
+                    &constraint.referenced_table,
+                    "a referenced table",
+                )?,
+                referenced_columns: read_names(
+                    &constraint.referenced_columns,
+                    "referenced columns",
+                )?,
+            },
+            ScalardbAnalyticsConnectorConstraintKind::CHECK => ConstraintKind::Check {
+                expression: read_string(constraint.expression, "a check expression")?,
+            },
+            other => return Err(unknown("constraint kind", other.0)),
+        };
+        Ok(Constraint {
+            name: read_string(constraint.name, "a constraint name")?,
+            enforced: constraint.enforced.read("constraint enforcement")?,
+            kind,
+        })
+    }
+}
+
+fn unknown(what: &str, value: u32) -> ConnectorError {
+    invalid_request(&format!("{value} is not a {what}"))
+}
+
+#[cfg(test)]
+mod tests {
+    //! The C structures mirror the SDK's types by hand in both directions, so
+    //! a value written to C and read back must equal the original. Each
+    //! fixture function matches its enum exhaustively, so a new SDK variant
+    //! fails to compile here until it is covered.
+
+    use super::*;
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    fn table(parts: &[&str]) -> TableReference {
+        TableReference::new(names(parts)).unwrap()
+    }
+
+    /// Every Analytics type kind, with nested kinds holding other kinds.
+    fn analytics_types() -> Vec<AnalyticsType> {
+        let all = vec![
+            AnalyticsType::Boolean,
+            AnalyticsType::Byte,
+            AnalyticsType::SmallInt,
+            AnalyticsType::Int,
+            AnalyticsType::BigInt,
+            AnalyticsType::Float,
+            AnalyticsType::Double,
+            AnalyticsType::Decimal(DecimalType::new(38, -2).unwrap()),
+            AnalyticsType::Text,
+            AnalyticsType::Blob,
+            AnalyticsType::Date,
+            AnalyticsType::Time,
+            AnalyticsType::Timestamp,
+            AnalyticsType::TimestampTz,
+            AnalyticsType::Duration,
+            AnalyticsType::Interval,
+            AnalyticsType::Array(ArrayType::new(
+                AnalyticsType::Array(ArrayType::new(AnalyticsType::Text, false)),
+                true,
+            )),
+            AnalyticsType::Map(MapType::new(
+                AnalyticsType::Text,
+                AnalyticsType::Decimal(DecimalType::new(10, 2).unwrap()),
+                true,
+            )),
+            AnalyticsType::Struct(StructType::new(vec![
+                AnalyticsField::new("id", AnalyticsType::BigInt, false),
+                AnalyticsField::new(
+                    "tags",
+                    AnalyticsType::Map(MapType::new(
+                        AnalyticsType::Text,
+                        AnalyticsType::Text,
+                        false,
+                    )),
+                    true,
+                ),
+            ])),
+            AnalyticsType::Uuid,
+            AnalyticsType::Json,
+            AnalyticsType::Enum(EnumType::new(names(&["small", "large"]))),
+            AnalyticsType::Year,
+            AnalyticsType::TimeWithTimeZone,
+        ];
+        for analytics_type in &all {
+            match analytics_type {
+                AnalyticsType::Boolean
+                | AnalyticsType::Byte
+                | AnalyticsType::SmallInt
+                | AnalyticsType::Int
+                | AnalyticsType::BigInt
+                | AnalyticsType::Float
+                | AnalyticsType::Double
+                | AnalyticsType::Decimal(_)
+                | AnalyticsType::Text
+                | AnalyticsType::Blob
+                | AnalyticsType::Date
+                | AnalyticsType::Time
+                | AnalyticsType::Timestamp
+                | AnalyticsType::TimestampTz
+                | AnalyticsType::Duration
+                | AnalyticsType::Interval
+                | AnalyticsType::Array(_)
+                | AnalyticsType::Map(_)
+                | AnalyticsType::Struct(_)
+                | AnalyticsType::Uuid
+                | AnalyticsType::Json
+                | AnalyticsType::Enum(_)
+                | AnalyticsType::Year
+                | AnalyticsType::TimeWithTimeZone => {}
+            }
+        }
+        all
+    }
+
+    /// Every column type state and unsupported reason.
+    fn column_types() -> Vec<ColumnType> {
+        let reasons = [
+            UnsupportedReason::NotMapped,
+            UnsupportedReason::MappingNotImplemented,
+            UnsupportedReason::ParameterOutOfRange,
+        ];
+        for reason in reasons {
+            match reason {
+                UnsupportedReason::NotMapped
+                | UnsupportedReason::MappingNotImplemented
+                | UnsupportedReason::ParameterOutOfRange => {}
+            }
+        }
+        let mut all: Vec<_> = analytics_types()
+            .into_iter()
+            .map(|analytics_type| ColumnType::Mapped {
+                data_source_type: "source type".to_owned(),
+                analytics_type,
+            })
+            .collect();
+        all.extend(reasons.map(|reason| ColumnType::Unsupported {
+            data_source_type: "geometry".to_owned(),
+            reason,
+        }));
+        all.push(ColumnType::Unread {
+            reason: "permission denied".to_owned(),
+        });
+        for ty in &all {
+            match ty {
+                ColumnType::Mapped { .. }
+                | ColumnType::Unsupported { .. }
+                | ColumnType::Unread { .. } => {}
+            }
+        }
+        all
+    }
+
+    /// Every reported state of a text item.
+    fn reported_texts() -> Vec<Reported<String>> {
+        let all = vec![
+            Reported::Value("16384".to_owned()),
+            Reported::Missing {
+                reason: "not readable".to_owned(),
+            },
+            Reported::NotOffered,
+        ];
+        for reported in &all {
+            match reported {
+                Reported::Value(_) | Reported::Missing { .. } | Reported::NotOffered => {}
+            }
+        }
+        all
+    }
+
+    /// Every constraint kind and unique kind, with and without a condition.
+    fn constraints() -> Vec<Constraint> {
+        let kinds = vec![
+            ConstraintKind::PrimaryKey {
+                columns: names(&["c0"]),
+            },
+            ConstraintKind::Unique {
+                columns: names(&["c0", "c1"]),
+                kind: UniqueKind::Constraint,
+                condition: None,
+            },
+            ConstraintKind::Unique {
+                columns: names(&["c1"]),
+                kind: UniqueKind::Index,
+                condition: Some("(c1 > 0)".to_owned()),
+            },
+            ConstraintKind::ForeignKey {
+                columns: names(&["c0"]),
+                referenced_table: table(&["db", "public", "customers"]),
+                referenced_columns: names(&["id"]),
+            },
+            ConstraintKind::Check {
+                expression: "(c0 >= 0)".to_owned(),
+            },
+        ];
+        for kind in &kinds {
+            match kind {
+                ConstraintKind::PrimaryKey { .. }
+                | ConstraintKind::Unique { .. }
+                | ConstraintKind::ForeignKey { .. }
+                | ConstraintKind::Check { .. } => {}
+            }
+        }
+        for unique_kind in [UniqueKind::Constraint, UniqueKind::Index] {
+            match unique_kind {
+                UniqueKind::Constraint | UniqueKind::Index => {}
+            }
+        }
+        kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| Constraint {
+                name: format!("constraint_{index}"),
+                enforced: index % 2 == 0,
+                kind,
+            })
+            .collect()
+    }
+
+    /// Table metadata covering every kind, reported state, column type, and
+    /// constraint, and both values of each flag.
+    fn tables() -> Vec<TableMetadata> {
+        let kinds = vec![
+            TableKind::Table,
+            TableKind::View,
+            TableKind::External,
+            TableKind::Other("materialized view".to_owned()),
+        ];
+        for kind in &kinds {
+            match kind {
+                TableKind::Table | TableKind::View | TableKind::External | TableKind::Other(_) => {}
+            }
+        }
+        let source_ids = reported_texts();
+        let columns: Vec<Column> = column_types()
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| Column {
+                name: format!("c{index}"),
+                ordinal: u32::try_from(index + 1).unwrap(),
+                nullable: index % 2 == 1,
+                source_id: source_ids[index % source_ids.len()].clone(),
+                ty,
+            })
+            .collect();
+        let constraint_states = [
+            Reported::Value(constraints()),
+            Reported::Value(Vec::new()),
+            Reported::Missing {
+                reason: "pg_constraint is not readable".to_owned(),
+            },
+            Reported::NotOffered,
+        ];
+        kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                TableMetadata::new(
+                    table(&["db", "public", &format!("t{index}")]),
+                    kind,
+                    source_ids[index % source_ids.len()].clone(),
+                    if index == 3 {
+                        Vec::new()
+                    } else {
+                        columns.clone()
+                    },
+                    index % 2 == 1,
+                    constraint_states[index].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn table_metadata_written_to_c_reads_back_unchanged() {
+        for metadata in tables() {
+            let mut arena = Arena::default();
+            let view = arena.table_metadata(&metadata);
+            // SAFETY: the view points into `arena`, which is alive.
+            let read = unsafe { read_table_metadata(&view) }.unwrap();
+            assert_eq!(read, metadata);
+        }
+    }
+
+    #[test]
+    fn source_metadata_written_to_c_reads_back_unchanged() {
+        let metadata = SourceMetadata {
+            connector: "postgresql".to_owned(),
+            document: r#"{"oid":"16384","name":"税込"}"#.to_owned(),
+        };
+        let mut arena = Arena::default();
+        let view = arena.source_metadata(&metadata);
+        // SAFETY: the view points into `arena`, which is alive.
+        let read = unsafe { read_source_metadata(&view) }.unwrap();
+        assert_eq!(read, metadata);
+    }
 }

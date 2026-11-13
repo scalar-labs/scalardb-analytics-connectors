@@ -445,13 +445,23 @@ pub struct TestCatalog;
 pub struct TestTable {
     pub table: Vec<String>,
     pub fixture: TestFixture,
+    /// A source attribute that table metadata does not hold, such as a
+    /// comment; the catalog reads none.
+    pub note: Option<String>,
 }
 
 /// The fixture tables that exist and can be read.
+///
+/// The `orders` variants are later observations of `orders` for comparison:
+/// a renamed column, the table dropped and re-created with the same column
+/// identifiers, and a read that could not see every item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TestFixture {
     Orders,
+    OrdersRenamed,
+    OrdersRecreated,
+    OrdersPartial,
     OrderView,
     Events,
     Reads,
@@ -461,7 +471,10 @@ impl SourceTableMetadata for TestTable {
     fn to_table_metadata(&self) -> TableMetadata {
         let table = TableReference::new(self.table.clone()).expect("fixture names are non-empty");
         match self.fixture {
-            TestFixture::Orders => orders(table),
+            TestFixture::Orders
+            | TestFixture::OrdersRenamed
+            | TestFixture::OrdersRecreated
+            | TestFixture::OrdersPartial => orders(table, self.fixture),
             TestFixture::OrderView => TableMetadata::new(
                 table,
                 TableKind::View,
@@ -533,20 +546,71 @@ fn names(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
 }
 
-fn orders(table: TableReference) -> TableMetadata {
+fn orders(table: TableReference, fixture: TestFixture) -> TableMetadata {
     let mapped = |data_source_type: &str, analytics_type| ColumnType::Mapped {
         data_source_type: data_source_type.to_owned(),
         analytics_type,
     };
     let id = |value: &str| Reported::Value(value.to_owned());
+    fn missing<T>() -> Reported<T> {
+        Reported::Missing {
+            reason: "permission denied".to_owned(),
+        }
+    }
+    let (source_id, id_column_source_id, amount) = match fixture {
+        TestFixture::OrdersRenamed => (id("16384"), id("1"), "total"),
+        TestFixture::OrdersRecreated => (id("16999"), id("1"), "price"),
+        TestFixture::OrdersPartial => (missing(), missing(), "amount"),
+        _ => (id("16384"), id("1"), "amount"),
+    };
+    let constraints = Reported::Value(vec![
+        Constraint {
+            name: "orders_pkey".to_owned(),
+            enforced: true,
+            kind: ConstraintKind::PrimaryKey {
+                columns: names(&["id"]),
+            },
+        },
+        Constraint {
+            name: "orders_reference_key".to_owned(),
+            enforced: true,
+            kind: ConstraintKind::Unique {
+                columns: names(&["reference"]),
+                kind: UniqueKind::Index,
+                condition: Some("(amount > 0)".to_owned()),
+            },
+        },
+        Constraint {
+            name: "orders_customer_fkey".to_owned(),
+            enforced: false,
+            kind: ConstraintKind::ForeignKey {
+                columns: names(&["id"]),
+                referenced_table: TableReference::new(names(&["test", "public", "customers"]))
+                    .expect("fixture names are non-empty"),
+                referenced_columns: names(&["customer_id"]),
+            },
+        },
+        Constraint {
+            name: "orders_amount_check".to_owned(),
+            enforced: true,
+            kind: ConstraintKind::Check {
+                expression: "(amount >= 0)".to_owned(),
+            },
+        },
+    ]);
     TableMetadata::new(
         table,
         TableKind::Table,
-        id("16384"),
+        source_id,
         vec![
-            column("id", 1, id("1"), mapped("int8", AnalyticsType::BigInt)),
             column(
-                "amount",
+                "id",
+                1,
+                id_column_source_id,
+                mapped("int8", AnalyticsType::BigInt),
+            ),
+            column(
+                amount,
                 2,
                 id("2"),
                 mapped(
@@ -575,41 +639,10 @@ fn orders(table: TableReference) -> TableMetadata {
             ),
         ],
         false,
-        Reported::Value(vec![
-            Constraint {
-                name: "orders_pkey".to_owned(),
-                enforced: true,
-                kind: ConstraintKind::PrimaryKey {
-                    columns: names(&["id"]),
-                },
-            },
-            Constraint {
-                name: "orders_reference_key".to_owned(),
-                enforced: true,
-                kind: ConstraintKind::Unique {
-                    columns: names(&["reference"]),
-                    kind: UniqueKind::Index,
-                    condition: Some("(amount > 0)".to_owned()),
-                },
-            },
-            Constraint {
-                name: "orders_customer_fkey".to_owned(),
-                enforced: false,
-                kind: ConstraintKind::ForeignKey {
-                    columns: names(&["id"]),
-                    referenced_table: TableReference::new(names(&["test", "public", "customers"]))
-                        .expect("fixture names are non-empty"),
-                    referenced_columns: names(&["customer_id"]),
-                },
-            },
-            Constraint {
-                name: "orders_amount_check".to_owned(),
-                enforced: true,
-                kind: ConstraintKind::Check {
-                    expression: "(amount >= 0)".to_owned(),
-                },
-            },
-        ]),
+        match fixture {
+            TestFixture::OrdersPartial => missing(),
+            _ => constraints,
+        },
     )
 }
 
@@ -754,12 +787,16 @@ impl Catalog<TestConnector> for TestCatalog {
                     metadata: TestTable {
                         table: table.names().to_vec(),
                         fixture,
+                        note: None,
                     },
                     read_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
                 };
                 behavior_step(name).unwrap_or_else(|| {
                     CatalogStep::Item(match name {
                         "orders" => read(TestFixture::Orders),
+                        "orders_renamed" => read(TestFixture::OrdersRenamed),
+                        "orders_recreated" => read(TestFixture::OrdersRecreated),
+                        "orders_partial" => read(TestFixture::OrdersPartial),
                         "order_view" => read(TestFixture::OrderView),
                         "events" => read(TestFixture::Events),
                         "reads" => read(TestFixture::Reads),

@@ -12,7 +12,8 @@
  *   U+0000 is complete only through `length`. Absent output text has a NULL
  *   `data`.
  * - Text inside structures, in both directions, is a
- *   ScalardbAnalyticsConnectorString.
+ *   ScalardbAnalyticsConnectorString, so an output structure can be passed
+ *   back unchanged as an input.
  * - Binary data, such as Substrait plans, carries a length and no terminator.
  * - The library copies every input during the call.
  * - A timeout of 0 milliseconds means no limit.
@@ -305,7 +306,9 @@ typedef struct ScalardbAnalyticsConnectorReportedText {
 
 // A truth value in a structure.
 //
-// It is an integer with named constants, like the enumerated fields.
+// It is an integer rather than a Rust `bool`, which is undefined behaviour
+// for any byte other than 0 and 1, because an input may hold any bit
+// pattern; reading rejects other values as `invalid request`.
 typedef uint8_t ScalardbAnalyticsConnectorBool;
 #define ScalardbAnalyticsConnectorBool_FALSE 0
 #define ScalardbAnalyticsConnectorBool_TRUE 1
@@ -495,6 +498,96 @@ typedef struct ScalardbAnalyticsConnectorTableMetadataResult {
   size_t record_count;
   struct ScalardbAnalyticsConnectorRetrieval retrieval;
 } ScalardbAnalyticsConnectorTableMetadataResult;
+
+// A compared attribute of the table itself.
+typedef uint32_t ScalardbAnalyticsConnectorTableAttribute;
+#define ScalardbAnalyticsConnectorTableAttribute_KIND 1
+#define ScalardbAnalyticsConnectorTableAttribute_SOURCE_ID 2
+
+// How a column or constraint differs between two observations.
+typedef uint32_t ScalardbAnalyticsConnectorChangeKind;
+// Only the newer observation has it; `after` is set.
+#define ScalardbAnalyticsConnectorChangeKind_ADDED 1
+// Only the older observation has it; `before` is set.
+#define ScalardbAnalyticsConnectorChangeKind_REMOVED 2
+// Both have it with the listed attributes differing; both are set.
+#define ScalardbAnalyticsConnectorChangeKind_MATCHED 3
+
+// A compared attribute of a column.
+typedef uint32_t ScalardbAnalyticsConnectorColumnAttribute;
+#define ScalardbAnalyticsConnectorColumnAttribute_NAME 1
+#define ScalardbAnalyticsConnectorColumnAttribute_ORDINAL 2
+#define ScalardbAnalyticsConnectorColumnAttribute_NULLABLE 3
+#define ScalardbAnalyticsConnectorColumnAttribute_DATA_SOURCE_TYPE 4
+// The Analytics type, or the reason the column is unsupported.
+#define ScalardbAnalyticsConnectorColumnAttribute_ANALYTICS_TYPE 5
+#define ScalardbAnalyticsConnectorColumnAttribute_SOURCE_ID 6
+
+// How one column differs. `attributes` is set for `MATCHED`.
+typedef struct ScalardbAnalyticsConnectorColumnChange {
+  ScalardbAnalyticsConnectorChangeKind change;
+  const struct ScalardbAnalyticsConnectorColumn *before;
+  const struct ScalardbAnalyticsConnectorColumn *after;
+  const ScalardbAnalyticsConnectorColumnAttribute *attributes;
+  size_t attribute_count;
+} ScalardbAnalyticsConnectorColumnChange;
+
+// A compared attribute of a constraint, beyond its kind and name, which
+// match it.
+typedef uint32_t ScalardbAnalyticsConnectorConstraintAttribute;
+#define ScalardbAnalyticsConnectorConstraintAttribute_ENFORCED 1
+#define ScalardbAnalyticsConnectorConstraintAttribute_COLUMNS 2
+#define ScalardbAnalyticsConnectorConstraintAttribute_UNIQUE_KIND 3
+#define ScalardbAnalyticsConnectorConstraintAttribute_CONDITION 4
+#define ScalardbAnalyticsConnectorConstraintAttribute_REFERENCED_TABLE 5
+#define ScalardbAnalyticsConnectorConstraintAttribute_REFERENCED_COLUMNS 6
+#define ScalardbAnalyticsConnectorConstraintAttribute_EXPRESSION 7
+
+// How one constraint differs. `attributes` is set for `MATCHED`.
+typedef struct ScalardbAnalyticsConnectorConstraintChange {
+  ScalardbAnalyticsConnectorChangeKind change;
+  const struct ScalardbAnalyticsConnectorConstraint *before;
+  const struct ScalardbAnalyticsConnectorConstraint *after;
+  const ScalardbAnalyticsConnectorConstraintAttribute *attributes;
+  size_t attribute_count;
+} ScalardbAnalyticsConnectorConstraintChange;
+
+// The differences between two observations of one table's table metadata.
+//
+// Removed and matched columns come in the older ordinal order, then added
+// columns in the newer one; constraints likewise in their order. Freed with
+// `scalardb_analytics_connector_table_metadata_differences_free` when
+// returned by `scalardb_analytics_connector_table_metadata_compare`.
+typedef struct ScalardbAnalyticsConnectorTableMetadataDifferences {
+  const ScalardbAnalyticsConnectorTableAttribute *table_attributes;
+  size_t table_attribute_count;
+  const struct ScalardbAnalyticsConnectorColumnChange *columns;
+  size_t column_count;
+  const struct ScalardbAnalyticsConnectorConstraintChange *constraints;
+  size_t constraint_count;
+} ScalardbAnalyticsConnectorTableMetadataDifferences;
+
+// One difference between two JSON documents.
+//
+// `path` is a JSON Pointer. A value only the older document holds, or one
+// both hold, is located in the older document; a value only the newer
+// document holds is located in the newer one. An absent side has a null
+// `text.data`.
+typedef struct ScalardbAnalyticsConnectorJsonDifference {
+  struct ScalardbAnalyticsConnectorString path;
+  struct ScalardbAnalyticsConnectorJson before;
+  struct ScalardbAnalyticsConnectorJson after;
+} ScalardbAnalyticsConnectorJsonDifference;
+
+// The differences between two observations of one table's source metadata:
+// those of the table metadata derived from both, and those of the
+// documents. Freed with
+// `scalardb_analytics_connector_source_metadata_differences_free`.
+typedef struct ScalardbAnalyticsConnectorSourceMetadataDifferences {
+  struct ScalardbAnalyticsConnectorTableMetadataDifferences table_metadata;
+  const struct ScalardbAnalyticsConnectorJsonDifference *source_metadata;
+  size_t source_metadata_count;
+} ScalardbAnalyticsConnectorSourceMetadataDifferences;
 
 #ifdef __cplusplus
 extern "C" {
@@ -737,6 +830,10 @@ void scalardb_analytics_connector_table_list_free(struct ScalardbAnalyticsConnec
 // that do not exist or could not be read. Otherwise as
 // `scalardb_analytics_connector_namespace_list`.
 //
+// A record's `table_metadata` and `source_metadata` are passed unchanged to
+// `scalardb_analytics_connector_table_metadata_compare` and
+// `scalardb_analytics_connector_source_metadata_compare`.
+//
 // # Safety
 //
 // `session` is an open handle, `tables` points to `table_count` valid name
@@ -755,6 +852,52 @@ struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_metad
 //
 // `result` is null or a live result, not used after this call.
 void scalardb_analytics_connector_table_metadata_result_free(struct ScalardbAnalyticsConnectorTableMetadataResult *result);
+
+// Compares two observations of one table's table metadata that the caller
+// paired, such as a stored one and a newly retrieved one.
+//
+// Only values observed on both sides are compared. `out_differences`
+// receives null when no value differs. Input that is not valid table
+// metadata is `invalid request`. It needs no handle.
+//
+// # Safety
+//
+// `before` and `after` point to valid table metadata, and `out_differences`
+// is writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_metadata_compare(const struct ScalardbAnalyticsConnectorTableMetadata *before,
+                                                                                            const struct ScalardbAnalyticsConnectorTableMetadata *after,
+                                                                                            struct ScalardbAnalyticsConnectorTableMetadataDifferences **out_differences);
+
+// Frees table metadata differences.
+//
+// # Safety
+//
+// `differences` is null or a live result, not used after this call.
+void scalardb_analytics_connector_table_metadata_differences_free(struct ScalardbAnalyticsConnectorTableMetadataDifferences *differences);
+
+// Compares two observations of one table's source metadata through the
+// connector that produced them, which restores both documents.
+//
+// `out_differences` receives null when neither the documents nor the table
+// metadata derived from them differ. Documents of different connectors, of
+// a connector not built into the library, or that the connector cannot
+// restore, such as one stored before a connector update changed its shape,
+// are `invalid request`. It needs an initialized library and no handle.
+//
+// # Safety
+//
+// `before` and `after` point to valid source metadata, and `out_differences`
+// is writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_source_metadata_compare(const struct ScalardbAnalyticsConnectorSourceMetadata *before,
+                                                                                             const struct ScalardbAnalyticsConnectorSourceMetadata *after,
+                                                                                             struct ScalardbAnalyticsConnectorSourceMetadataDifferences **out_differences);
+
+// Frees source metadata differences.
+//
+// # Safety
+//
+// `differences` is null or a live result, not used after this call.
+void scalardb_analytics_connector_source_metadata_differences_free(struct ScalardbAnalyticsConnectorSourceMetadataDifferences *differences);
 
 // Cancels an operation. It may be called from any thread.
 //

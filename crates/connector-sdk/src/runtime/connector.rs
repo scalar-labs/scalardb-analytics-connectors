@@ -15,8 +15,9 @@ use crate::{
     Access, Catalog, Component, ConnectionOptions, Connector, ConnectorError, DataSource,
     ErrorKind, ExecutionOutput, ExecutionStream, LibrarySettings, Listed, NameFilter,
     NamespacePath, PlannedRead, PlanningError, PortableQuery, PushdownRequest, PushdownResult,
-    RemoteExecution, RequestError, Session, SourceStream, SourceTableMetadata, TableEntry,
-    TableRecord, TableReference, connector::ConnectorState, execute_planned, start_source_read,
+    RemoteExecution, RequestError, Session, SourceMetadataDifferences, SourceStream,
+    SourceTableMetadata, TableEntry, TableRecord, TableReference, connector::ConnectorState,
+    execute_planned, start_source_read,
 };
 use arrow_schema::SchemaRef;
 
@@ -32,6 +33,16 @@ pub(crate) trait DynConnectorLibrary: Send + Sync {
         options: ConnectionOptions,
         connection_timeout: Option<Duration>,
     ) -> Result<Box<dyn DynDataSource>, ConnectorError>;
+
+    /// Compares two source metadata documents of one table of this connector.
+    ///
+    /// The connector's source metadata type is restored here: a document that
+    /// is not this connector's source metadata is an invalid request.
+    fn compare_source_metadata(
+        &self,
+        before: &str,
+        after: &str,
+    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError>;
 }
 
 impl<C: Connector> DynConnectorLibrary for ConnectorState<C> {
@@ -44,6 +55,23 @@ impl<C: Connector> DynConnectorLibrary for ConnectorState<C> {
         let data_source =
             ConnectorState::open_data_source(self, connector, options, connection_timeout)?;
         Ok(Box::new(data_source))
+    }
+
+    fn compare_source_metadata(
+        &self,
+        before: &str,
+        after: &str,
+    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError> {
+        let restore = |document: &str| {
+            serde_json::from_str::<<C::Catalog as Catalog<C>>::Table>(document).map_err(|error| {
+                ConnectorError::new(
+                    ErrorKind::InvalidRequest,
+                    false,
+                    format!("the document is not this connector's source metadata: {error}"),
+                )
+            })
+        };
+        C::Catalog::compare_source_metadata(&restore(before)?, &restore(after)?)
     }
 }
 

@@ -143,8 +143,9 @@ the representation decision is recorded in
 That document is also the glossary and semantic source of truth for pushdown
 planning, query decomposition, remote query generation, and query shipping.
 
-Schema information crosses the source boundary as an Analytics schema and is
-serialized through Arrow for interchange:
+Schema information crosses the source boundary as an Analytics schema. Read
+results carry it as their Arrow schema, and metadata carries it as typed C
+structures of Analytics types:
 
 ~~~text
 caller
@@ -156,7 +157,8 @@ caller
 data source schema
   -> Data Source-specific mapping
   -> Analytics schema
-  -> Arrow schema at the connector boundary
+  -> Analytics type structures in metadata, and the Arrow schema of read results,
+     at the connector boundary
 ~~~
 
 The precise request and response shapes are owned by the

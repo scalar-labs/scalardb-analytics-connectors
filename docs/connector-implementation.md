@@ -69,7 +69,7 @@ Table metadata is produced in these stages:
 | 2. Parse Data Source types | The connector | Data Source types, and catalog information needed to tell type kinds apart | Keys for looking up the type mapping |
 | 3. Apply the type mapping | The connector, in `to_table_metadata` | Keys and the connector's coverage | Analytics types, or unsupported with a reason |
 | 4. Build table metadata | The connector, through the SDK's `TableMetadata::new` | Results of stages 1 to 3 | Table metadata in deterministic order, with completeness derived from its values |
-| 5. Convert to Arrow | The connector API | Table metadata, source metadata, and retrieval info | Rows of the table metadata result |
+| 5. Return the result | The connector SDK runtime, then the connector API | Table metadata, source metadata, and retrieval info | The runtime's `TableMetadataResult`, converted by the connector API to the C structures of the table metadata result |
 
 The type mapping needs source knowledge, so the connector applies it. What
 every Connector shares is the shape of the result: the SDK's column types
