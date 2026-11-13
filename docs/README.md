@@ -27,6 +27,8 @@ Use the remaining top-level documents by responsibility:
   lifecycle, and assembly ownership.
 - [connector-implementation.md](connector-implementation.md) gives the
   conventions for implementing and testing one Connector.
+- [adapter-implementation.md](adapter-implementation.md) gives the conventions
+  for implementing and testing one Query Engine adapter on the connector API.
 
 Read the shared pushdown model before changing the Substrait request contract,
 connector planning boundary, or a Query Engine adapter. Then use the

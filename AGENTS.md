@@ -4,7 +4,9 @@
 
 - Start with `README.md` and `docs/architecture.md`. Follow
   `docs/connector-contract.md` for the contract, `docs/connector-internals.md`
-  for crate boundaries, and `docs/connector-implementation.md` for Connector conventions.
+  for crate boundaries, `docs/connector-implementation.md` for Connector
+  conventions, and `docs/adapter-implementation.md` for Query Engine adapter
+  conventions.
 
 ## Structure and ownership
 

@@ -103,10 +103,11 @@ remote/local rewrite for the current Data Source facts.
 
 Connector planning may query the Data Source during an optimizer callback.
 Facts needed by a rewrite rule are known only after the offered plan has been
-validated. Planning runs within the Connector operation's deadline and
-cancellation lifecycle; the Connector is responsible for stopping its catalog
-and Data Source calls. Adapters must not assume planning is a pure in-memory
-capability lookup.
+validated. Planning is bounded by a timeout that the library fixes for every
+Connector; the caller passes no timeout and does not cancel planning. When the
+timeout passes, the Connector stops its catalog and Data Source calls and
+planning returns `timeout`. Adapters must not assume planning is a pure
+in-memory capability lookup.
 
 Prefetching and caching are optional Connector implementation strategies. No
 `PlanningSnapshot` abstraction is required by the shared contract.
@@ -152,21 +153,8 @@ in this repository. Relevant upstream contracts are [Spark Data Source V2](https
 [DataFusion `TableProvider`](https://docs.rs/datafusion/latest/datafusion/catalog/trait.TableProvider.html),
 and [DuckDB table functions](https://github.com/duckdb/duckdb/blob/main/src/include/duckdb/function/table_function.hpp).
 
-## Integration tests
+## Implementing an Adapter
 
-No Query Engine Adapter is implemented in this repository yet. When an Adapter
-is added, its integration suite must test that:
-
-- complete pushdown executes only the remote plan;
-- partial pushdown converts and runs the local plan over remote output;
-- an unlowerable local plan rejects only that proposal and leaves native state
-  unchanged;
-- another complete request can still provide an adoptable proposal after such
-  a rejection;
-- fully-local fallback converts `RemoteResult -> Filter -> Project` and does not
-  read the named table again;
-- Connector-introduced intermediate columns and expressions are mapped safely;
-- alternative join shapes become separate complete requests;
-- unsupported results and errors leave the native plan unchanged; and
-- native handle persistence, if required by an Adapter, is an Adapter-specific
-  concern rather than part of the shared planning contract.
+How an Adapter uses the connector API, builds offered plans, applies results,
+maps types, and is tested is defined in
+[Query Engine adapter implementation conventions](adapter-implementation.md).

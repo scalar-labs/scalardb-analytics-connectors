@@ -345,7 +345,7 @@ which require that secret values never appear anywhere in logs or errors.
 | Calling-convention conformance tests | [Calling-convention conformance tests](connector-contract.md#calling-convention-conformance-tests) | For every connector, with minimal fixtures |
 | Metadata conformance tests | [Metadata conformance tests](connector-contract.md#metadata-conformance-tests) | With per-source-kind fixtures |
 | Data read conformance tests | [Data read conformance tests](connector-contract.md#data-read-conformance-tests) | The same |
-| Query Engine adapter integration tests | Native planner callback mapping, scan-state replacement, and removal or retention of native operators | Per supported Query Engine and pinned version |
+| Query Engine adapter integration tests | Native planner callback mapping, scan-state replacement, and removal or retention of native operators ([Integration tests](adapter-implementation.md#integration-tests)) | Per supported Query Engine and pinned version |
 | Connector SDK planning tests | Common validation, direct planning-result construction, and rule composition | In the connector SDK |
 | SQL translation tests | Direct validated-plan traversal, physical names loaded into planning metadata, and delegation of identifier and literal rendering | In `connector-sql`, with a source-neutral diagnostic dialect fixture |
 
@@ -358,26 +358,16 @@ returns `Planned` or `Unsupported`, that planned queries carry the correct
 remote/local decomposition, and that remote queries execute correctly, but they
 cannot observe a Query Engine's native plan.
 
-No Query Engine Adapter is implemented in this repository yet. Each future
-Adapter integration suite must exercise its pinned Query Engine planner
-boundary and prove that a plan without local work replaces the offered native
-region, an adoptable local plan becomes the required native work over remote
-output, an unlowerable proposal and `Unsupported` change no scan state, and
-execution uses the adopted executable query without changing its rewrite.
+What happens to a planned result inside a Query Engine is tested by each
+Adapter's [integration suite](adapter-implementation.md#integration-tests).
 
-The boundary cases have explicit owners:
+The boundary cases on the connector side have explicit owners:
 
 | Boundary case | Owning test suite |
 | --- | --- |
 | The initial `QueryPlan` passes through no-op rules before later rules run | Connector SDK planning tests prove rules compose and the initial plan contains one schema-matched `RemoteResult`, local filter/projection work, and no local table read |
 | A rewrite rule returns an error | Connector SDK planning tests prove selection stops instead of silently falling back |
-| A Connector returns another local plan | Connector SDK planning tests assert its remote/local decomposition contract; a future Adapter integration test must prove it either becomes native work over the remote result or rejects that proposal without native-state changes |
-| Read, projection, and filter appear together | A future Adapter integration test must prove they are offered as one complete region rather than independent requests |
-| A Spark multi-predicate callback fails after an earlier predicate was accepted | A future Spark Adapter integration test must prove that the builder rolls back to its original state |
-| Trino presents the same native constraint again or adds a new exact constraint after a retained one | A future Trino Adapter integration test must prove that predicates are not appended again and every prior retained constraint remains in Trino |
-| The standard DataFusion provider sees a representable filter or an unsupported projection | A future DataFusion Adapter integration test must prove that it reports filters as `Inexact`, keeps planned state local to `scan`, and supplies a local projection over a full remote scan when needed |
-| A DuckDB multi-expression callback fails after an earlier expression was accepted | A future DuckDB Adapter integration test must prove that bind state and the residual vector roll back together |
-| An engine creates its first connector scan | Each future Adapter integration suite must prove that it initializes the exact base `ReadRel` before later operator attempts |
+| A Connector returns another local plan | Connector SDK planning tests assert its remote/local decomposition contract; the Adapter integration suite covers lowering or rejecting it |
 | Planning facts require Data Source I/O | Connector SDK tests prove metadata loading happens after common validation; each Connector's operation tests must prove its I/O handling |
 
 Schema or object changes are covered as `stale registration`; there is no

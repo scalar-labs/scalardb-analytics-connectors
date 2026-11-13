@@ -124,7 +124,7 @@ functions name their target by handle.
 
 | Unit | Meaning |
 | --- | --- |
-| Library | Initialized once per process. Receives the location of ADBC drivers and logging settings. The application initializes and shuts it down. |
+| Library | Initialized once per process by the one component that owns it there, as described below. Receives the location of ADBC drivers and logging settings. |
 | Data source | Holds one data source's connection settings and credentials. One is opened per registered data source and reopened when connection settings change. |
 | Session | One connection to that data source. For a direct-access source without connections, the unit that runs one request at a time. Callers open as many as they want concurrent requests. |
 | Operation | One read request. Owns cancellation and error retrieval. Source resources are created at the first pull. |
@@ -138,17 +138,30 @@ If a stream is released without ever being pulled, nothing was sent to the
 source. If an operation is cancelled before its first pull, the first pull
 returns `cancellation`.
 
-A process has several callers, such as the DuckDB adapter and the Physical
-Catalog. They receive the initialized library from the application and share
-it; none of them initializes or shuts it down. Every initialization setting
-has a single process-wide value, so per-caller initialization would need a rule
-for conflicting settings. The library returns `invalid state` when asked to
-initialize while already initialized; it does not count references to accept a
-second initialization, because that would let callers decide when shutdown
-happens and take shutdown ordering away from the application. A process loads
-the library as one shared library and callers do not statically link private
-copies, because each copy would be initialized separately and would create its
-own settings and ADBC driver manager.
+The library is initialized in the process that uses it, and exactly one
+component in that process owns its initialization and shutdown:
+
+- **Query Engine process.** The library normally runs inside a Query Engine's
+  process, such as a Spark executor or a Trino worker, where the Query Engine
+  loads the adapter and the adapter is the library's only caller. The adapter
+  owns the library: it initializes it when the Query Engine loads the adapter,
+  with settings taken from the Query Engine's configuration, and shuts it down
+  only when the Query Engine unloads the adapter.
+- **Embedded Query Engine.** An application can embed a Query Engine, such as
+  DuckDB or DataFusion, in a process that also runs other callers, such as the
+  Physical Catalog. The application owns the library: it initializes it before
+  any caller uses it and shuts it down after every caller has closed its data
+  sources. The adapter and the other callers receive the initialized library
+  and share it; none of them initializes or shuts it down.
+
+Every initialization setting has a single process-wide value, so per-caller
+initialization would need a rule for conflicting settings. The library returns
+`invalid state` when asked to initialize while already initialized; it does
+not count references to accept a second initialization, because that would let
+callers decide when shutdown happens and take shutdown ordering away from the
+owner. A process loads the library as one shared library and callers do not
+statically link private copies, because each copy would be initialized
+separately and would create its own settings and ADBC driver manager.
 
 Concurrency follows these rules:
 
@@ -839,7 +852,8 @@ checked on restore; bytes that cannot be restored are `invalid request`.
 
 Resolution happens after common validation, because the complete validated plan
 determines which catalog and source facts are needed. Resolution may perform
-timeout-bound, cancellable Data Source I/O during planning. A session may
+Data Source I/O during planning, bounded by the library's fixed planning
+timeout. A session may
 prefetch or cache facts, but that is an implementation strategy rather than a
 required planning-snapshot protocol.
 
@@ -1018,7 +1032,8 @@ request`. A plan outside the shared contract shape is also rejected as
 `invalid request`. A requested plan inside the shared subset can still be
 `Unsupported` by a connector for its current Data Source facts; that is a
 normal planning outcome, not an invalid request. Adapters check in their own
-tests that the plans they build have the expected shape.
+tests that the plans they build have the expected shape
+([Plan construction](adapter-implementation.md#plan-construction)).
 
 The initial accepted offered shape is:
 
@@ -1058,6 +1073,25 @@ kinds of pushdown would obscure that placement and create two representations
 of the same operation. The Connector's remote query generator translates the
 complete remote tree into the Data Source-specific query.
 
+The optional local plan of a planned result has the same operators over the
+remote output in place of the table read:
+
+~~~text
+Plan
+ +- expected_type_urls: urn:scalardb:analytics:substrait:remote-result-schema:v1
+ +- RelRoot (offered output column names)
+     +- ProjectRel? (outermost when present)
+         +- FilterRel?
+             +- ExtensionLeafRel (RemoteResult)
+                 +- detail: Any
+                     +- type_url: urn:scalardb:analytics:substrait:remote-result-schema:v1
+                     +- value: the remote output schema as a serialized NamedStruct
+~~~
+
+The `RemoteResult` schema equals the remote plan's output schema, and column
+references in the local `FilterRel` and `ProjectRel` are positions in it. The
+Adapter replaces the leaf with the remote Arrow stream.
+
 The SDK validates `namedTable` as a non-empty opaque `TableBinding`. Only the
 Connector interprets it. During Connector planning, the Connector must ensure
 that the binding belongs to the current Data Source Session and resolve the
@@ -1078,8 +1112,8 @@ Details of the shape:
   in the expected read schema (`base_schema`) for this fixed initial shape.
 - Column names in `root` and `base_schema` follow Substrait's depth-first order
   through `Struct` fields.
-- Functions such as comparisons reference Substrait's standard extensions
-  through the plan's extension declarations.
+- Functions and the `logical` type are referenced through the plan's
+  [extension declarations](#extension-declarations).
 
 A plan in the current common validation subset reads exactly one named table.
 The offered plan expresses logical operators as `FilterRel` and `ProjectRel`.
@@ -1146,9 +1180,18 @@ follows:
 | `Array(T)`, `Map(K, V)`, `Struct(...)` | `list<T>`, `map<K, V>`, `struct<...>` |
 | Extension-encoded types | The user-defined type `logical`, defined once in the ScalarDB Analytics Substrait extension |
 
-`logical` takes as type parameters the type name, its parameters, and the
-Substrait type that carries the value (the type corresponding to the storage
-type, called the carrier type here). The extension
+`logical` takes three type parameters, in this order:
+
+1. the type name: the extension name without its `scalardb.analytics.`
+   prefix, such as `uuid` or `enum`
+   ([Extension metadata](analytics-types.md#extension-metadata));
+2. its parameters as a JSON string: `{}` for a type without parameters, and
+   `{"members":[...]}` for `Enum`; and
+3. the Substrait type that carries the value (the type corresponding to the
+   storage type, called the carrier type here), which is always required.
+
+The nullability of the `logical` type itself is the nullability of the field
+or literal. The extension
 declares `logical` as a structure with exactly one field of the carrier type. A
 literal is a `Literal.UserDefined` in its `struct` form with the value in that
 field. Adding an extension-encoded type does not change the extension.
@@ -1161,6 +1204,24 @@ or the concrete expression semantics.
 Conditions with literals that Substrait types cannot express, such as dates
 outside `date`'s range, are not put in the plan by the adapter and stay in the
 Query Engine.
+
+### Extension declarations
+
+A plan declares every extension it references in `extension_uris` and
+`extensions`; URI, function, and type anchors are each unique within the plan.
+The profile recognizes these declarations:
+
+| Extension URI | Declarations |
+| --- | --- |
+| `https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_comparison.yaml` | Functions `equal:any1_any1`, `not_equal:any1_any1`, `lt:any1_any1`, `lte:any1_any1`, `gt:any1_any1`, `gte:any1_any1`, `is_null:any`, and `is_not_null:any` |
+| `https://github.com/substrait-io/substrait/blob/v0.69.0/extensions/functions_boolean.yaml` | Functions `and:bool_bool`, `or:bool_bool`, and `not:bool` |
+| `urn:scalardb:analytics:substrait:logical` | Type `logical` |
+
+A function declared under any other URI or name is accepted and keeps the
+operator that contains it out of the remote plan
+([Filters and types](#filters-and-types)). A `logical` type declared under
+another URI, a user-defined type that does not reference the declared
+`logical`, and extension type variations are `invalid request`.
 
 ### Planning and residual operators
 
@@ -1245,16 +1306,19 @@ The connector API has these functions:
 - **Open and close a data source.** Input: Connector, connection setting and
   credential options, and connection timeout.
 - **Open and close a session.**
-- **Plan pushdown.** A versioned request envelope carries one complete offered
-  Substrait region. The Adapter constructs that
+- **Plan pushdown.** Input: a session and one complete offered Substrait region
+  as a serialized `Plan`, with no envelope or version field of its own: the
+  library and its adapters are built together
+  ([Compatibility and versions](#compatibility-and-versions)). The Adapter constructs that
   region from a maximal native pattern it can rewrite around. After common
   validation, the Connector loads private metadata for the opaque table
   bindings and any Data Source facts required by the region. The standard SDK
   planner applies the Connector's tested remote/local rewrite rules, and the
   Connector constructs the remote executable query. The result is `Planned` or
   `Unsupported`; a planned result carries remote and optional local Substrait
-  plans plus the executable query. Metadata loading follows the
-  ordinary planning timeout and cancellation rules. A Connector may use a
+  plans plus the executable query. Planning, including its metadata loading,
+  is bounded by a timeout the library fixes; the caller passes none and cannot
+  cancel it ([Optimizer-time Data Source I/O](query-engine-pushdown.md#optimizer-time-data-source-io)). A Connector may use a
   session-local cache, but no cache identity crosses the API boundary.
 - **Create, cancel, and free a cancellation** for metadata requests
   ([Cancellation and timeouts](#cancellation-and-timeouts)).

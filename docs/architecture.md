@@ -229,8 +229,10 @@ inside the Analytics type system.
 | [Query-engine pushdown integration](query-engine-pushdown.md) | Map Spark, Trino, DataFusion, or DuckDB planner hooks onto the shared pushdown model |
 | [Connector internals](connector-internals.md) | Change the connector SDK, the connector API implementation, or crate structure |
 | [Connector implementation conventions](connector-implementation.md) | Implement or change one Connector |
+| [Query Engine adapter implementation conventions](adapter-implementation.md) | Implement or change one Query Engine adapter |
 
 Callers of connectors (adapters, the Physical Catalog, and the application)
 need the contract and the type model. Connector implementers continue with the
 type mappings, the internals, and the implementation conventions, in that
-order.
+order. Adapter implementers continue with pushdown planning, the Query Engine
+pushdown mapping, and the adapter implementation conventions.
