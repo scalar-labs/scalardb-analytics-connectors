@@ -25,7 +25,7 @@ this repository:
 
 | Component | Unit | Responsibility | Does not hold |
 | --- | --- | --- | --- |
-| Connector | One per supported system; generic ODBC and Query Engine-backed Connectors can each handle several systems | Metadata retrieval, deciding Analytics types, obtaining current Data Source facts, supplying tested remote/local rewrite rules for offered queries, constructing executable remote queries, and producing values typed by Analytics types | Query Engine native-plan knowledge |
+| Connector | One per supported system; generic ODBC Connectors can each handle several systems | Metadata retrieval, deciding Analytics types, obtaining current Data Source facts, supplying tested remote/local rewrite rules for offered queries, constructing executable remote queries, and producing values typed by Analytics types | Query Engine native-plan knowledge |
 | Adapter | One per Query Engine | Recognizing rewritable native regions, constructing complete alternative Substrait requests, choosing engine-specific join shapes, rejecting results it cannot lower, atomically installing adoptable results, and binding remote output into the Query Engine. Holds the mapping from Analytics types to Query Engine types, with its losses, as a table. | Data source semantics and source-query construction |
 | Type conversion library | One | Converting between Analytics types and the schema carried by connector output; shared by the Physical Catalog and adapters | Decisions other than conversion |
 | Physical Catalog | One | Persisting the Analytics types and Data Source types connectors returned at registration, and serving them for browsing and planning | Type conversion |

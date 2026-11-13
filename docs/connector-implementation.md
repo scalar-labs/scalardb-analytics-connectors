@@ -623,7 +623,7 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Filter planning:** decided for the concrete ODBC source and driver context;
   the dialect table only supplies translation data and conservative guards.
 
-### Query Engine-backed (Trino)
+### Trino
 
 - **Structure:** `connector-sql` with a Trino SQL dialect; namespaces
   start with the catalog.

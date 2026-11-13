@@ -17,9 +17,9 @@ and generated bindings must preserve the behavior defined here.
 
 ## Capabilities
 
-There is one Connector per supported system. Only generic ODBC and
-Query Engine-backed Connectors handle several kinds of Data Source each
-([Support tiers](#support-tiers)). A connector has two capabilities.
+There is one Connector per supported system. Only generic ODBC Connectors
+handle several kinds of Data Source each ([Support tiers](#support-tiers)). A
+connector has two capabilities.
 
 **Metadata retrieval** reads namespaces, tables, columns, Data Source types, and
 constraints from the source's catalog and decides an Analytics type for each
@@ -1450,7 +1450,7 @@ With direct access:
 
 ## Support tiers
 
-Three tiers of connector support are recognized. In every tier one connector
+Two tiers of connector support are recognized. In every tier one connector
 handles all access to a data source, and results do not change with the Query
 Engine. The tiers differ in how much of the type rules in
 [Data Source types](#data-source-types), [Type mappings and coverage](#type-mappings-and-coverage),
@@ -1460,13 +1460,17 @@ and [Unsupported columns](#unsupported-columns) they satisfy.
 | --- | --- | --- | --- |
 | Data Source-specific | Reads the source's own catalog (for table formats and files, their own metadata) through an ADBC driver dedicated to the source or through direct access | None | None |
 | Generic ODBC | Reaches the source through an ADBC driver that uses ODBC, adding per-source dialect tables and type mappings on top of the processing shared by SQL sources | For sources whose own catalog cannot be read through ODBC, Data Source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
-| Query Engine-backed | Connects to an external Query Engine such as Trino, Spark, or Databricks through its ADBC driver, and obtains in one connector the sources that engine supports | Data Source types are that engine's types, and the sources' own catalogs cannot be read | The same, with a single mapping from that engine's types to Analytics types |
 
-When Data Source types come from an ODBC driver's report or an external Query
-Engine's types, their origin differs from the origin in the existing source
-kind's type mapping. Because there is one type mapping per Connector, these
-cases define a type mapping as a separate Connector that includes the path,
-such as SQL Server through ODBC or Trino.
+When Data Source types come from an ODBC driver's report, their origin differs
+from the origin in the existing source kind's type mapping. Because there is
+one type mapping per Connector, such a case defines a type mapping as a
+separate Connector that includes the path, such as SQL Server through ODBC.
+
+An external Query Engine reached as a source, such as Trino, Spark, or
+Databricks, is itself the Data Source and its connector is Data
+Source-specific. The connector reads the engine's catalog and maps the engine's
+types; how the engine maps the sources behind it is the engine's
+responsibility, not the connector's.
 
 The breadth of sources reached through ADBC access depends on the ADBC driver
 ecosystem and the maturity of the shared SQL-family processing rather than on

@@ -93,6 +93,5 @@ and would leave the Physical Catalog advertising types that no longer hold.
 
 Connectors cannot reuse the broad source coverage of DuckDB scanner extensions
 for reads. Coverage instead grows through connectors, primarily through ADBC
-drivers and the shared SQL-family processing, and through the generic ODBC and
-Query Engine-backed tiers described in the
-[connector contract](../connector-contract.md#support-tiers).
+drivers and the shared SQL-family processing, and through the generic ODBC tier
+described in the [connector contract](../connector-contract.md#support-tiers).
