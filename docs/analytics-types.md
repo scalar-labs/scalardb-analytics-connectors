@@ -95,26 +95,33 @@ serialization boundary, not a category or hierarchy inside AnalyticsType.
 
 ### Extension equality
 
-A Data Source type can be an extension-encoded type only when comparing storage
-values preserves value equality. Otherwise it needs a type with a direct Arrow
-encoding.
+Each Analytics type defines one equality, and comparing the storage values of an
+extension-encoded type implements it. A Query Engine that does not recognize
+the extension compares storage values, so they must give the type's equality.
 
-| Data Source type | Storage type | Equality |
+| Analytics type | Storage type | Storage comparison |
 | --- | --- | --- |
-| uuid | Utf8 (36-character canonical form) | Preserved |
-| PostgreSQL jsonb, MySQL JSON | Utf8 | Preserved only when the source emits canonical form |
-| enum | Utf8 (member label) | Preserved |
-| year | Int16 | Preserved |
-| PostgreSQL timetz | Utf8 (`10:00:00+09`) | Preserved. PostgreSQL compares equal only when both time and zone are equal, so `10:00:00+09` and `01:00:00+00` are not equal. |
+| Uuid | Utf8 (36-character canonical form) | Gives Uuid equality |
+| Json | Utf8 | Gives Json equality only when the source emits canonical form |
+| Enum | Utf8 (member label) | Gives Enum equality |
+| Year | Int16 | Gives Year equality |
+| TimeWithTimeZone | Utf8 (`10:00:00+09`) | Gives TimeWithTimeZone equality: both time and zone are compared, so `10:00:00+09` and `01:00:00+00` are not equal |
+
+The Data Source's comparison semantics do not define an Analytics type's
+equality. Sources compare the same kind of value differently: one source
+compares time-with-time-zone values by time and zone, as PostgreSQL does, while
+another may compare them after conversion to UTC. Both map to TimeWithTimeZone
+rather than to separate types, because one meaning per Analytics type is what
+lets values from different sources be compared and joined. A comparison whose
+source semantics differ from the Analytics type's equality is not pushed down
+to that source; the Connector's planner keeps it local
+([Plan-aware support decisions](connector-implementation.md#plan-aware-support-decisions)).
 
 When jsonb or JSON is not emitted in canonical form, string equality differs
 from semantic equality. A type whose equality holds only conditionally is still
 extension-encoded, with the condition stated in its definition: a type with a
 direct encoding would not make Query Engines implement JSON semantic equality,
-so it would bring no benefit. The timetz case reverses for a source whose
-semantics are "equal when equal after conversion to UTC"; a string storage type
-would break equality there, so such a source would need a type with a direct
-encoding.
+so it would bring no benefit.
 
 ### Extension metadata
 
