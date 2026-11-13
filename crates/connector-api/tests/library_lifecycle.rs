@@ -15,15 +15,13 @@ fn initialize_library() -> Result<(), Error> {
         adbc_driver_directory: directory.as_ptr(),
     };
     // SAFETY: the settings are valid for the call.
-    check(unsafe { scalardb_analytics_connector_library_initialize(&settings) })
+    check(unsafe { (api().library_initialize)(&settings) })
 }
 
 #[test]
 fn the_library_is_initialized_once_and_shut_down_by_the_application() {
-    let information: Value = serde_json::from_str(
-        &read_string(scalardb_analytics_connector_static_information()).unwrap(),
-    )
-    .unwrap();
+    let information: Value =
+        serde_json::from_str(&read_string((api().static_information)()).unwrap()).unwrap();
     assert_eq!(information["static_information_version"], 1);
     assert_eq!(information["library_version"], env!("CARGO_PKG_VERSION"));
     let connector = &information["connectors"][0];
@@ -68,7 +66,7 @@ fn the_library_is_initialized_once_and_shut_down_by_the_application() {
         while probe.sent.load(Ordering::SeqCst) == 0 {
             thread::sleep(Duration::from_millis(5));
         }
-        check(scalardb_analytics_connector_library_shutdown()).unwrap();
+        check((api().library_shutdown)()).unwrap();
         puller.join().unwrap()
     });
 
@@ -89,9 +87,7 @@ fn the_library_is_initialized_once_and_shut_down_by_the_application() {
         error.kind,
         ScalardbAnalyticsConnectorErrorKind::InvalidState
     );
-    let error = check(scalardb_analytics_connector_library_shutdown())
-        .err()
-        .unwrap();
+    let error = check((api().library_shutdown)()).err().unwrap();
     assert_eq!(
         error.kind,
         ScalardbAnalyticsConnectorErrorKind::InvalidState

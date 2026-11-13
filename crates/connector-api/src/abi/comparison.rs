@@ -96,8 +96,8 @@ pub struct ScalardbAnalyticsConnectorConstraintChange {
 ///
 /// Removed and matched columns come in the older ordinal order, then added
 /// columns in the newer one; constraints likewise in their order. Freed with
-/// `scalardb_analytics_connector_table_metadata_differences_free` when
-/// returned by `scalardb_analytics_connector_table_metadata_compare`.
+/// `table_metadata_differences_free` when
+/// returned by `table_metadata_compare`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorTableMetadataDifferences {
     pub table_attributes: *const ScalardbAnalyticsConnectorTableAttribute,
@@ -124,7 +124,7 @@ pub struct ScalardbAnalyticsConnectorJsonDifference {
 /// The differences between two observations of one table's source metadata:
 /// those of the table metadata derived from both, and those of the
 /// documents. Freed with
-/// `scalardb_analytics_connector_source_metadata_differences_free`.
+/// `source_metadata_differences_free`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorSourceMetadataDifferences {
     pub table_metadata: ScalardbAnalyticsConnectorTableMetadataDifferences,

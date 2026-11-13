@@ -139,15 +139,13 @@ fn initialize_with_drivers() {
         adbc_driver_directory: directory.as_ptr(),
     };
     // SAFETY: the settings are valid for the call.
-    check(unsafe { scalardb_analytics_connector_library_initialize(&settings) }).unwrap();
+    check(unsafe { (api().library_initialize)(&settings) }).unwrap();
 }
 
 #[test]
 fn a_postgresql_data_source_is_read_through_the_c_abi() {
-    let information: Value = serde_json::from_str(
-        &read_string(scalardb_analytics_connector_static_information()).unwrap(),
-    )
-    .unwrap();
+    let information: Value =
+        serde_json::from_str(&read_string((api().static_information)()).unwrap()).unwrap();
     let postgresql = information["connectors"]
         .as_array()
         .unwrap()

@@ -90,7 +90,7 @@ pub struct ScalardbAnalyticsConnectorNamespaceEntry {
 }
 
 /// The result of a namespace list, freed with
-/// `scalardb_analytics_connector_namespace_list_free`.
+/// `namespace_list_free`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorNamespaceList {
     pub entries: *const ScalardbAnalyticsConnectorNamespaceEntry,
@@ -124,7 +124,7 @@ pub struct ScalardbAnalyticsConnectorTableEntry {
 }
 
 /// The result of a table list, freed with
-/// `scalardb_analytics_connector_table_list_free`.
+/// `table_list_free`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorTableList {
     pub entries: *const ScalardbAnalyticsConnectorTableEntry,
@@ -391,7 +391,7 @@ pub struct ScalardbAnalyticsConnectorRetrieval {
 
 /// The result of a table metadata request: one record per requested table,
 /// in request order. Freed with
-/// `scalardb_analytics_connector_table_metadata_result_free`.
+/// `table_metadata_result_free`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorTableMetadataResult {
     pub records: *const ScalardbAnalyticsConnectorTableRecord,

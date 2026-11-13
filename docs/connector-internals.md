@@ -757,7 +757,10 @@ of a remote execution planned by another connector is `invalid request`.
 The C functions and types are declared in `connector-api`'s `src/abi`, the
 only module that handles raw pointers. The published header is generated from it with
 cbindgen, and a test fails when the committed header differs from the
-generated one. Every C function contains panics; a function that fails returns
+generated one. The library exports only
+`scalardb_analytics_connector_api`, which returns a table of the other
+functions, so the header names them without a prefix and only the one symbol
+must be unique in the process. Every C function contains panics; a function that fails returns
 an error the caller frees, and an operation's error is owned by the operation.
 
 The C structures of metadata mirror the SDK's types but have a different

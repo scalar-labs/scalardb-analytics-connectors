@@ -267,13 +267,7 @@ fn invalid_options_return_invalid_settings_naming_the_option() {
     let mut data_source = std::ptr::null_mut();
     // SAFETY: every input lives for the call and the output is writable.
     let error = check(unsafe {
-        scalardb_analytics_connector_data_source_open(
-            unknown.as_ptr(),
-            std::ptr::null(),
-            0,
-            0,
-            &mut data_source,
-        )
+        (api().data_source_open)(unknown.as_ptr(), std::ptr::null(), 0, 0, &mut data_source)
     })
     .err()
     .unwrap();
@@ -318,18 +312,9 @@ fn an_unsupported_plan_has_a_reason_and_no_remote_execution() {
 
     // SAFETY: the result is live.
     unsafe {
-        assert!(!scalardb_analytics_connector_pushdown_result_is_planned(
-            result.0
-        ));
-        assert!(
-            read_string(scalardb_analytics_connector_pushdown_result_unsupported_reason(result.0))
-                .is_some()
-        );
-        assert!(
-            scalardb_analytics_connector_pushdown_result_remote_plan(result.0)
-                .data
-                .is_null()
-        );
+        assert!(!(api().pushdown_result_is_planned)(result.0));
+        assert!(read_string((api().pushdown_result_unsupported_reason)(result.0)).is_some());
+        assert!((api().pushdown_result_remote_plan)(result.0).data.is_null());
     }
     let error = result.remote_execution().err().unwrap();
     assert_eq!(
@@ -348,15 +333,9 @@ fn a_planned_result_carries_the_remote_plan() {
 
     // SAFETY: the result is live.
     unsafe {
-        assert!(scalardb_analytics_connector_pushdown_result_is_planned(
-            result.0
-        ));
-        let remote_plan = scalardb_analytics_connector_pushdown_result_remote_plan(result.0);
+        assert!((api().pushdown_result_is_planned)(result.0));
+        let remote_plan = (api().pushdown_result_remote_plan)(result.0);
         assert!(remote_plan.length > 0);
-        assert!(
-            scalardb_analytics_connector_pushdown_result_local_plan(result.0)
-                .data
-                .is_null()
-        );
+        assert!((api().pushdown_result_local_plan)(result.0).data.is_null());
     }
 }

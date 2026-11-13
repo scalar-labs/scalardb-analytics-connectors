@@ -4,10 +4,14 @@
 //! checks its pointer arguments, converts them to safe values, calls the
 //! runtime, and contains any panic so that none crosses the C ABI.
 //!
+//! The library exports one symbol, `scalardb_analytics_connector_api`, which
+//! returns [`ScalardbAnalyticsConnectorApi`]. Each other function is reached
+//! through the field of the same name, which documents it.
+//!
 //! Conventions shared by every function:
 //!
 //! - A function that can fail returns null on success, or an error the caller
-//!   frees with `scalardb_analytics_connector_error_free`.
+//!   frees with `error_free`.
 //! - Input text is a NUL-terminated UTF-8 `const char*`.
 //! - Output text is UTF-8 with a length and a NUL terminator after it; absent
 //!   output text has a null `data`.
@@ -83,7 +87,7 @@ impl ScalardbAnalyticsConnectorBytes {
     }
 }
 
-/// Bytes owned by the caller, freed with `scalardb_analytics_connector_owned_bytes_free`.
+/// Bytes owned by the caller, freed with `owned_bytes_free`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorOwnedBytes {
     pub data: *mut u8,
@@ -149,27 +153,428 @@ pub struct ScalardbAnalyticsConnectorOperation {
     error: OnceLock<Box<OwnedError>>,
 }
 
-/// Returns the static information JSON document.
-///
-/// It is available before initialization and stays valid for the life of the
-/// process.
+/// The library's functions, returned by `scalardb_analytics_connector_api`.
+#[repr(C)]
+pub struct ScalardbAnalyticsConnectorApi {
+    /// Returns the static information JSON document.
+    ///
+    /// It is available before initialization and stays valid for the life of the
+    /// process.
+    pub static_information: extern "C" fn() -> ScalardbAnalyticsConnectorString,
+    /// Initializes the library once for the process.
+    ///
+    /// Initializing an initialized library returns `invalid state`.
+    ///
+    /// # Safety
+    ///
+    /// `settings` points to a valid settings structure.
+    pub library_initialize: unsafe extern "C" fn(
+        settings: *const ScalardbAnalyticsConnectorLibrarySettings,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Shuts the library down. Data Sources still open return `invalid state`.
+    pub library_shutdown: extern "C" fn() -> *mut ScalardbAnalyticsConnectorError,
+    /// Opens a Data Source of the named Connector.
+    ///
+    /// The options are validated against the connector's static information;
+    /// invalid options return `invalid settings` naming the option. The connection
+    /// timeout limits connecting while the Data Source and its sessions open.
+    ///
+    /// # Safety
+    ///
+    /// `connector` and every option string are valid strings, `options` points to
+    /// `option_count` options, and `out_data_source` is writable.
+    pub data_source_open: unsafe extern "C" fn(
+        connector: *const c_char,
+        options: *const ScalardbAnalyticsConnectorOption,
+        option_count: usize,
+        connection_timeout_milliseconds: u64,
+        out_data_source: *mut *mut ScalardbAnalyticsConnectorDataSource,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Closes a Data Source handle. Its sessions' later calls return `invalid state`.
+    ///
+    /// # Safety
+    ///
+    /// `data_source` is null or an open handle, not used after this call.
+    pub data_source_close:
+        unsafe extern "C" fn(data_source: *mut ScalardbAnalyticsConnectorDataSource),
+    /// Opens a session on a Data Source.
+    ///
+    /// # Safety
+    ///
+    /// `data_source` is an open handle and `out_session` is writable.
+    pub session_open: unsafe extern "C" fn(
+        data_source: *const ScalardbAnalyticsConnectorDataSource,
+        out_session: *mut *mut ScalardbAnalyticsConnectorSession,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Closes a session handle. Its operations' later calls return `invalid state`.
+    ///
+    /// # Safety
+    ///
+    /// `session` is null or an open handle, not used after this call.
+    pub session_close: unsafe extern "C" fn(session: *mut ScalardbAnalyticsConnectorSession),
+    /// Plans one pushdown request: a complete offered Substrait plan as protobuf bytes.
+    ///
+    /// Planning may use the session's connection, so a session running another
+    /// operation returns `invalid state`.
+    ///
+    /// # Safety
+    ///
+    /// `session` is an open handle, `offered_plan` is readable, and `out_result`
+    /// is writable.
+    pub plan_pushdown: unsafe extern "C" fn(
+        session: *const ScalardbAnalyticsConnectorSession,
+        offered_plan: ScalardbAnalyticsConnectorBytes,
+        out_result: *mut *mut ScalardbAnalyticsConnectorPushdownResult,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Returns whether the Connector planned the request.
+    ///
+    /// # Safety
+    ///
+    /// `result` is a live pushdown result.
+    pub pushdown_result_is_planned:
+        unsafe extern "C" fn(result: *const ScalardbAnalyticsConnectorPushdownResult) -> bool,
+    /// Returns why the Connector could not plan the request; absent when it did.
+    ///
+    /// # Safety
+    ///
+    /// `result` is a live pushdown result; the string lives as long as it.
+    pub pushdown_result_unsupported_reason:
+        unsafe extern "C" fn(
+            result: *const ScalardbAnalyticsConnectorPushdownResult,
+        ) -> ScalardbAnalyticsConnectorString,
+    /// Returns the remote Substrait plan as protobuf bytes; absent when not planned.
+    ///
+    /// # Safety
+    ///
+    /// `result` is a live pushdown result; the bytes live as long as it.
+    pub pushdown_result_remote_plan: unsafe extern "C" fn(
+        result: *const ScalardbAnalyticsConnectorPushdownResult,
+    ) -> ScalardbAnalyticsConnectorBytes,
+    /// Returns the local Substrait plan as protobuf bytes; absent when no local
+    /// work remains or the request was not planned.
+    ///
+    /// # Safety
+    ///
+    /// `result` is a live pushdown result; the bytes live as long as it.
+    pub pushdown_result_local_plan: unsafe extern "C" fn(
+        result: *const ScalardbAnalyticsConnectorPushdownResult,
+    ) -> ScalardbAnalyticsConnectorBytes,
+    /// Returns the remote execution of a planned result as a new handle.
+    ///
+    /// An unplanned result returns `invalid request`.
+    ///
+    /// # Safety
+    ///
+    /// `result` is a live pushdown result and `out_remote_execution` is writable.
+    pub pushdown_result_remote_execution:
+        unsafe extern "C" fn(
+            result: *const ScalardbAnalyticsConnectorPushdownResult,
+            out_remote_execution: *mut *mut ScalardbAnalyticsConnectorRemoteExecution,
+        ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees a pushdown result.
+    ///
+    /// # Safety
+    ///
+    /// `result` is null or a live pushdown result, not used after this call.
+    pub pushdown_result_free:
+        unsafe extern "C" fn(result: *mut ScalardbAnalyticsConnectorPushdownResult),
+    /// Encodes a remote execution as opaque bytes for another process.
+    ///
+    /// The bytes carry no credentials and are valid only for this library version.
+    ///
+    /// # Safety
+    ///
+    /// `remote_execution` is a live handle and `out_bytes` is writable.
+    pub remote_execution_encode: unsafe extern "C" fn(
+        remote_execution: *const ScalardbAnalyticsConnectorRemoteExecution,
+        out_bytes: *mut ScalardbAnalyticsConnectorOwnedBytes,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Restores a remote execution from bytes encoded by
+    /// `remote_execution_encode`.
+    ///
+    /// Bytes that cannot be restored return `invalid request`.
+    ///
+    /// # Safety
+    ///
+    /// `session` is an open handle, `bytes` is readable, and
+    /// `out_remote_execution` is writable.
+    pub remote_execution_restore: unsafe extern "C" fn(
+        session: *const ScalardbAnalyticsConnectorSession,
+        bytes: ScalardbAnalyticsConnectorBytes,
+        out_remote_execution: *mut *mut ScalardbAnalyticsConnectorRemoteExecution,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees a remote execution handle.
+    ///
+    /// # Safety
+    ///
+    /// `remote_execution` is null or a live handle, not used after this call.
+    pub remote_execution_free:
+        unsafe extern "C" fn(remote_execution: *mut ScalardbAnalyticsConnectorRemoteExecution),
+    /// Starts a read of a remote execution and returns its operation and stream.
+    ///
+    /// The query is sent at the stream's first pull, and the timeout counts from
+    /// there. A session running another operation returns `invalid state` and
+    /// leaves that operation running. The stream belongs to the caller, who
+    /// releases it through its `release` callback.
+    ///
+    /// # Safety
+    ///
+    /// `session` and `remote_execution` are live handles, and `out_operation` and
+    /// `out_stream` are writable.
+    pub read_start: unsafe extern "C" fn(
+        session: *const ScalardbAnalyticsConnectorSession,
+        remote_execution: *const ScalardbAnalyticsConnectorRemoteExecution,
+        timeout_milliseconds: u64,
+        out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
+        out_stream: *mut FFI_ArrowArrayStream,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Creates a cancellation for metadata requests, freed with
+    /// `cancellation_free`.
+    ///
+    /// # Safety
+    ///
+    /// `out_cancellation` is writable.
+    pub cancellation_create: unsafe extern "C" fn(
+        out_cancellation: *mut *mut ScalardbAnalyticsConnectorCancellation,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Cancels every metadata request running with the cancellation, from any
+    /// thread, and every later request given it: they return `cancellation`.
+    ///
+    /// # Safety
+    ///
+    /// `cancellation` is a live handle.
+    pub cancellation_cancel: unsafe extern "C" fn(
+        cancellation: *const ScalardbAnalyticsConnectorCancellation,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees a cancellation. No request may be running with it.
+    ///
+    /// # Safety
+    ///
+    /// `cancellation` is null or a live handle, not used after this call.
+    pub cancellation_free:
+        unsafe extern "C" fn(cancellation: *mut ScalardbAnalyticsConnectorCancellation),
+    /// Lists the namespaces whose names exactly match `namespaces`, or all of
+    /// them when it is null.
+    ///
+    /// Metadata requests return their whole result when the call returns. The
+    /// timeout counts from the call, and `cancellation`, which may be null, stops
+    /// the call from another thread. A failure returns only the error. A session
+    /// running a read returns `invalid state`.
+    ///
+    /// # Safety
+    ///
+    /// `session` is an open handle, `namespaces` is null or a valid filter,
+    /// `cancellation` is null or a live handle, and `out_list` is writable.
+    pub namespace_list: unsafe extern "C" fn(
+        session: *const ScalardbAnalyticsConnectorSession,
+        namespaces: *const ScalardbAnalyticsConnectorNameFilter,
+        timeout_milliseconds: u64,
+        cancellation: *const ScalardbAnalyticsConnectorCancellation,
+        out_list: *mut *mut ScalardbAnalyticsConnectorNamespaceList,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees a namespace list.
+    ///
+    /// # Safety
+    ///
+    /// `list` is null or a live result, not used after this call.
+    pub namespace_list_free:
+        unsafe extern "C" fn(list: *mut ScalardbAnalyticsConnectorNamespaceList),
+    /// Lists the tables of the matching namespaces whose names exactly match
+    /// `tables`. A null filter matches every name. Otherwise as
+    /// `namespace_list`.
+    ///
+    /// # Safety
+    ///
+    /// `session` is an open handle, `namespaces` and `tables` are null or valid
+    /// filters, `cancellation` is null or a live handle, and `out_list` is
+    /// writable.
+    pub table_list: unsafe extern "C" fn(
+        session: *const ScalardbAnalyticsConnectorSession,
+        namespaces: *const ScalardbAnalyticsConnectorNameFilter,
+        tables: *const ScalardbAnalyticsConnectorNameFilter,
+        timeout_milliseconds: u64,
+        cancellation: *const ScalardbAnalyticsConnectorCancellation,
+        out_list: *mut *mut ScalardbAnalyticsConnectorTableList,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees a table list.
+    ///
+    /// # Safety
+    ///
+    /// `list` is null or a live result, not used after this call.
+    pub table_list_free: unsafe extern "C" fn(list: *mut ScalardbAnalyticsConnectorTableList),
+    /// Reads one record per requested table, in request order, including tables
+    /// that do not exist or could not be read. Otherwise as
+    /// `namespace_list`.
+    ///
+    /// A record's `table_metadata` and `source_metadata` are passed unchanged to
+    /// `table_metadata_compare` and
+    /// `source_metadata_compare`.
+    ///
+    /// # Safety
+    ///
+    /// `session` is an open handle, `tables` points to `table_count` valid name
+    /// sequences, `cancellation` is null or a live handle, and `out_result` is
+    /// writable.
+    pub table_metadata: unsafe extern "C" fn(
+        session: *const ScalardbAnalyticsConnectorSession,
+        tables: *const ScalardbAnalyticsConnectorNames,
+        table_count: usize,
+        timeout_milliseconds: u64,
+        cancellation: *const ScalardbAnalyticsConnectorCancellation,
+        out_result: *mut *mut ScalardbAnalyticsConnectorTableMetadataResult,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees a table metadata result.
+    ///
+    /// # Safety
+    ///
+    /// `result` is null or a live result, not used after this call.
+    pub table_metadata_result_free:
+        unsafe extern "C" fn(result: *mut ScalardbAnalyticsConnectorTableMetadataResult),
+    /// Compares two observations of one table's table metadata that the caller
+    /// paired, such as a stored one and a newly retrieved one.
+    ///
+    /// Only values observed on both sides are compared. `out_differences`
+    /// receives null when no value differs. Input that is not valid table
+    /// metadata is `invalid request`. It needs no handle.
+    ///
+    /// # Safety
+    ///
+    /// `before` and `after` point to valid table metadata, and `out_differences`
+    /// is writable.
+    pub table_metadata_compare: unsafe extern "C" fn(
+        before: *const ScalardbAnalyticsConnectorTableMetadata,
+        after: *const ScalardbAnalyticsConnectorTableMetadata,
+        out_differences: *mut *mut ScalardbAnalyticsConnectorTableMetadataDifferences,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees table metadata differences.
+    ///
+    /// # Safety
+    ///
+    /// `differences` is null or a live result, not used after this call.
+    pub table_metadata_differences_free:
+        unsafe extern "C" fn(differences: *mut ScalardbAnalyticsConnectorTableMetadataDifferences),
+    /// Compares two observations of one table's source metadata through the
+    /// connector that produced them, which restores both documents.
+    ///
+    /// `out_differences` receives null when neither the documents nor the table
+    /// metadata derived from them differ. Documents of different connectors, of
+    /// a connector not built into the library, or that the connector cannot
+    /// restore, such as one stored before a connector update changed its shape,
+    /// are `invalid request`. It needs an initialized library and no handle.
+    ///
+    /// # Safety
+    ///
+    /// `before` and `after` point to valid source metadata, and `out_differences`
+    /// is writable.
+    pub source_metadata_compare: unsafe extern "C" fn(
+        before: *const ScalardbAnalyticsConnectorSourceMetadata,
+        after: *const ScalardbAnalyticsConnectorSourceMetadata,
+        out_differences: *mut *mut ScalardbAnalyticsConnectorSourceMetadataDifferences,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Frees source metadata differences.
+    ///
+    /// # Safety
+    ///
+    /// `differences` is null or a live result, not used after this call.
+    pub source_metadata_differences_free:
+        unsafe extern "C" fn(differences: *mut ScalardbAnalyticsConnectorSourceMetadataDifferences),
+    /// Cancels an operation. It may be called from any thread.
+    ///
+    /// The stream's next pull, or the pull in progress, ends with `cancellation`.
+    ///
+    /// # Safety
+    ///
+    /// `operation` is an open handle.
+    pub operation_cancel: unsafe extern "C" fn(
+        operation: *const ScalardbAnalyticsConnectorOperation,
+    ) -> *mut ScalardbAnalyticsConnectorError,
+    /// Returns the error that ended the operation's stream, or null.
+    ///
+    /// The error stays valid until the operation is closed and is not freed by
+    /// the caller.
+    ///
+    /// # Safety
+    ///
+    /// `operation` is an open handle.
+    pub operation_error: unsafe extern "C" fn(
+        operation: *const ScalardbAnalyticsConnectorOperation,
+    ) -> *const ScalardbAnalyticsConnectorError,
+    /// Closes an operation, releasing every Data Source resource it holds.
+    ///
+    /// A stream still held by the caller returns `invalid state` on its next pull.
+    ///
+    /// # Safety
+    ///
+    /// `operation` is null or an open handle, not used after this call.
+    pub operation_close: unsafe extern "C" fn(operation: *mut ScalardbAnalyticsConnectorOperation),
+    /// Frees an error returned by a function.
+    ///
+    /// # Safety
+    ///
+    /// `error` is null or an error returned by a function of this library and not
+    /// yet freed; an operation's error is not freed with this function.
+    pub error_free: unsafe extern "C" fn(error: *mut ScalardbAnalyticsConnectorError),
+    /// Frees bytes returned by this library.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` was returned by this library and not yet freed.
+    pub owned_bytes_free: unsafe extern "C" fn(bytes: ScalardbAnalyticsConnectorOwnedBytes),
+}
+
+static API: ScalardbAnalyticsConnectorApi = ScalardbAnalyticsConnectorApi {
+    static_information,
+    library_initialize,
+    library_shutdown,
+    data_source_open,
+    data_source_close,
+    session_open,
+    session_close,
+    plan_pushdown,
+    pushdown_result_is_planned,
+    pushdown_result_unsupported_reason,
+    pushdown_result_remote_plan,
+    pushdown_result_local_plan,
+    pushdown_result_remote_execution,
+    pushdown_result_free,
+    remote_execution_encode,
+    remote_execution_restore,
+    remote_execution_free,
+    read_start,
+    cancellation_create,
+    cancellation_cancel,
+    cancellation_free,
+    namespace_list,
+    namespace_list_free,
+    table_list,
+    table_list_free,
+    table_metadata,
+    table_metadata_result_free,
+    table_metadata_compare,
+    table_metadata_differences_free,
+    source_metadata_compare,
+    source_metadata_differences_free,
+    operation_cancel,
+    operation_error,
+    operation_close,
+    error_free,
+    owned_bytes_free,
+};
+
+/// Returns the library's functions. It is the only exported symbol, is
+/// available before initialization, and stays valid for the life of the process.
 #[unsafe(no_mangle)]
-pub extern "C" fn scalardb_analytics_connector_static_information()
--> ScalardbAnalyticsConnectorString {
+pub extern "C" fn scalardb_analytics_connector_api() -> &'static ScalardbAnalyticsConnectorApi {
+    &API
+}
+
+extern "C" fn static_information() -> ScalardbAnalyticsConnectorString {
     static TEXT: OnceLock<TerminatedText> = OnceLock::new();
     TEXT.get_or_init(|| TerminatedText::new(registry::static_information()))
         .view()
 }
 
-/// Initializes the library once for the process.
-///
-/// Initializing an initialized library returns `invalid state`.
-///
-/// # Safety
-///
-/// `settings` points to a valid settings structure.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_library_initialize(
+unsafe extern "C" fn library_initialize(
     settings: *const ScalardbAnalyticsConnectorLibrarySettings,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
@@ -185,25 +590,11 @@ pub unsafe extern "C" fn scalardb_analytics_connector_library_initialize(
     })
 }
 
-/// Shuts the library down. Data Sources still open return `invalid state`.
-#[unsafe(no_mangle)]
-pub extern "C" fn scalardb_analytics_connector_library_shutdown()
--> *mut ScalardbAnalyticsConnectorError {
+extern "C" fn library_shutdown() -> *mut ScalardbAnalyticsConnectorError {
     contain(library::shutdown)
 }
 
-/// Opens a Data Source of the named Connector.
-///
-/// The options are validated against the connector's static information;
-/// invalid options return `invalid settings` naming the option. The connection
-/// timeout limits connecting while the Data Source and its sessions open.
-///
-/// # Safety
-///
-/// `connector` and every option string are valid strings, `options` points to
-/// `option_count` options, and `out_data_source` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_data_source_open(
+unsafe extern "C" fn data_source_open(
     connector: *const c_char,
     options: *const ScalardbAnalyticsConnectorOption,
     option_count: usize,
@@ -236,26 +627,12 @@ pub unsafe extern "C" fn scalardb_analytics_connector_data_source_open(
     })
 }
 
-/// Closes a Data Source handle. Its sessions' later calls return `invalid state`.
-///
-/// # Safety
-///
-/// `data_source` is null or an open handle, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_data_source_close(
-    data_source: *mut ScalardbAnalyticsConnectorDataSource,
-) {
+unsafe extern "C" fn data_source_close(data_source: *mut ScalardbAnalyticsConnectorDataSource) {
     // SAFETY: the caller passes an open handle or null.
     unsafe { close(data_source, |handle| handle.state.close()) }
 }
 
-/// Opens a session on a Data Source.
-///
-/// # Safety
-///
-/// `data_source` is an open handle and `out_session` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_session_open(
+unsafe extern "C" fn session_open(
     data_source: *const ScalardbAnalyticsConnectorDataSource,
     out_session: *mut *mut ScalardbAnalyticsConnectorSession,
 ) -> *mut ScalardbAnalyticsConnectorError {
@@ -269,30 +646,12 @@ pub unsafe extern "C" fn scalardb_analytics_connector_session_open(
     })
 }
 
-/// Closes a session handle. Its operations' later calls return `invalid state`.
-///
-/// # Safety
-///
-/// `session` is null or an open handle, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_session_close(
-    session: *mut ScalardbAnalyticsConnectorSession,
-) {
+unsafe extern "C" fn session_close(session: *mut ScalardbAnalyticsConnectorSession) {
     // SAFETY: the caller passes an open handle or null.
     unsafe { close(session, |handle| handle.state.close()) }
 }
 
-/// Plans one pushdown request: a complete offered Substrait plan as protobuf bytes.
-///
-/// Planning may use the session's connection, so a session running another
-/// operation returns `invalid state`.
-///
-/// # Safety
-///
-/// `session` is an open handle, `offered_plan` is readable, and `out_result`
-/// is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_plan_pushdown(
+unsafe extern "C" fn plan_pushdown(
     session: *const ScalardbAnalyticsConnectorSession,
     offered_plan: ScalardbAnalyticsConnectorBytes,
     out_result: *mut *mut ScalardbAnalyticsConnectorPushdownResult,
@@ -317,13 +676,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_plan_pushdown(
     })
 }
 
-/// Returns whether the Connector planned the request.
-///
-/// # Safety
-///
-/// `result` is a live pushdown result.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_is_planned(
+unsafe extern "C" fn pushdown_result_is_planned(
     result: *const ScalardbAnalyticsConnectorPushdownResult,
 ) -> bool {
     // SAFETY: the caller passes a live result.
@@ -331,13 +684,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_is_planned
         .is_some_and(|result| matches!(result.outcome, PlanningOutcome::Planned { .. }))
 }
 
-/// Returns why the Connector could not plan the request; absent when it did.
-///
-/// # Safety
-///
-/// `result` is a live pushdown result; the string lives as long as it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_unsupported_reason(
+unsafe extern "C" fn pushdown_result_unsupported_reason(
     result: *const ScalardbAnalyticsConnectorPushdownResult,
 ) -> ScalardbAnalyticsConnectorString {
     // SAFETY: the caller passes a live result.
@@ -349,13 +696,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_unsupporte
         )
 }
 
-/// Returns the remote Substrait plan as protobuf bytes; absent when not planned.
-///
-/// # Safety
-///
-/// `result` is a live pushdown result; the bytes live as long as it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_remote_plan(
+unsafe extern "C" fn pushdown_result_remote_plan(
     result: *const ScalardbAnalyticsConnectorPushdownResult,
 ) -> ScalardbAnalyticsConnectorBytes {
     // SAFETY: the caller passes a live result.
@@ -367,14 +708,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_remote_pla
     }
 }
 
-/// Returns the local Substrait plan as protobuf bytes; absent when no local
-/// work remains or the request was not planned.
-///
-/// # Safety
-///
-/// `result` is a live pushdown result; the bytes live as long as it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_local_plan(
+unsafe extern "C" fn pushdown_result_local_plan(
     result: *const ScalardbAnalyticsConnectorPushdownResult,
 ) -> ScalardbAnalyticsConnectorBytes {
     // SAFETY: the caller passes a live result.
@@ -387,15 +721,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_local_plan
     }
 }
 
-/// Returns the remote execution of a planned result as a new handle.
-///
-/// An unplanned result returns `invalid request`.
-///
-/// # Safety
-///
-/// `result` is a live pushdown result and `out_remote_execution` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_remote_execution(
+unsafe extern "C" fn pushdown_result_remote_execution(
     result: *const ScalardbAnalyticsConnectorPushdownResult,
     out_remote_execution: *mut *mut ScalardbAnalyticsConnectorRemoteExecution,
 ) -> *mut ScalardbAnalyticsConnectorError {
@@ -419,28 +745,12 @@ pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_remote_exe
     })
 }
 
-/// Frees a pushdown result.
-///
-/// # Safety
-///
-/// `result` is null or a live pushdown result, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_pushdown_result_free(
-    result: *mut ScalardbAnalyticsConnectorPushdownResult,
-) {
+unsafe extern "C" fn pushdown_result_free(result: *mut ScalardbAnalyticsConnectorPushdownResult) {
     // SAFETY: the caller passes a live result or null.
     unsafe { close(result, |_| ()) }
 }
 
-/// Encodes a remote execution as opaque bytes for another process.
-///
-/// The bytes carry no credentials and are valid only for this library version.
-///
-/// # Safety
-///
-/// `remote_execution` is a live handle and `out_bytes` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_remote_execution_encode(
+unsafe extern "C" fn remote_execution_encode(
     remote_execution: *const ScalardbAnalyticsConnectorRemoteExecution,
     out_bytes: *mut ScalardbAnalyticsConnectorOwnedBytes,
 ) -> *mut ScalardbAnalyticsConnectorError {
@@ -461,17 +771,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_remote_execution_encode(
     })
 }
 
-/// Restores a remote execution from bytes encoded by
-/// `scalardb_analytics_connector_remote_execution_encode`.
-///
-/// Bytes that cannot be restored return `invalid request`.
-///
-/// # Safety
-///
-/// `session` is an open handle, `bytes` is readable, and
-/// `out_remote_execution` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_remote_execution_restore(
+unsafe extern "C" fn remote_execution_restore(
     session: *const ScalardbAnalyticsConnectorSession,
     bytes: ScalardbAnalyticsConnectorBytes,
     out_remote_execution: *mut *mut ScalardbAnalyticsConnectorRemoteExecution,
@@ -494,32 +794,14 @@ pub unsafe extern "C" fn scalardb_analytics_connector_remote_execution_restore(
     })
 }
 
-/// Frees a remote execution handle.
-///
-/// # Safety
-///
-/// `remote_execution` is null or a live handle, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_remote_execution_free(
+unsafe extern "C" fn remote_execution_free(
     remote_execution: *mut ScalardbAnalyticsConnectorRemoteExecution,
 ) {
     // SAFETY: the caller passes a live handle or null.
     unsafe { close(remote_execution, |_| ()) }
 }
 
-/// Starts a read of a remote execution and returns its operation and stream.
-///
-/// The query is sent at the stream's first pull, and the timeout counts from
-/// there. A session running another operation returns `invalid state` and
-/// leaves that operation running. The stream belongs to the caller, who
-/// releases it through its `release` callback.
-///
-/// # Safety
-///
-/// `session` and `remote_execution` are live handles, and `out_operation` and
-/// `out_stream` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_read_start(
+unsafe extern "C" fn read_start(
     session: *const ScalardbAnalyticsConnectorSession,
     remote_execution: *const ScalardbAnalyticsConnectorRemoteExecution,
     timeout_milliseconds: u64,
@@ -545,14 +827,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_read_start(
     })
 }
 
-/// Creates a cancellation for metadata requests, freed with
-/// `scalardb_analytics_connector_cancellation_free`.
-///
-/// # Safety
-///
-/// `out_cancellation` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_create(
+unsafe extern "C" fn cancellation_create(
     out_cancellation: *mut *mut ScalardbAnalyticsConnectorCancellation,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
@@ -564,14 +839,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_create(
     })
 }
 
-/// Cancels every metadata request running with the cancellation, from any
-/// thread, and every later request given it: they return `cancellation`.
-///
-/// # Safety
-///
-/// `cancellation` is a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_cancel(
+unsafe extern "C" fn cancellation_cancel(
     cancellation: *const ScalardbAnalyticsConnectorCancellation,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
@@ -582,33 +850,12 @@ pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_cancel(
     })
 }
 
-/// Frees a cancellation. No request may be running with it.
-///
-/// # Safety
-///
-/// `cancellation` is null or a live handle, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_free(
-    cancellation: *mut ScalardbAnalyticsConnectorCancellation,
-) {
+unsafe extern "C" fn cancellation_free(cancellation: *mut ScalardbAnalyticsConnectorCancellation) {
     // SAFETY: the caller passes a live handle or null.
     unsafe { close(cancellation, |_| ()) }
 }
 
-/// Lists the namespaces whose names exactly match `namespaces`, or all of
-/// them when it is null.
-///
-/// Metadata requests return their whole result when the call returns. The
-/// timeout counts from the call, and `cancellation`, which may be null, stops
-/// the call from another thread. A failure returns only the error. A session
-/// running a read returns `invalid state`.
-///
-/// # Safety
-///
-/// `session` is an open handle, `namespaces` is null or a valid filter,
-/// `cancellation` is null or a live handle, and `out_list` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list(
+unsafe extern "C" fn namespace_list(
     session: *const ScalardbAnalyticsConnectorSession,
     namespaces: *const ScalardbAnalyticsConnectorNameFilter,
     timeout_milliseconds: u64,
@@ -636,30 +883,12 @@ pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list(
     })
 }
 
-/// Frees a namespace list.
-///
-/// # Safety
-///
-/// `list` is null or a live result, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list_free(
-    list: *mut ScalardbAnalyticsConnectorNamespaceList,
-) {
+unsafe extern "C" fn namespace_list_free(list: *mut ScalardbAnalyticsConnectorNamespaceList) {
     // SAFETY: forwarded from the caller.
     unsafe { Owned::free(list) }
 }
 
-/// Lists the tables of the matching namespaces whose names exactly match
-/// `tables`. A null filter matches every name. Otherwise as
-/// `scalardb_analytics_connector_namespace_list`.
-///
-/// # Safety
-///
-/// `session` is an open handle, `namespaces` and `tables` are null or valid
-/// filters, `cancellation` is null or a live handle, and `out_list` is
-/// writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_list(
+unsafe extern "C" fn table_list(
     session: *const ScalardbAnalyticsConnectorSession,
     namespaces: *const ScalardbAnalyticsConnectorNameFilter,
     tables: *const ScalardbAnalyticsConnectorNameFilter,
@@ -693,34 +922,12 @@ pub unsafe extern "C" fn scalardb_analytics_connector_table_list(
     })
 }
 
-/// Frees a table list.
-///
-/// # Safety
-///
-/// `list` is null or a live result, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_list_free(
-    list: *mut ScalardbAnalyticsConnectorTableList,
-) {
+unsafe extern "C" fn table_list_free(list: *mut ScalardbAnalyticsConnectorTableList) {
     // SAFETY: forwarded from the caller.
     unsafe { Owned::free(list) }
 }
 
-/// Reads one record per requested table, in request order, including tables
-/// that do not exist or could not be read. Otherwise as
-/// `scalardb_analytics_connector_namespace_list`.
-///
-/// A record's `table_metadata` and `source_metadata` are passed unchanged to
-/// `scalardb_analytics_connector_table_metadata_compare` and
-/// `scalardb_analytics_connector_source_metadata_compare`.
-///
-/// # Safety
-///
-/// `session` is an open handle, `tables` points to `table_count` valid name
-/// sequences, `cancellation` is null or a live handle, and `out_result` is
-/// writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata(
+unsafe extern "C" fn table_metadata(
     session: *const ScalardbAnalyticsConnectorSession,
     tables: *const ScalardbAnalyticsConnectorNames,
     table_count: usize,
@@ -752,32 +959,14 @@ pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata(
     })
 }
 
-/// Frees a table metadata result.
-///
-/// # Safety
-///
-/// `result` is null or a live result, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_result_free(
+unsafe extern "C" fn table_metadata_result_free(
     result: *mut ScalardbAnalyticsConnectorTableMetadataResult,
 ) {
     // SAFETY: forwarded from the caller.
     unsafe { Owned::free(result) }
 }
 
-/// Compares two observations of one table's table metadata that the caller
-/// paired, such as a stored one and a newly retrieved one.
-///
-/// Only values observed on both sides are compared. `out_differences`
-/// receives null when no value differs. Input that is not valid table
-/// metadata is `invalid request`. It needs no handle.
-///
-/// # Safety
-///
-/// `before` and `after` point to valid table metadata, and `out_differences`
-/// is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_compare(
+unsafe extern "C" fn table_metadata_compare(
     before: *const ScalardbAnalyticsConnectorTableMetadata,
     after: *const ScalardbAnalyticsConnectorTableMetadata,
     out_differences: *mut *mut ScalardbAnalyticsConnectorTableMetadataDifferences,
@@ -809,34 +998,14 @@ pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_compare(
     })
 }
 
-/// Frees table metadata differences.
-///
-/// # Safety
-///
-/// `differences` is null or a live result, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_differences_free(
+unsafe extern "C" fn table_metadata_differences_free(
     differences: *mut ScalardbAnalyticsConnectorTableMetadataDifferences,
 ) {
     // SAFETY: forwarded from the caller.
     unsafe { Owned::free(differences) }
 }
 
-/// Compares two observations of one table's source metadata through the
-/// connector that produced them, which restores both documents.
-///
-/// `out_differences` receives null when neither the documents nor the table
-/// metadata derived from them differ. Documents of different connectors, of
-/// a connector not built into the library, or that the connector cannot
-/// restore, such as one stored before a connector update changed its shape,
-/// are `invalid request`. It needs an initialized library and no handle.
-///
-/// # Safety
-///
-/// `before` and `after` point to valid source metadata, and `out_differences`
-/// is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_source_metadata_compare(
+unsafe extern "C" fn source_metadata_compare(
     before: *const ScalardbAnalyticsConnectorSourceMetadata,
     after: *const ScalardbAnalyticsConnectorSourceMetadata,
     out_differences: *mut *mut ScalardbAnalyticsConnectorSourceMetadataDifferences,
@@ -870,13 +1039,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_source_metadata_compare(
     })
 }
 
-/// Frees source metadata differences.
-///
-/// # Safety
-///
-/// `differences` is null or a live result, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_source_metadata_differences_free(
+unsafe extern "C" fn source_metadata_differences_free(
     differences: *mut ScalardbAnalyticsConnectorSourceMetadataDifferences,
 ) {
     // SAFETY: forwarded from the caller.
@@ -969,15 +1132,7 @@ unsafe fn read_name_filter(
         .map(Some)
 }
 
-/// Cancels an operation. It may be called from any thread.
-///
-/// The stream's next pull, or the pull in progress, ends with `cancellation`.
-///
-/// # Safety
-///
-/// `operation` is an open handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_operation_cancel(
+unsafe extern "C" fn operation_cancel(
     operation: *const ScalardbAnalyticsConnectorOperation,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
@@ -988,16 +1143,7 @@ pub unsafe extern "C" fn scalardb_analytics_connector_operation_cancel(
     })
 }
 
-/// Returns the error that ended the operation's stream, or null.
-///
-/// The error stays valid until the operation is closed and is not freed by
-/// the caller.
-///
-/// # Safety
-///
-/// `operation` is an open handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_operation_error(
+unsafe extern "C" fn operation_error(
     operation: *const ScalardbAnalyticsConnectorOperation,
 ) -> *const ScalardbAnalyticsConnectorError {
     // SAFETY: the caller passes an open handle or null.
@@ -1013,44 +1159,17 @@ pub unsafe extern "C" fn scalardb_analytics_connector_operation_error(
     }
 }
 
-/// Closes an operation, releasing every Data Source resource it holds.
-///
-/// A stream still held by the caller returns `invalid state` on its next pull.
-///
-/// # Safety
-///
-/// `operation` is null or an open handle, not used after this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_operation_close(
-    operation: *mut ScalardbAnalyticsConnectorOperation,
-) {
+unsafe extern "C" fn operation_close(operation: *mut ScalardbAnalyticsConnectorOperation) {
     // SAFETY: the caller passes an open handle or null.
     unsafe { close(operation, |handle| handle.operation.close()) }
 }
 
-/// Frees an error returned by a function.
-///
-/// # Safety
-///
-/// `error` is null or an error returned by a function of this library and not
-/// yet freed; an operation's error is not freed with this function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_error_free(
-    error: *mut ScalardbAnalyticsConnectorError,
-) {
+unsafe extern "C" fn error_free(error: *mut ScalardbAnalyticsConnectorError) {
     // SAFETY: forwarded from the caller.
     unsafe { OwnedError::free(error) }
 }
 
-/// Frees bytes returned by this library.
-///
-/// # Safety
-///
-/// `bytes` was returned by this library and not yet freed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_owned_bytes_free(
-    bytes: ScalardbAnalyticsConnectorOwnedBytes,
-) {
+unsafe extern "C" fn owned_bytes_free(bytes: ScalardbAnalyticsConnectorOwnedBytes) {
     if !bytes.data.is_null() {
         // SAFETY: the bytes were leaked from a boxed slice of this length.
         drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(bytes.data, bytes.length)) });

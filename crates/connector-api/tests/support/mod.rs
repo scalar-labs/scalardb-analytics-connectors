@@ -74,6 +74,11 @@ impl Error {
     }
 }
 
+/// The library's functions.
+pub fn api() -> &'static ScalardbAnalyticsConnectorApi {
+    scalardb_analytics_connector_api()
+}
+
 /// Converts a function's returned error into a `Result`, freeing it.
 pub fn check(error: *mut ScalardbAnalyticsConnectorError) -> Result<(), Error> {
     if error.is_null() {
@@ -82,7 +87,7 @@ pub fn check(error: *mut ScalardbAnalyticsConnectorError) -> Result<(), Error> {
     // SAFETY: a non-null error returned by the library is live until freed.
     let copied = unsafe { Error::copy(error) };
     // SAFETY: the error was returned by the library and is freed once.
-    unsafe { scalardb_analytics_connector_error_free(error) };
+    unsafe { (api().error_free)(error) };
     Err(copied)
 }
 
@@ -94,7 +99,7 @@ pub fn initialize() {
             adbc_driver_directory: ptr::null(),
         };
         // SAFETY: the settings are valid for the call.
-        check(unsafe { scalardb_analytics_connector_library_initialize(&settings) }).unwrap();
+        check(unsafe { (api().library_initialize)(&settings) }).unwrap();
     });
 }
 
@@ -129,7 +134,7 @@ impl DataSource {
         let mut data_source = ptr::null_mut();
         // SAFETY: every input lives for the call and the output is writable.
         check(unsafe {
-            scalardb_analytics_connector_data_source_open(
+            (api().data_source_open)(
                 connector.as_ptr(),
                 options.as_ptr(),
                 options.len(),
@@ -150,13 +155,13 @@ impl DataSource {
     pub fn session(&self) -> Result<Session, Error> {
         let mut session = ptr::null_mut();
         // SAFETY: the handle is open and the output is writable.
-        check(unsafe { scalardb_analytics_connector_session_open(self.0, &mut session) })?;
+        check(unsafe { (api().session_open)(self.0, &mut session) })?;
         Ok(Session(session))
     }
 
     pub fn close(self) {
         // SAFETY: the handle is open and not used again.
-        unsafe { scalardb_analytics_connector_data_source_close(self.0) };
+        unsafe { (api().data_source_close)(self.0) };
     }
 }
 
@@ -174,9 +179,7 @@ impl Session {
         let mut result = ptr::null_mut();
         // SAFETY: the handle is open, the bytes live for the call, and the
         // output is writable.
-        check(unsafe {
-            scalardb_analytics_connector_plan_pushdown(self.0, bytes(offered_plan), &mut result)
-        })?;
+        check(unsafe { (api().plan_pushdown)(self.0, bytes(offered_plan), &mut result) })?;
         Ok(PushdownResult(result))
     }
 
@@ -189,13 +192,7 @@ impl Session {
         let mut remote = ptr::null_mut();
         // SAFETY: the handle is open, the bytes live for the call, and the
         // output is writable.
-        check(unsafe {
-            scalardb_analytics_connector_remote_execution_restore(
-                self.0,
-                bytes(encoded),
-                &mut remote,
-            )
-        })?;
+        check(unsafe { (api().remote_execution_restore)(self.0, bytes(encoded), &mut remote) })?;
         Ok(RemoteExecution(remote))
     }
 
@@ -204,7 +201,7 @@ impl Session {
         let mut stream = FFI_ArrowArrayStream::empty();
         // SAFETY: the handles are live and the outputs are writable.
         check(unsafe {
-            scalardb_analytics_connector_read_start(
+            (api().read_start)(
                 self.0,
                 remote.0,
                 timeout_milliseconds,
@@ -229,7 +226,7 @@ impl Session {
         let mut list = ptr::null_mut();
         // SAFETY: the handles and filter are live and the output is writable.
         check(unsafe {
-            scalardb_analytics_connector_namespace_list(
+            (api().namespace_list)(
                 self.0,
                 namespaces.as_ptr(),
                 timeout_milliseconds,
@@ -237,10 +234,7 @@ impl Session {
                 &mut list,
             )
         })?;
-        Ok(Owned::new(
-            list,
-            scalardb_analytics_connector_namespace_list_free,
-        ))
+        Ok(Owned::new(list, api().namespace_list_free))
     }
 
     /// Lists tables; `None` matches every name.
@@ -254,7 +248,7 @@ impl Session {
         let mut list = ptr::null_mut();
         // SAFETY: the handle and filters are live and the output is writable.
         check(unsafe {
-            scalardb_analytics_connector_table_list(
+            (api().table_list)(
                 self.0,
                 namespaces.as_ptr(),
                 tables.as_ptr(),
@@ -263,10 +257,7 @@ impl Session {
                 &mut list,
             )
         })?;
-        Ok(Owned::new(
-            list,
-            scalardb_analytics_connector_table_list_free,
-        ))
+        Ok(Owned::new(list, api().table_list_free))
     }
 
     /// Reads the table metadata of tables in `test.public`.
@@ -296,7 +287,7 @@ impl Session {
         let mut result = ptr::null_mut();
         // SAFETY: the handles and names are live and the output is writable.
         check(unsafe {
-            scalardb_analytics_connector_table_metadata(
+            (api().table_metadata)(
                 self.0,
                 views.as_ptr(),
                 views.len(),
@@ -305,10 +296,7 @@ impl Session {
                 &mut result,
             )
         })?;
-        Ok(Owned::new(
-            result,
-            scalardb_analytics_connector_table_metadata_result_free,
-        ))
+        Ok(Owned::new(result, api().table_metadata_result_free))
     }
 
     /// Reads one table of `test.public` that exists and returns its record.
@@ -323,7 +311,7 @@ impl Session {
 
     pub fn close(self) {
         // SAFETY: the handle is open and not used again.
-        unsafe { scalardb_analytics_connector_session_close(self.0) };
+        unsafe { (api().session_close)(self.0) };
     }
 }
 
@@ -443,14 +431,13 @@ impl Cancellation {
     pub fn new() -> Self {
         let mut cancellation = ptr::null_mut();
         // SAFETY: the output is writable.
-        check(unsafe { scalardb_analytics_connector_cancellation_create(&mut cancellation) })
-            .unwrap();
+        check(unsafe { (api().cancellation_create)(&mut cancellation) }).unwrap();
         Self(cancellation)
     }
 
     pub fn cancel(&self) -> Result<(), Error> {
         // SAFETY: the handle is live.
-        check(unsafe { scalardb_analytics_connector_cancellation_cancel(self.0) })
+        check(unsafe { (api().cancellation_cancel)(self.0) })
     }
 
     fn pointer(cancellation: Option<&Self>) -> *const ScalardbAnalyticsConnectorCancellation {
@@ -461,7 +448,7 @@ impl Cancellation {
 impl Drop for Cancellation {
     fn drop(&mut self) {
         // SAFETY: the handle is live and freed once.
-        unsafe { scalardb_analytics_connector_cancellation_free(self.0) };
+        unsafe { (api().cancellation_free)(self.0) };
     }
 }
 
@@ -472,15 +459,9 @@ pub fn compare_table_metadata(
 ) -> Result<Option<Owned<ScalardbAnalyticsConnectorTableMetadataDifferences>>, Error> {
     let mut differences = ptr::null_mut();
     // SAFETY: both inputs are valid for the call and the output is writable.
-    check(unsafe {
-        scalardb_analytics_connector_table_metadata_compare(before, after, &mut differences)
-    })?;
-    Ok((!differences.is_null()).then(|| {
-        Owned::new(
-            differences,
-            scalardb_analytics_connector_table_metadata_differences_free,
-        )
-    }))
+    check(unsafe { (api().table_metadata_compare)(before, after, &mut differences) })?;
+    Ok((!differences.is_null())
+        .then(|| Owned::new(differences, api().table_metadata_differences_free)))
 }
 
 /// Compares two source metadata structures as a C caller does.
@@ -490,15 +471,9 @@ pub fn compare_source_metadata(
 ) -> Result<Option<Owned<ScalardbAnalyticsConnectorSourceMetadataDifferences>>, Error> {
     let mut differences = ptr::null_mut();
     // SAFETY: both inputs are valid for the call and the output is writable.
-    check(unsafe {
-        scalardb_analytics_connector_source_metadata_compare(before, after, &mut differences)
-    })?;
-    Ok((!differences.is_null()).then(|| {
-        Owned::new(
-            differences,
-            scalardb_analytics_connector_source_metadata_differences_free,
-        )
-    }))
+    check(unsafe { (api().source_metadata_compare)(before, after, &mut differences) })?;
+    Ok((!differences.is_null())
+        .then(|| Owned::new(differences, api().source_metadata_differences_free)))
 }
 
 /// A name filter as a C caller builds it; `None` is passed as a null pointer.
@@ -539,9 +514,7 @@ impl PushdownResult {
     pub fn remote_execution(&self) -> Result<RemoteExecution, Error> {
         let mut remote = ptr::null_mut();
         // SAFETY: the result is live and the output is writable.
-        check(unsafe {
-            scalardb_analytics_connector_pushdown_result_remote_execution(self.0, &mut remote)
-        })?;
+        check(unsafe { (api().pushdown_result_remote_execution)(self.0, &mut remote) })?;
         Ok(RemoteExecution(remote))
     }
 }
@@ -549,7 +522,7 @@ impl PushdownResult {
 impl Drop for PushdownResult {
     fn drop(&mut self) {
         // SAFETY: the result is live and freed once.
-        unsafe { scalardb_analytics_connector_pushdown_result_free(self.0) };
+        unsafe { (api().pushdown_result_free)(self.0) };
     }
 }
 
@@ -562,14 +535,11 @@ impl RemoteExecution {
             length: 0,
         };
         // SAFETY: the handle is live and the output is writable.
-        check(unsafe {
-            scalardb_analytics_connector_remote_execution_encode(self.0, &mut encoded)
-        })
-        .unwrap();
+        check(unsafe { (api().remote_execution_encode)(self.0, &mut encoded) }).unwrap();
         // SAFETY: the library returned readable bytes of this length.
         let copied = unsafe { slice::from_raw_parts(encoded.data, encoded.length) }.to_vec();
         // SAFETY: the bytes were returned by the library and are freed once.
-        unsafe { scalardb_analytics_connector_owned_bytes_free(encoded) };
+        unsafe { (api().owned_bytes_free)(encoded) };
         copied
     }
 }
@@ -577,7 +547,7 @@ impl RemoteExecution {
 impl Drop for RemoteExecution {
     fn drop(&mut self) {
         // SAFETY: the handle is live and freed once.
-        unsafe { scalardb_analytics_connector_remote_execution_free(self.0) };
+        unsafe { (api().remote_execution_free)(self.0) };
     }
 }
 
@@ -596,19 +566,19 @@ unsafe impl Sync for Operation {}
 impl Operation {
     pub fn cancel(&self) -> Result<(), Error> {
         // SAFETY: the handle is open.
-        check(unsafe { scalardb_analytics_connector_operation_cancel(self.0) })
+        check(unsafe { (api().operation_cancel)(self.0) })
     }
 
     /// Returns the operation's error, which the operation keeps owning.
     pub fn error(&self) -> Option<&ScalardbAnalyticsConnectorError> {
         // SAFETY: the handle is open; the error lives until it is closed,
         // which `self` outlives.
-        unsafe { scalardb_analytics_connector_operation_error(self.0).as_ref() }
+        unsafe { (api().operation_error)(self.0).as_ref() }
     }
 
     pub fn close(self) {
         // SAFETY: the handle is open and not used again.
-        unsafe { scalardb_analytics_connector_operation_close(self.0) };
+        unsafe { (api().operation_close)(self.0) };
     }
 }
 

@@ -1219,6 +1219,9 @@ generated from the library's declarations and versioned with the library.
 - The connector API is a C ABI. Callers in other languages, such as the C++
   DuckDB adapter and the Java Physical Catalog, use it directly or through a
   per-language binding that wraps it.
+- The library exports one C function, which returns a table of the functions
+  below. A caller uses the header of the library version it loads, so the
+  table carries no version of its own.
 - Read results use the Arrow C stream interface (`ArrowArrayStream`); Arrow
   is used for read results only.
 - Metadata requests, their inputs, and comparisons exchange typed C

@@ -183,7 +183,7 @@ impl OwnedError {
     }
 
     /// Hands the error to the caller, who frees it with
-    /// `scalardb_analytics_connector_error_free`.
+    /// `error_free`.
     pub(crate) fn into_raw(error: ConnectorError) -> *mut ScalardbAnalyticsConnectorError {
         Box::into_raw(Self::new(error)).cast()
     }

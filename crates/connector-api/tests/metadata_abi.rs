@@ -253,7 +253,7 @@ fn a_null_output_is_rejected_before_the_source_is_queried() {
     // SAFETY: the handle and names are live; the null output is the case
     // under test.
     let error = check(unsafe {
-        scalardb_analytics_connector_table_metadata(
+        (api().table_metadata)(
             session.0,
             tables.as_ptr(),
             tables.len(),
