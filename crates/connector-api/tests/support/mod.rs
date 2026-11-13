@@ -12,12 +12,11 @@ use std::{
 };
 
 use arrow_array::{
-    ArrayRef, RecordBatch, RecordBatchIterator, StructArray,
-    builder::{ListBuilder, StringBuilder},
+    RecordBatch, StructArray,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
     ffi_stream::FFI_ArrowArrayStream,
 };
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::Schema;
 use connector_api::abi::*;
 use connector_sdk::test_connector;
 use prost::Message;
@@ -163,6 +162,9 @@ impl DataSource {
 
 pub struct Session(pub *mut ScalardbAnalyticsConnectorSession);
 
+// A session may be used from any one thread at a time.
+unsafe impl Send for Session {}
+
 impl Session {
     pub fn plan(&self, table: &[&str]) -> Result<PushdownResult, Error> {
         self.plan_bytes(&read_plan(table))
@@ -216,77 +218,105 @@ impl Session {
         })
     }
 
-    /// Starts a namespace list; `None` lists every namespace.
+    /// Lists namespaces; `None` lists every namespace.
     pub fn namespace_list(
         &self,
         namespaces: Option<&[&str]>,
         timeout_milliseconds: u64,
-    ) -> Result<Read, Error> {
+        cancellation: Option<&Cancellation>,
+    ) -> Result<Owned<ScalardbAnalyticsConnectorNamespaceList>, Error> {
         let namespaces = NameFilter::new(namespaces);
-        // SAFETY: the handle and filter are live and the outputs are writable.
-        started(|operation, stream| unsafe {
-            scalardb_analytics_connector_namespace_list_start(
+        let mut list = ptr::null_mut();
+        // SAFETY: the handles and filter are live and the output is writable.
+        check(unsafe {
+            scalardb_analytics_connector_namespace_list(
                 self.0,
                 namespaces.as_ptr(),
                 timeout_milliseconds,
-                operation,
-                stream,
+                Cancellation::pointer(cancellation),
+                &mut list,
             )
-        })
+        })?;
+        Ok(Owned::new(
+            list,
+            scalardb_analytics_connector_namespace_list_free,
+        ))
     }
 
-    /// Starts a table list; `None` matches every name.
+    /// Lists tables; `None` matches every name.
     pub fn table_list(
         &self,
         namespaces: Option<&[&str]>,
         tables: Option<&[&str]>,
-    ) -> Result<Read, Error> {
+    ) -> Result<Owned<ScalardbAnalyticsConnectorTableList>, Error> {
         let namespaces = NameFilter::new(namespaces);
         let tables = NameFilter::new(tables);
-        // SAFETY: the handle and filters are live and the outputs are writable.
-        started(|operation, stream| unsafe {
-            scalardb_analytics_connector_table_list_start(
+        let mut list = ptr::null_mut();
+        // SAFETY: the handle and filters are live and the output is writable.
+        check(unsafe {
+            scalardb_analytics_connector_table_list(
                 self.0,
                 namespaces.as_ptr(),
                 tables.as_ptr(),
                 0,
-                operation,
-                stream,
+                ptr::null(),
+                &mut list,
             )
-        })
+        })?;
+        Ok(Owned::new(
+            list,
+            scalardb_analytics_connector_table_list_free,
+        ))
     }
 
-    /// Starts a table metadata request for tables in `test.public`.
+    /// Reads the table metadata of tables in `test.public`.
     pub fn table_metadata(
         &self,
         tables: &[&str],
         timeout_milliseconds: u64,
-    ) -> Result<Read, Error> {
-        self.table_metadata_from(table_input(tables), timeout_milliseconds)
+        cancellation: Option<&Cancellation>,
+    ) -> Result<Owned<ScalardbAnalyticsConnectorTableMetadataResult>, Error> {
+        let paths: Vec<Vec<&str>> = tables
+            .iter()
+            .map(|table| vec!["test", "public", table])
+            .collect();
+        let paths: Vec<&[&str]> = paths.iter().map(Vec::as_slice).collect();
+        self.table_metadata_of(&paths, timeout_milliseconds, cancellation)
     }
 
-    /// Starts a table metadata request with `tables` as its Arrow input stream.
-    pub fn table_metadata_from(
+    /// Reads the table metadata of tables named by full paths.
+    pub fn table_metadata_of(
         &self,
-        mut tables: FFI_ArrowArrayStream,
+        tables: &[&[&str]],
         timeout_milliseconds: u64,
-    ) -> Result<Read, Error> {
-        let result = started(|operation, stream| {
-            // SAFETY: the handle is live, the input stream is moved to the
-            // library, and the outputs are writable.
-            unsafe {
-                scalardb_analytics_connector_table_metadata_start(
-                    self.0,
-                    &mut tables,
-                    timeout_milliseconds,
-                    operation,
-                    stream,
-                )
-            }
-        });
+        cancellation: Option<&Cancellation>,
+    ) -> Result<Owned<ScalardbAnalyticsConnectorTableMetadataResult>, Error> {
+        let tables: Vec<Names> = tables.iter().map(|table| Names::new(table)).collect();
+        let views: Vec<_> = tables.iter().map(Names::view).collect();
+        let mut result = ptr::null_mut();
+        // SAFETY: the handles and names are live and the output is writable.
+        check(unsafe {
+            scalardb_analytics_connector_table_metadata(
+                self.0,
+                views.as_ptr(),
+                views.len(),
+                timeout_milliseconds,
+                Cancellation::pointer(cancellation),
+                &mut result,
+            )
+        })?;
+        Ok(Owned::new(
+            result,
+            scalardb_analytics_connector_table_metadata_result_free,
+        ))
+    }
+
+    /// Reads one table of `test.public` that exists and returns its record.
+    pub fn read_table(&self, table: &str) -> Owned<ScalardbAnalyticsConnectorTableMetadataResult> {
+        let result = self.table_metadata(&[table], 0, None).unwrap();
         assert!(
-            tables.release.is_none(),
-            "the library takes the input stream"
+            !result.records()[0].table_metadata.is_null(),
+            "{table} was read"
         );
         result
     }
@@ -297,20 +327,142 @@ impl Session {
     }
 }
 
-/// Calls a start function with fresh outputs and wraps what it returned.
-fn started(
-    start: impl FnOnce(
-        *mut *mut ScalardbAnalyticsConnectorOperation,
-        *mut FFI_ArrowArrayStream,
-    ) -> *mut ScalardbAnalyticsConnectorError,
-) -> Result<Read, Error> {
-    let mut operation = ptr::null_mut();
-    let mut stream = FFI_ArrowArrayStream::empty();
-    check(start(&mut operation, &mut stream))?;
-    Ok(Read {
-        operation: Operation(operation),
-        stream: Stream(stream),
-    })
+/// An output tree the library passed to the caller, freed when dropped.
+pub struct Owned<T> {
+    pointer: *mut T,
+    free: unsafe extern "C" fn(*mut T),
+}
+
+impl<T> Owned<T> {
+    pub fn new(pointer: *mut T, free: unsafe extern "C" fn(*mut T)) -> Self {
+        assert!(!pointer.is_null(), "the library wrote an output");
+        Self { pointer, free }
+    }
+}
+
+impl<T> std::ops::Deref for Owned<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the output is live until dropped.
+        unsafe { &*self.pointer }
+    }
+}
+
+impl<T> Drop for Owned<T> {
+    fn drop(&mut self) {
+        // SAFETY: the output was returned by the library and is freed once.
+        unsafe { (self.free)(self.pointer) };
+    }
+}
+
+impl Owned<ScalardbAnalyticsConnectorTableMetadataResult> {
+    pub fn records(&self) -> &[ScalardbAnalyticsConnectorTableRecord] {
+        // SAFETY: the library returns `record_count` records.
+        unsafe { items(self.records, self.record_count) }
+    }
+
+    /// The table metadata of the first record, which was read.
+    pub fn table_metadata(&self) -> &ScalardbAnalyticsConnectorTableMetadata {
+        // SAFETY: a read record points to its table metadata.
+        unsafe { &*self.records()[0].table_metadata }
+    }
+
+    /// The source metadata of the first record, which was read.
+    pub fn source_metadata(&self) -> &ScalardbAnalyticsConnectorSourceMetadata {
+        // SAFETY: a read record points to its source metadata.
+        unsafe { &*self.records()[0].source_metadata }
+    }
+}
+
+/// Borrows `count` values the library returned; null with no values is empty.
+///
+/// # Safety
+///
+/// A non-null `data` points to `count` values that outlive the borrow.
+pub unsafe fn items<'a, T>(data: *const T, count: usize) -> &'a [T] {
+    if data.is_null() {
+        assert_eq!(count, 0);
+        return &[];
+    }
+    // SAFETY: forwarded from the caller.
+    unsafe { slice::from_raw_parts(data, count) }
+}
+
+/// Reads names the library returned.
+pub fn read_names(names: &ScalardbAnalyticsConnectorNames) -> Vec<String> {
+    // SAFETY: the library returns `name_count` names.
+    unsafe { items(names.names, names.name_count) }
+        .iter()
+        .map(|&name| read_string(name).unwrap())
+        .collect()
+}
+
+/// Input text as a structure carries it; keep the source alive for the call.
+pub fn string(value: &str) -> ScalardbAnalyticsConnectorString {
+    ScalardbAnalyticsConnectorString {
+        data: value.as_ptr().cast(),
+        length: value.len(),
+    }
+}
+
+/// A name sequence as a C caller builds it.
+pub struct Names {
+    // The view points into these; moving the vectors keeps their buffers.
+    _texts: Vec<String>,
+    strings: Vec<ScalardbAnalyticsConnectorString>,
+}
+
+impl Names {
+    pub fn new(names: &[&str]) -> Self {
+        let texts: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        let strings = texts.iter().map(|text| string(text)).collect();
+        Self {
+            _texts: texts,
+            strings,
+        }
+    }
+
+    pub fn view(&self) -> ScalardbAnalyticsConnectorNames {
+        ScalardbAnalyticsConnectorNames {
+            names: self.strings.as_ptr(),
+            name_count: self.strings.len(),
+        }
+    }
+}
+
+/// A cancellation handle.
+pub struct Cancellation(pub *mut ScalardbAnalyticsConnectorCancellation);
+
+// SAFETY: a cancellation may be cancelled from any thread.
+unsafe impl Send for Cancellation {}
+// SAFETY: as above.
+unsafe impl Sync for Cancellation {}
+
+impl Cancellation {
+    pub fn new() -> Self {
+        let mut cancellation = ptr::null_mut();
+        // SAFETY: the output is writable.
+        check(unsafe { scalardb_analytics_connector_cancellation_create(&mut cancellation) })
+            .unwrap();
+        Self(cancellation)
+    }
+
+    pub fn cancel(&self) -> Result<(), Error> {
+        // SAFETY: the handle is live.
+        check(unsafe { scalardb_analytics_connector_cancellation_cancel(self.0) })
+    }
+
+    fn pointer(cancellation: Option<&Self>) -> *const ScalardbAnalyticsConnectorCancellation {
+        cancellation.map_or(ptr::null(), |cancellation| cancellation.0)
+    }
+}
+
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        // SAFETY: the handle is live and freed once.
+        unsafe { scalardb_analytics_connector_cancellation_free(self.0) };
+    }
 }
 
 /// A name filter as a C caller builds it; `None` is passed as a null pointer.
@@ -343,22 +495,6 @@ impl NameFilter {
     pub fn as_ptr(&self) -> *const ScalardbAnalyticsConnectorNameFilter {
         self.filter.as_ref().map_or(ptr::null(), ptr::from_ref)
     }
-}
-
-/// Exports the tables `test.public.<name>` as a table metadata input stream.
-pub fn table_input(tables: &[&str]) -> FFI_ArrowArrayStream {
-    let item = Arc::new(Field::new("item", DataType::Utf8, false));
-    let mut builder = ListBuilder::new(StringBuilder::new()).with_field(item);
-    for table in tables {
-        for name in ["test", "public", table] {
-            builder.values().append_value(name);
-        }
-        builder.append(true);
-    }
-    let column: ArrayRef = Arc::new(builder.finish());
-    let batch = RecordBatch::try_from_iter([("table", column)]).unwrap();
-    let schema = batch.schema();
-    FFI_ArrowArrayStream::new(Box::new(RecordBatchIterator::new([Ok(batch)], schema)))
 }
 
 pub struct PushdownResult(pub *mut ScalardbAnalyticsConnectorPushdownResult);

@@ -15,7 +15,9 @@ postgresql = ["dep:connector-postgresql"]
 test-connector = ["connector-sdk/test-connector"]
 
 [dependencies]
-# Result streams cross the C ABI through the Arrow C stream interface.
+# Metadata carries Analytics types as C structures.
+analytics-types.workspace = true
+# Read result streams cross the C ABI through the Arrow C stream interface.
 arrow-array = { workspace = true, features = ["ffi"] }
 arrow-schema.workspace = true
 connector-sdk.workspace = true
@@ -24,8 +26,6 @@ connector-postgresql = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [dev-dependencies]
-analytics-types.workspace = true
-arrow-ipc.workspace = true
 cbindgen.workspace = true
 connector-api = { path = ".", features = ["test-connector"] }
 prost.workspace = true

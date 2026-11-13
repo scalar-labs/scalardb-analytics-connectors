@@ -9,15 +9,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{ConnectorError, ErrorKind};
+use crate::{
+    ConnectorError, ErrorKind, Listed, NameFilter, NamespacePath, SourceStream, TableEntry,
+    TableReference,
+};
 
 use super::{
-    DataSourceState, MetadataRequest, Operation, PlanningOutcome, SharedRemoteExecution,
-    connector::DynSession,
-    invalid_state, lock,
-    metadata::Retrieval,
-    operation::{OperationRequest, StartedStream},
-    panic_error,
+    Cancellation, DataSourceState, Operation, PlanningOutcome, Retrieval, SharedRemoteExecution,
+    TableMetadataResult, connector::DynSession, invalid_state, lock, next_blocking,
+    operation::StartedStream, panic_error,
 };
 
 /// Whether a session accepts requests.
@@ -149,51 +149,100 @@ impl SessionState {
     ) -> Result<Arc<Operation>, ConnectorError> {
         let lease = self.lease()?;
         self.inner.check_remote_execution(&remote)?;
-        Ok(Arc::new(Operation::new(
-            lease,
-            OperationRequest::Read(remote),
-            timeout,
-        )))
+        Ok(Arc::new(Operation::new(lease, remote, timeout)))
     }
 
-    /// Starts a metadata request; the catalog is read from the operation's
-    /// first pull.
-    pub fn start_metadata(
+    /// Lists the namespaces whose names exactly match `namespaces`, or all of them.
+    pub fn namespace_list(
         self: &Arc<Self>,
-        request: MetadataRequest,
+        namespaces: &NameFilter,
         timeout: Option<Duration>,
-    ) -> Result<Arc<Operation>, ConnectorError> {
-        let lease = self.lease()?;
-        Ok(Arc::new(Operation::new(
-            lease,
-            OperationRequest::Metadata(request),
-            timeout,
-        )))
+        cancellation: Option<&Cancellation>,
+    ) -> Result<Vec<Listed<NamespacePath>>, ConnectorError> {
+        self.read_catalog(timeout, cancellation, |deadline| {
+            self.inner.namespace_list(namespaces, deadline)
+        })
     }
 
-    /// Sends an operation's request to the connector.
+    /// Lists the tables of the matching namespaces whose names exactly match
+    /// `tables`, or all of them.
+    pub fn table_list(
+        self: &Arc<Self>,
+        namespaces: &NameFilter,
+        tables: &NameFilter,
+        timeout: Option<Duration>,
+        cancellation: Option<&Cancellation>,
+    ) -> Result<Vec<Listed<TableEntry>>, ConnectorError> {
+        self.read_catalog(timeout, cancellation, |deadline| {
+            self.inner.table_list(namespaces, tables, deadline)
+        })
+    }
+
+    /// Reads one record per requested table, in request order.
+    pub fn table_metadata(
+        self: &Arc<Self>,
+        tables: &[TableReference],
+        timeout: Option<Duration>,
+        cancellation: Option<&Cancellation>,
+    ) -> Result<TableMetadataResult, ConnectorError> {
+        let connector = &self.data_source.connector;
+        let records = self.read_catalog(timeout, cancellation, |deadline| {
+            self.inner.table_metadata(tables, &connector.name, deadline)
+        })?;
+        Ok(TableMetadataResult {
+            records,
+            retrieval: Retrieval {
+                connector: connector.clone(),
+                adbc_driver: self.inner.adbc_driver(),
+                library_version: self.library().version.clone(),
+            },
+        })
+    }
+
+    /// Runs one catalog read to its end while holding the session's lease.
+    ///
+    /// The timeout counts from the call. A cancellation given before the call
+    /// returns `cancellation` without sending anything to the Data Source. The
+    /// first error ends the read and is the result; nothing read before it is
+    /// returned.
+    fn read_catalog<T>(
+        self: &Arc<Self>,
+        timeout: Option<Duration>,
+        cancellation: Option<&Cancellation>,
+        start: impl FnOnce(Option<Instant>) -> Result<SourceStream<T>, ConnectorError>,
+    ) -> Result<Vec<T>, ConnectorError> {
+        let _lease = self.lease()?;
+        if let Some(cancellation) = cancellation {
+            cancellation.ensure_not_cancelled()?;
+        }
+        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        self.observe(|| {
+            let mut items = start(deadline)?;
+            let handle = items.cancel_handle();
+            let _deadline =
+                deadline.map(|deadline| self.library().watcher.register(deadline, handle.clone()));
+            let _cancellation = cancellation
+                .map(|cancellation| cancellation.register(handle))
+                .transpose()?;
+            let mut read = Vec::new();
+            while let Some(item) = next_blocking(&mut items) {
+                read.push(item?);
+            }
+            Ok(read)
+        })
+    }
+
+    /// Sends a read's remote execution to the connector.
     pub(super) fn start(
         &self,
-        request: &OperationRequest,
+        remote: &SharedRemoteExecution,
         deadline: Option<Instant>,
     ) -> Result<StartedStream, ConnectorError> {
-        match request {
-            OperationRequest::Read(remote) => {
-                let stream = self.inner.execute(remote, deadline)?;
-                Ok(StartedStream {
-                    cancel: stream.cancel_handle(),
-                    batches: Box::pin(stream),
-                })
-            }
-            OperationRequest::Metadata(request) => {
-                let retrieval = Retrieval {
-                    connector: self.data_source.connector.clone(),
-                    adbc_driver: self.inner.adbc_driver(),
-                    library_version: self.library().version.clone(),
-                };
-                self.inner.start_metadata(request, retrieval, deadline)
-            }
-        }
+        let stream = self.inner.execute(remote, deadline)?;
+        Ok(StartedStream {
+            cancel: stream.cancel_handle(),
+            batches: Box::pin(stream),
+        })
     }
 }
 

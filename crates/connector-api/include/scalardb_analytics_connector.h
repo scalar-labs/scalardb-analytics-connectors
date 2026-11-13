@@ -11,10 +11,13 @@
  *   `data` is usable as a C string; text from a Data Source that contains
  *   U+0000 is complete only through `length`. Absent output text has a NULL
  *   `data`.
+ * - Text inside structures, in both directions, is a
+ *   ScalardbAnalyticsConnectorString.
  * - Binary data, such as Substrait plans, carries a length and no terminator.
- * - The library copies every input during the call, except an Arrow input
- *   stream, which the caller moves to the library.
+ * - The library copies every input during the call.
  * - A timeout of 0 milliseconds means no limit.
+ * - An output structure tree passes to the caller, which frees it once with
+ *   the free function named for its root; that frees the whole tree.
  */
 
 #ifndef SCALARDB_ANALYTICS_CONNECTOR_H
@@ -111,10 +114,13 @@ typedef enum ScalardbAnalyticsConnectorDiagnosticType {
   SCALARDB_ANALYTICS_CONNECTOR_DIAGNOSTIC_TYPE_BYTES = 13,
 } ScalardbAnalyticsConnectorDiagnosticType;
 
+// A caller's means of cancelling metadata requests from any thread.
+typedef struct ScalardbAnalyticsConnectorCancellation ScalardbAnalyticsConnectorCancellation;
+
 // An opened Data Source. It may be used from several threads at once.
 typedef struct ScalardbAnalyticsConnectorDataSource ScalardbAnalyticsConnectorDataSource;
 
-// An operation: a read or a metadata request. It may be cancelled from any thread.
+// A read operation. It may be cancelled from any thread.
 typedef struct ScalardbAnalyticsConnectorOperation ScalardbAnalyticsConnectorOperation;
 
 // The result of planning one pushdown request.
@@ -212,6 +218,283 @@ typedef struct ScalardbAnalyticsConnectorNameFilter {
   const char *const *names;
   size_t name_count;
 } ScalardbAnalyticsConnectorNameFilter;
+
+// Whether a list entry is an item or a range whose list could not be read.
+typedef uint32_t ScalardbAnalyticsConnectorListedState;
+#define ScalardbAnalyticsConnectorListedState_ITEM 1
+// No targets are returned for the range; this does not mean it is empty.
+#define ScalardbAnalyticsConnectorListedState_UNREADABLE 2
+
+// A sequence of names: a namespace, a table, or a list of column names.
+//
+// For a namespace or a table of a source with catalogs, the first name is
+// the catalog.
+typedef struct ScalardbAnalyticsConnectorNames {
+  const struct ScalardbAnalyticsConnectorString *names;
+  size_t name_count;
+} ScalardbAnalyticsConnectorNames;
+
+// One namespace list entry. `namespace` is set for an item; `scope` and
+// `reason` for an unreadable range.
+typedef struct ScalardbAnalyticsConnectorNamespaceEntry {
+  ScalardbAnalyticsConnectorListedState state;
+  struct ScalardbAnalyticsConnectorNames namespace_;
+  struct ScalardbAnalyticsConnectorNames scope;
+  struct ScalardbAnalyticsConnectorString reason;
+} ScalardbAnalyticsConnectorNamespaceEntry;
+
+// The result of a namespace list, freed with
+// `scalardb_analytics_connector_namespace_list_free`.
+typedef struct ScalardbAnalyticsConnectorNamespaceList {
+  const struct ScalardbAnalyticsConnectorNamespaceEntry *entries;
+  size_t entry_count;
+} ScalardbAnalyticsConnectorNamespaceList;
+
+// The kind of table the source distinguishes.
+typedef uint32_t ScalardbAnalyticsConnectorTableKind;
+#define ScalardbAnalyticsConnectorTableKind_TABLE 1
+#define ScalardbAnalyticsConnectorTableKind_VIEW 2
+#define ScalardbAnalyticsConnectorTableKind_EXTERNAL 3
+// Another kind, named in the source's own term by `other_kind`.
+#define ScalardbAnalyticsConnectorTableKind_OTHER 4
+
+// One table list entry. `table`, `kind`, and `other_kind` are set for an
+// item; `scope` and `reason` for an unreadable range.
+typedef struct ScalardbAnalyticsConnectorTableEntry {
+  ScalardbAnalyticsConnectorListedState state;
+  struct ScalardbAnalyticsConnectorNames table;
+  ScalardbAnalyticsConnectorTableKind kind;
+  struct ScalardbAnalyticsConnectorString other_kind;
+  struct ScalardbAnalyticsConnectorNames scope;
+  struct ScalardbAnalyticsConnectorString reason;
+} ScalardbAnalyticsConnectorTableEntry;
+
+// The result of a table list, freed with
+// `scalardb_analytics_connector_table_list_free`.
+typedef struct ScalardbAnalyticsConnectorTableList {
+  const struct ScalardbAnalyticsConnectorTableEntry *entries;
+  size_t entry_count;
+} ScalardbAnalyticsConnectorTableList;
+
+// The state of one requested table.
+typedef uint32_t ScalardbAnalyticsConnectorTableRecordState;
+// The table was read and no item is missing.
+#define ScalardbAnalyticsConnectorTableRecordState_COMPLETE 1
+// The table was read and some item is missing.
+#define ScalardbAnalyticsConnectorTableRecordState_INCOMPLETE 2
+// The connector confirmed that the table does not exist.
+#define ScalardbAnalyticsConnectorTableRecordState_DOES_NOT_EXIST 3
+// The table could not be read; this says nothing about whether it exists.
+#define ScalardbAnalyticsConnectorTableRecordState_COULD_NOT_BE_READ 4
+
+// Whether the connector read an item, could not read it, or never offers it.
+typedef uint32_t ScalardbAnalyticsConnectorReportedState;
+#define ScalardbAnalyticsConnectorReportedState_VALUE 1
+// The item exists in principle but could not be read; the table is incomplete.
+#define ScalardbAnalyticsConnectorReportedState_MISSING 2
+// The connector never returns the item; the table stays complete.
+#define ScalardbAnalyticsConnectorReportedState_NOT_OFFERED 3
+
+// A reported text item: `value` is set for `VALUE`, `missing_reason` for
+// `MISSING`.
+typedef struct ScalardbAnalyticsConnectorReportedText {
+  ScalardbAnalyticsConnectorReportedState state;
+  struct ScalardbAnalyticsConnectorString value;
+  struct ScalardbAnalyticsConnectorString missing_reason;
+} ScalardbAnalyticsConnectorReportedText;
+
+// A truth value in a structure.
+//
+// It is an integer with named constants, like the enumerated fields.
+typedef uint8_t ScalardbAnalyticsConnectorBool;
+#define ScalardbAnalyticsConnectorBool_FALSE 0
+#define ScalardbAnalyticsConnectorBool_TRUE 1
+
+// How a column's type was observed.
+typedef uint32_t ScalardbAnalyticsConnectorColumnTypeState;
+// The Data Source type maps to an Analytics type.
+#define ScalardbAnalyticsConnectorColumnTypeState_MAPPED 1
+// The Data Source type was read but has no Analytics type.
+#define ScalardbAnalyticsConnectorColumnTypeState_UNSUPPORTED 2
+// The column's type could not be read.
+#define ScalardbAnalyticsConnectorColumnTypeState_UNREAD 3
+
+// The kind of an Analytics type.
+typedef uint32_t ScalardbAnalyticsConnectorAnalyticsTypeKind;
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_BOOLEAN 1
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_BYTE 2
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_SMALL_INT 3
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_INT 4
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_BIG_INT 5
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_FLOAT 6
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_DOUBLE 7
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL 8
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_TEXT 9
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_BLOB 10
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_DATE 11
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_TIME 12
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_TIMESTAMP 13
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_TIMESTAMP_TZ 14
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_DURATION 15
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_INTERVAL 16
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_ARRAY 17
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_MAP 18
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_STRUCT 19
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_UUID 20
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_JSON 21
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_ENUM 22
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_YEAR 23
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_TIME_WITH_TIME_ZONE 24
+
+// A named, nullable field of a `STRUCT` Analytics type.
+typedef struct ScalardbAnalyticsConnectorAnalyticsField {
+  struct ScalardbAnalyticsConnectorString name;
+  const struct ScalardbAnalyticsConnectorAnalyticsType *data_type;
+  ScalardbAnalyticsConnectorBool nullable;
+} ScalardbAnalyticsConnectorAnalyticsField;
+
+// An Analytics type, as the Analytics type model defines it.
+//
+// The parameters of its kind are set: precision and scale for `DECIMAL`, the
+// element for `ARRAY`, the key and value for `MAP`, the fields for `STRUCT`,
+// and the members for `ENUM`. A type tree is acyclic.
+typedef struct ScalardbAnalyticsConnectorAnalyticsType {
+  ScalardbAnalyticsConnectorAnalyticsTypeKind kind;
+  uint8_t decimal_precision;
+  int8_t decimal_scale;
+  const struct ScalardbAnalyticsConnectorAnalyticsType *element_type;
+  ScalardbAnalyticsConnectorBool element_nullable;
+  const struct ScalardbAnalyticsConnectorAnalyticsType *key_type;
+  const struct ScalardbAnalyticsConnectorAnalyticsType *value_type;
+  ScalardbAnalyticsConnectorBool value_nullable;
+  const struct ScalardbAnalyticsConnectorAnalyticsField *fields;
+  size_t field_count;
+  const struct ScalardbAnalyticsConnectorString *members;
+  size_t member_count;
+} ScalardbAnalyticsConnectorAnalyticsType;
+
+// Why a column's Data Source type has no Analytics type.
+typedef uint32_t ScalardbAnalyticsConnectorUnsupportedReason;
+#define ScalardbAnalyticsConnectorUnsupportedReason_NOT_MAPPED 1
+#define ScalardbAnalyticsConnectorUnsupportedReason_MAPPING_NOT_IMPLEMENTED 2
+#define ScalardbAnalyticsConnectorUnsupportedReason_PARAMETER_OUT_OF_RANGE 3
+
+// One column of a table.
+//
+// `data_source_type` is set for `MAPPED` and `UNSUPPORTED`,
+// `analytics_type` for `MAPPED`, `unsupported_reason` for `UNSUPPORTED`, and
+// `unread_reason` for `UNREAD`.
+typedef struct ScalardbAnalyticsConnectorColumn {
+  struct ScalardbAnalyticsConnectorString name;
+  uint32_t ordinal;
+  ScalardbAnalyticsConnectorBool nullable;
+  struct ScalardbAnalyticsConnectorReportedText source_id;
+  ScalardbAnalyticsConnectorColumnTypeState type_state;
+  struct ScalardbAnalyticsConnectorString data_source_type;
+  struct ScalardbAnalyticsConnectorAnalyticsType analytics_type;
+  ScalardbAnalyticsConnectorUnsupportedReason unsupported_reason;
+  struct ScalardbAnalyticsConnectorString unread_reason;
+} ScalardbAnalyticsConnectorColumn;
+
+// The kind of a constraint.
+typedef uint32_t ScalardbAnalyticsConnectorConstraintKind;
+#define ScalardbAnalyticsConnectorConstraintKind_PRIMARY_KEY 1
+#define ScalardbAnalyticsConnectorConstraintKind_UNIQUE 2
+#define ScalardbAnalyticsConnectorConstraintKind_FOREIGN_KEY 3
+#define ScalardbAnalyticsConnectorConstraintKind_CHECK 4
+
+// Whether uniqueness comes from a declared constraint or a unique index.
+typedef uint32_t ScalardbAnalyticsConnectorUniqueKind;
+#define ScalardbAnalyticsConnectorUniqueKind_CONSTRAINT 1
+#define ScalardbAnalyticsConnectorUniqueKind_INDEX 2
+
+// One constraint of a table.
+//
+// `columns` is set for every kind except `CHECK`; `unique_kind` and the
+// optional `condition` for `UNIQUE`; `referenced_table` and
+// `referenced_columns` for `FOREIGN_KEY`; `expression` for `CHECK`.
+typedef struct ScalardbAnalyticsConnectorConstraint {
+  struct ScalardbAnalyticsConnectorString name;
+  ScalardbAnalyticsConnectorBool enforced;
+  ScalardbAnalyticsConnectorConstraintKind kind;
+  struct ScalardbAnalyticsConnectorNames columns;
+  ScalardbAnalyticsConnectorUniqueKind unique_kind;
+  struct ScalardbAnalyticsConnectorString condition;
+  struct ScalardbAnalyticsConnectorNames referenced_table;
+  struct ScalardbAnalyticsConnectorNames referenced_columns;
+  struct ScalardbAnalyticsConnectorString expression;
+} ScalardbAnalyticsConnectorConstraint;
+
+// Source-independent metadata for one table that exists.
+//
+// `other_kind` is set when `kind` is `OTHER`. The constraints are set when
+// `constraints_state` is `VALUE`, and `constraints_missing_reason` when it is
+// `MISSING`. Columns and constraints may be in any order on input.
+typedef struct ScalardbAnalyticsConnectorTableMetadata {
+  struct ScalardbAnalyticsConnectorNames table;
+  ScalardbAnalyticsConnectorTableKind kind;
+  struct ScalardbAnalyticsConnectorString other_kind;
+  struct ScalardbAnalyticsConnectorReportedText source_id;
+  const struct ScalardbAnalyticsConnectorColumn *columns;
+  size_t column_count;
+  // True when the catalog may silently omit columns without privilege.
+  ScalardbAnalyticsConnectorBool columns_may_be_hidden;
+  ScalardbAnalyticsConnectorReportedState constraints_state;
+  struct ScalardbAnalyticsConnectorString constraints_missing_reason;
+  const struct ScalardbAnalyticsConnectorConstraint *constraints;
+  size_t constraint_count;
+} ScalardbAnalyticsConnectorTableMetadata;
+
+// A JSON document as text.
+typedef struct ScalardbAnalyticsConnectorJson {
+  struct ScalardbAnalyticsConnectorString text;
+} ScalardbAnalyticsConnectorJson;
+
+// A connector's source metadata for one table: a JSON document whose shape
+// only that connector knows, and the name of the connector.
+typedef struct ScalardbAnalyticsConnectorSourceMetadata {
+  struct ScalardbAnalyticsConnectorString connector;
+  struct ScalardbAnalyticsConnectorJson document;
+} ScalardbAnalyticsConnectorSourceMetadata;
+
+// The result for one requested table.
+//
+// A table that was read has `table_metadata`, `source_metadata`, and
+// `read_at_microseconds`, the time the connector read its catalog in
+// microseconds since the Unix epoch. A table that could not be read has a
+// `reason`. Pointers that the state does not use are null.
+typedef struct ScalardbAnalyticsConnectorTableRecord {
+  ScalardbAnalyticsConnectorTableRecordState state;
+  struct ScalardbAnalyticsConnectorNames table;
+  const struct ScalardbAnalyticsConnectorTableMetadata *table_metadata;
+  const struct ScalardbAnalyticsConnectorSourceMetadata *source_metadata;
+  int64_t read_at_microseconds;
+  struct ScalardbAnalyticsConnectorString reason;
+} ScalardbAnalyticsConnectorTableRecord;
+
+// A named, versioned component; absent when `name` has a null `data`.
+typedef struct ScalardbAnalyticsConnectorComponent {
+  struct ScalardbAnalyticsConnectorString name;
+  struct ScalardbAnalyticsConnectorString version;
+} ScalardbAnalyticsConnectorComponent;
+
+// How a table metadata request was retrieved. Comparisons never use it.
+//
+// `adbc_driver` is absent with direct access.
+typedef struct ScalardbAnalyticsConnectorRetrieval {
+  struct ScalardbAnalyticsConnectorComponent connector;
+  struct ScalardbAnalyticsConnectorComponent adbc_driver;
+  struct ScalardbAnalyticsConnectorString library_version;
+} ScalardbAnalyticsConnectorRetrieval;
+
+// The result of a table metadata request: one record per requested table,
+// in request order. Freed with
+// `scalardb_analytics_connector_table_metadata_result_free`.
+typedef struct ScalardbAnalyticsConnectorTableMetadataResult {
+  const struct ScalardbAnalyticsConnectorTableRecord *records;
+  size_t record_count;
+  struct ScalardbAnalyticsConnectorRetrieval retrieval;
+} ScalardbAnalyticsConnectorTableMetadataResult;
 
 #ifdef __cplusplus
 extern "C" {
@@ -379,60 +662,99 @@ struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_read_start(
                                                                                 struct ScalardbAnalyticsConnectorOperation **out_operation,
                                                                                 struct ArrowArrayStream *out_stream);
 
-// Starts a namespace list and returns its operation and stream.
-//
-// The stream's schema is fixed and returned before the Data Source is
-// queried; each row is one namespace or one range that could not be read,
-// as the contract's Connector API section lays out. `namespaces` is null to
-// list every namespace. Busy sessions, the timeout, and the stream follow
-// `scalardb_analytics_connector_read_start`.
+// Creates a cancellation for metadata requests, freed with
+// `scalardb_analytics_connector_cancellation_free`.
 //
 // # Safety
 //
-// `session` is a live handle, `namespaces` is null or a valid filter, and
-// `out_operation` and `out_stream` are writable.
-struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_namespace_list_start(const struct ScalardbAnalyticsConnectorSession *session,
-                                                                                          const struct ScalardbAnalyticsConnectorNameFilter *namespaces,
-                                                                                          uint64_t timeout_milliseconds,
-                                                                                          struct ScalardbAnalyticsConnectorOperation **out_operation,
-                                                                                          struct ArrowArrayStream *out_stream);
+// `out_cancellation` is writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_cancellation_create(struct ScalardbAnalyticsConnectorCancellation **out_cancellation);
 
-// Starts a table list across the matching namespaces and returns its
-// operation and stream.
-//
-// Each row is one table or one range that could not be read. A null filter
-// matches every name. Otherwise as `scalardb_analytics_connector_namespace_list_start`.
+// Cancels every metadata request running with the cancellation, from any
+// thread, and every later request given it: they return `cancellation`.
 //
 // # Safety
 //
-// `session` is a live handle, `namespaces` and `tables` are null or valid
-// filters, and `out_operation` and `out_stream` are writable.
-struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_list_start(const struct ScalardbAnalyticsConnectorSession *session,
-                                                                                      const struct ScalardbAnalyticsConnectorNameFilter *namespaces,
-                                                                                      const struct ScalardbAnalyticsConnectorNameFilter *tables,
-                                                                                      uint64_t timeout_milliseconds,
-                                                                                      struct ScalardbAnalyticsConnectorOperation **out_operation,
-                                                                                      struct ArrowArrayStream *out_stream);
+// `cancellation` is a live handle.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_cancellation_cancel(const struct ScalardbAnalyticsConnectorCancellation *cancellation);
 
-// Starts a table metadata request and returns its operation and stream.
-//
-// `tables` is an Arrow stream of the requested tables: one column `table` of
-// type `list<utf8>`, each row a name path. The library reads it during the
-// call and releases it, whether or not the call succeeds; malformed input
-// returns `invalid request`. Each output row is one requested table: its
-// state (complete, incomplete, could not be read, or does not exist), its
-// table metadata, its source metadata as JSON, and retrieval info. Otherwise
-// as `scalardb_analytics_connector_namespace_list_start`.
+// Frees a cancellation. No request may be running with it.
 //
 // # Safety
 //
-// `session` is a live handle, `tables` is a valid Arrow stream the caller
-// moves to the library, and `out_operation` and `out_stream` are writable.
-struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_metadata_start(const struct ScalardbAnalyticsConnectorSession *session,
-                                                                                          struct ArrowArrayStream *tables,
-                                                                                          uint64_t timeout_milliseconds,
-                                                                                          struct ScalardbAnalyticsConnectorOperation **out_operation,
-                                                                                          struct ArrowArrayStream *out_stream);
+// `cancellation` is null or a live handle, not used after this call.
+void scalardb_analytics_connector_cancellation_free(struct ScalardbAnalyticsConnectorCancellation *cancellation);
+
+// Lists the namespaces whose names exactly match `namespaces`, or all of
+// them when it is null.
+//
+// Metadata requests return their whole result when the call returns. The
+// timeout counts from the call, and `cancellation`, which may be null, stops
+// the call from another thread. A failure returns only the error. A session
+// running a read returns `invalid state`.
+//
+// # Safety
+//
+// `session` is an open handle, `namespaces` is null or a valid filter,
+// `cancellation` is null or a live handle, and `out_list` is writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_namespace_list(const struct ScalardbAnalyticsConnectorSession *session,
+                                                                                    const struct ScalardbAnalyticsConnectorNameFilter *namespaces,
+                                                                                    uint64_t timeout_milliseconds,
+                                                                                    const struct ScalardbAnalyticsConnectorCancellation *cancellation,
+                                                                                    struct ScalardbAnalyticsConnectorNamespaceList **out_list);
+
+// Frees a namespace list.
+//
+// # Safety
+//
+// `list` is null or a live result, not used after this call.
+void scalardb_analytics_connector_namespace_list_free(struct ScalardbAnalyticsConnectorNamespaceList *list);
+
+// Lists the tables of the matching namespaces whose names exactly match
+// `tables`. A null filter matches every name. Otherwise as
+// `scalardb_analytics_connector_namespace_list`.
+//
+// # Safety
+//
+// `session` is an open handle, `namespaces` and `tables` are null or valid
+// filters, `cancellation` is null or a live handle, and `out_list` is
+// writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_list(const struct ScalardbAnalyticsConnectorSession *session,
+                                                                                const struct ScalardbAnalyticsConnectorNameFilter *namespaces,
+                                                                                const struct ScalardbAnalyticsConnectorNameFilter *tables,
+                                                                                uint64_t timeout_milliseconds,
+                                                                                const struct ScalardbAnalyticsConnectorCancellation *cancellation,
+                                                                                struct ScalardbAnalyticsConnectorTableList **out_list);
+
+// Frees a table list.
+//
+// # Safety
+//
+// `list` is null or a live result, not used after this call.
+void scalardb_analytics_connector_table_list_free(struct ScalardbAnalyticsConnectorTableList *list);
+
+// Reads one record per requested table, in request order, including tables
+// that do not exist or could not be read. Otherwise as
+// `scalardb_analytics_connector_namespace_list`.
+//
+// # Safety
+//
+// `session` is an open handle, `tables` points to `table_count` valid name
+// sequences, `cancellation` is null or a live handle, and `out_result` is
+// writable.
+struct ScalardbAnalyticsConnectorError *scalardb_analytics_connector_table_metadata(const struct ScalardbAnalyticsConnectorSession *session,
+                                                                                    const struct ScalardbAnalyticsConnectorNames *tables,
+                                                                                    size_t table_count,
+                                                                                    uint64_t timeout_milliseconds,
+                                                                                    const struct ScalardbAnalyticsConnectorCancellation *cancellation,
+                                                                                    struct ScalardbAnalyticsConnectorTableMetadataResult **out_result);
+
+// Frees a table metadata result.
+//
+// # Safety
+//
+// `result` is null or a live result, not used after this call.
+void scalardb_analytics_connector_table_metadata_result_free(struct ScalardbAnalyticsConnectorTableMetadataResult *result);
 
 // Cancels an operation. It may be called from any thread.
 //

@@ -1,5 +1,4 @@
-//! One operation, a read or a metadata request: lazy start, pulls,
-//! cancellation, and its error.
+//! One read operation: lazy start, pulls, cancellation, and its error.
 
 use std::{
     mem,
@@ -8,8 +7,6 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll, Wake, Waker},
-    thread::{self, Thread},
     time::{Duration, Instant},
 };
 
@@ -18,17 +15,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 
 use super::{
-    MetadataRequest, SessionState, SharedRemoteExecution, invalid_state, lock, panic_error,
+    SessionState, SharedRemoteExecution, invalid_state, lock, next_blocking, panic_error,
     session::SessionLease, watcher::WatchRegistration,
 };
-
-/// What an operation asks of the Data Source.
-pub(super) enum OperationRequest {
-    /// Reads the rows of a planned remote execution.
-    Read(SharedRemoteExecution),
-    /// Reads the catalog for one metadata request.
-    Metadata(MetadataRequest),
-}
 
 /// The batches of a started operation and the means of stopping it.
 pub(super) struct StartedStream {
@@ -65,12 +54,11 @@ enum CancelState {
 
 /// One operation, shared by its handle and its result stream.
 ///
-/// Reads and metadata requests follow the same rules: the request is sent at
-/// the first pull, the session runs no other operation until the stream ends
-/// or is released, and cancellation, the timeout, and panics are handled alike.
+/// The request is sent at the first pull, and the session runs no other
+/// request until the stream ends or is released.
 pub struct Operation {
     session: Arc<SessionState>,
-    request: OperationRequest,
+    remote: SharedRemoteExecution,
     timeout: Option<Duration>,
     closed: AtomicBool,
     /// Held during a pull; the caller never pulls from several threads at once.
@@ -84,12 +72,12 @@ pub struct Operation {
 impl Operation {
     pub(super) fn new(
         lease: SessionLease,
-        request: OperationRequest,
+        remote: SharedRemoteExecution,
         timeout: Option<Duration>,
     ) -> Self {
         Self {
             session: Arc::clone(&lease.session),
-            request,
+            remote,
             timeout,
             closed: AtomicBool::new(false),
             state: Mutex::new(OperationState::Pending(lease)),
@@ -100,10 +88,7 @@ impl Operation {
 
     /// Returns the schema of every batch, known before the Data Source is queried.
     pub fn output_schema(&self) -> SchemaRef {
-        match &self.request {
-            OperationRequest::Read(remote) => remote.output_schema(),
-            OperationRequest::Metadata(request) => request.output_schema(),
-        }
+        self.remote.output_schema()
     }
 
     /// Returns the error that ended the operation's stream, if any.
@@ -177,7 +162,7 @@ impl Operation {
         let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
         let StartedStream { batches, cancel } = self
             .session
-            .observe(|| self.session.start(&self.request, deadline))?;
+            .observe(|| self.session.start(&self.remote, deadline))?;
         let registration = deadline.map(|deadline| {
             self.session
                 .library()
@@ -246,26 +231,5 @@ impl Operation {
         // pull after the end, does not replace the one that ended it.
         let _ = self.error.set(error.clone());
         error
-    }
-}
-
-/// Polls the stream on the caller's thread until it yields.
-///
-/// Data Source access is synchronous; a stream that returns `Pending` wakes
-/// this thread when it can make progress.
-fn next_blocking(stream: &mut RecordBatchStream) -> Option<Result<RecordBatch, ConnectorError>> {
-    struct ThreadWaker(Thread);
-    impl Wake for ThreadWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
-    let mut context = Context::from_waker(&waker);
-    loop {
-        match stream.as_mut().poll_next(&mut context) {
-            Poll::Ready(item) => return item,
-            Poll::Pending => thread::park(),
-        }
     }
 }

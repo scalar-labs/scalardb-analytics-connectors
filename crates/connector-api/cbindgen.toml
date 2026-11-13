@@ -23,10 +23,13 @@ header = """
  *   `data` is usable as a C string; text from a Data Source that contains
  *   U+0000 is complete only through `length`. Absent output text has a NULL
  *   `data`.
+ * - Text inside structures, in both directions, is a
+ *   ScalardbAnalyticsConnectorString.
  * - Binary data, such as Substrait plans, carries a length and no terminator.
- * - The library copies every input during the call, except an Arrow input
- *   stream, which the caller moves to the library.
+ * - The library copies every input during the call.
  * - A timeout of 0 milliseconds means no limit.
+ * - An output structure tree passes to the caller, which frees it once with
+ *   the free function named for its root; that frees the whole tree.
  */"""
 after_includes = """
 

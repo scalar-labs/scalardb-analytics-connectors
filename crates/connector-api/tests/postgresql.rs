@@ -17,7 +17,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow_array::{Array, RecordBatch, cast::AsArray};
 use connector_api::abi::*;
 use serde_json::Value;
 use support::*;
@@ -143,37 +142,6 @@ fn initialize_with_drivers() {
     check(unsafe { scalardb_analytics_connector_library_initialize(&settings) }).unwrap();
 }
 
-/// Pulls every batch of a started request and closes its operation.
-fn collect(started: Result<Read, Error>) -> Vec<RecordBatch> {
-    let Read {
-        operation,
-        mut stream,
-    } = started.unwrap();
-    let batches = std::iter::from_fn(|| stream.next_batch()).collect();
-    stream.release();
-    operation.close();
-    batches
-}
-
-/// The name paths of a name path column across `batches`.
-fn name_paths(batches: &[RecordBatch], column: &str) -> Vec<Vec<String>> {
-    batches
-        .iter()
-        .flat_map(|batch| {
-            let paths = batch.column_by_name(column).unwrap().as_list::<i32>();
-            (0..paths.len())
-                .map(|row| {
-                    let names = paths.value(row);
-                    let names = names.as_string::<i32>();
-                    (0..names.len())
-                        .map(|index| names.value(index).to_owned())
-                        .collect()
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
 #[test]
 fn a_postgresql_data_source_is_read_through_the_c_abi() {
     let information: Value = serde_json::from_str(
@@ -224,19 +192,24 @@ fn a_postgresql_data_source_is_read_through_the_c_abi() {
     .unwrap();
     let session = data_source.session().unwrap();
 
-    let namespaces = collect(session.namespace_list(Some(&[SCHEMA]), 0));
-    assert_eq!(name_paths(&namespaces, "namespace"), [[SCHEMA]]);
+    let namespaces = session.namespace_list(Some(&[SCHEMA]), 0, None).unwrap();
+    // SAFETY: the library returns `entry_count` entries.
+    let entries = unsafe { items(namespaces.entries, namespaces.entry_count) };
+    let names: Vec<_> = entries
+        .iter()
+        .map(|entry| read_names(&entry.namespace))
+        .collect();
+    assert_eq!(names, [[SCHEMA]]);
 
-    let tables = collect(session.table_list(Some(&[SCHEMA]), None));
-    assert_eq!(name_paths(&tables, "table"), [[SCHEMA, "registered"]]);
-    assert_eq!(
-        tables[0]
-            .column_by_name("kind")
-            .unwrap()
-            .as_string::<i32>()
-            .value(0),
-        "table"
-    );
+    let tables = session.table_list(Some(&[SCHEMA]), None).unwrap();
+    // SAFETY: the library returns `entry_count` entries.
+    let entries = unsafe { items(tables.entries, tables.entry_count) };
+    let names: Vec<_> = entries
+        .iter()
+        .map(|entry| read_names(&entry.table))
+        .collect();
+    assert_eq!(names, [[SCHEMA, "registered"]]);
+    assert_eq!(entries[0].kind, ScalardbAnalyticsConnectorTableKind::TABLE);
 
     session.close();
     data_source.close();

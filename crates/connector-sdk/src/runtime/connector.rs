@@ -13,18 +13,14 @@ use std::{
 
 use crate::{
     Access, Catalog, Component, ConnectionOptions, Connector, ConnectorError, DataSource,
-    ErrorKind, ExecutionStream, LibrarySettings, PlannedRead, PlanningError, PortableQuery,
-    PushdownRequest, PushdownResult, RemoteExecution, RequestError, Session, SourceStream,
-    connector::ConnectorState, execute_planned, start_source_read,
+    ErrorKind, ExecutionOutput, ExecutionStream, LibrarySettings, Listed, NameFilter,
+    NamespacePath, PlannedRead, PlanningError, PortableQuery, PushdownRequest, PushdownResult,
+    RemoteExecution, RequestError, Session, SourceStream, SourceTableMetadata, TableEntry,
+    TableRecord, TableReference, connector::ConnectorState, execute_planned, start_source_read,
 };
-use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 
-use super::{
-    MetadataRequest,
-    metadata::{MetadataRows, Retrieval, namespace_row, table_entry_row, table_row},
-    operation::StartedStream,
-};
+use super::metadata::{MapItems, SourceMetadata, TableRead};
 use prost::Message;
 use substrait::proto::Plan;
 
@@ -104,16 +100,32 @@ pub(crate) trait DynSession: Send + Sync {
         deadline: Option<Instant>,
     ) -> Result<ExecutionStream, ConnectorError>;
 
-    /// Starts the catalog read for a metadata request, with its items as rows.
+    /// Starts a namespace list.
+    fn namespace_list(
+        &self,
+        namespaces: &NameFilter,
+        deadline: Option<Instant>,
+    ) -> Result<SourceStream<Listed<NamespacePath>>, ConnectorError>;
+
+    /// Starts a table list.
+    fn table_list(
+        &self,
+        namespaces: &NameFilter,
+        tables: &NameFilter,
+        deadline: Option<Instant>,
+    ) -> Result<SourceStream<Listed<TableEntry>>, ConnectorError>;
+
+    /// Starts a table metadata request.
     ///
     /// The connector's source metadata type is erased here: each read table
-    /// becomes its JSON document and derived table metadata.
-    fn start_metadata(
+    /// becomes its derived table metadata and its JSON document, labelled
+    /// with `connector`.
+    fn table_metadata(
         &self,
-        request: &MetadataRequest,
-        retrieval: Retrieval,
+        tables: &[TableReference],
+        connector: &str,
         deadline: Option<Instant>,
-    ) -> Result<StartedStream, ConnectorError>;
+    ) -> Result<SourceStream<TableRecord<TableRead>>, ConnectorError>;
 
     /// Returns the ADBC driver the session reads through; `None` with direct access.
     fn adbc_driver(&self) -> Option<Component>;
@@ -160,27 +172,36 @@ impl<C: Connector> DynSession for Session<C> {
         execute_planned(&remote.output_schema, deadline, || C::read(self, remote))
     }
 
-    fn start_metadata(
+    fn namespace_list(
         &self,
-        request: &MetadataRequest,
-        retrieval: Retrieval,
+        namespaces: &NameFilter,
         deadline: Option<Instant>,
-    ) -> Result<StartedStream, ConnectorError> {
-        Ok(match request {
-            MetadataRequest::NamespaceList { namespaces } => rows(
-                start_source_read(deadline, || C::Catalog::namespace_list(self, namespaces))?,
-                namespace_row,
-            ),
-            MetadataRequest::TableList { namespaces, tables } => rows(
-                start_source_read(deadline, || {
-                    C::Catalog::table_list(self, namespaces, tables)
-                })?,
-                table_entry_row,
-            ),
-            MetadataRequest::TableMetadata { tables } => rows(
-                start_source_read(deadline, || C::Catalog::table_metadata(self, tables))?,
-                move |record| table_row(record, &retrieval),
-            ),
+    ) -> Result<SourceStream<Listed<NamespacePath>>, ConnectorError> {
+        start_source_read(deadline, || C::Catalog::namespace_list(self, namespaces))
+    }
+
+    fn table_list(
+        &self,
+        namespaces: &NameFilter,
+        tables: &NameFilter,
+        deadline: Option<Instant>,
+    ) -> Result<SourceStream<Listed<TableEntry>>, ConnectorError> {
+        start_source_read(deadline, || {
+            C::Catalog::table_list(self, namespaces, tables)
+        })
+    }
+
+    fn table_metadata(
+        &self,
+        tables: &[TableReference],
+        connector: &str,
+        deadline: Option<Instant>,
+    ) -> Result<SourceStream<TableRecord<TableRead>>, ConnectorError> {
+        let connector = connector.to_owned();
+        start_source_read(deadline, || {
+            let (records, cancel) = C::Catalog::table_metadata(self, tables)?.into_parts();
+            let records = MapItems::new(records, move |record| erase(record, &connector));
+            Ok(ExecutionOutput::new(Box::pin(records), cancel))
         })
     }
 
@@ -189,15 +210,35 @@ impl<C: Connector> DynSession for Session<C> {
     }
 }
 
-/// Turns a started catalog read into a stream of one-row batches.
-fn rows<T: Send + 'static>(
-    items: SourceStream<T>,
-    row: impl Fn(T) -> Result<RecordBatch, ConnectorError> + Send + 'static,
-) -> StartedStream {
-    StartedStream {
-        cancel: items.cancel_handle(),
-        batches: Box::pin(MetadataRows::new(items, row)),
-    }
+/// Erases a record's source metadata type into its derived table metadata
+/// and its JSON document.
+fn erase<T: SourceTableMetadata>(
+    record: TableRecord<T>,
+    connector: &str,
+) -> Result<TableRecord<TableRead>, ConnectorError> {
+    Ok(match record {
+        TableRecord::Read { metadata, read_at } => {
+            let document = serde_json::to_string(&metadata).map_err(|_| {
+                ConnectorError::new(
+                    ErrorKind::Internal,
+                    false,
+                    "the source metadata could not be serialized as JSON",
+                )
+            })?;
+            TableRecord::Read {
+                metadata: TableRead {
+                    table_metadata: metadata.to_table_metadata(),
+                    source_metadata: SourceMetadata {
+                        connector: connector.to_owned(),
+                        document,
+                    },
+                },
+                read_at,
+            }
+        }
+        TableRecord::NotFound { table } => TableRecord::NotFound { table },
+        TableRecord::Unavailable { table, reason } => TableRecord::Unavailable { table, reason },
+    })
 }
 
 /// Converts a planning failure into the error returned by `plan_pushdown`.

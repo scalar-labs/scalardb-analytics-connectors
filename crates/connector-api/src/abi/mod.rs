@@ -11,12 +11,17 @@
 //! - Input text is a NUL-terminated UTF-8 `const char*`.
 //! - Output text is UTF-8 with a length and a NUL terminator after it; absent
 //!   output text has a null `data`.
+//! - Text inside structures, in both directions, is a
+//!   `ScalardbAnalyticsConnectorString`.
 //! - Binary data, such as Substrait plans, carries a length and no terminator.
-//! - The library copies every input during the call, except an Arrow input
-//!   stream, which the caller moves to the library.
+//! - The library copies every input during the call.
 //! - A timeout of 0 milliseconds means no limit.
+//! - An output structure tree passes to the caller, which frees it once with
+//!   the free function named for its root; that frees the whole tree.
 
 mod error;
+mod metadata;
+mod owned;
 mod stream;
 mod text;
 
@@ -25,6 +30,7 @@ pub use error::{
     ScalardbAnalyticsConnectorDiagnosticType, ScalardbAnalyticsConnectorError,
     ScalardbAnalyticsConnectorErrorKind,
 };
+pub use metadata::*;
 pub use text::ScalardbAnalyticsConnectorString;
 
 use std::{
@@ -37,17 +43,19 @@ use std::{
     time::Duration,
 };
 
-use arrow_array::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use connector_sdk::{
     ConnectorError, ErrorKind, LibrarySettings, NameFilter,
     runtime::{
-        DataSourceState, MetadataRequest, Operation, PlanningOutcome, SessionState,
-        SharedRemoteExecution, panic_error, read_table_input,
+        Cancellation, DataSourceState, Operation, PlanningOutcome, SessionState,
+        SharedRemoteExecution, panic_error,
     },
 };
 
 use crate::{library, registry};
 use error::OwnedError;
+use metadata::read_table_reference;
+use owned::{Arena, Owned};
 use text::{TerminatedText, read_optional_text, read_secret_text, read_text};
 
 /// Borrowed bytes.
@@ -126,7 +134,12 @@ pub struct ScalardbAnalyticsConnectorRemoteExecution {
     remote: SharedRemoteExecution,
 }
 
-/// An operation: a read or a metadata request. It may be cancelled from any thread.
+/// A caller's means of cancelling metadata requests from any thread.
+pub struct ScalardbAnalyticsConnectorCancellation {
+    cancellation: Cancellation,
+}
+
+/// A read operation. It may be cancelled from any thread.
 pub struct ScalardbAnalyticsConnectorOperation {
     operation: Arc<Operation>,
     /// The C view of the operation's error, built on first retrieval.
@@ -529,147 +542,260 @@ pub unsafe extern "C" fn scalardb_analytics_connector_read_start(
     })
 }
 
-/// Starts a namespace list and returns its operation and stream.
-///
-/// The stream's schema is fixed and returned before the Data Source is
-/// queried; each row is one namespace or one range that could not be read,
-/// as the contract's Connector API section lays out. `namespaces` is null to
-/// list every namespace. Busy sessions, the timeout, and the stream follow
-/// `scalardb_analytics_connector_read_start`.
+/// Creates a cancellation for metadata requests, freed with
+/// `scalardb_analytics_connector_cancellation_free`.
 ///
 /// # Safety
 ///
-/// `session` is a live handle, `namespaces` is null or a valid filter, and
-/// `out_operation` and `out_stream` are writable.
+/// `out_cancellation` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list_start(
-    session: *const ScalardbAnalyticsConnectorSession,
-    namespaces: *const ScalardbAnalyticsConnectorNameFilter,
-    timeout_milliseconds: u64,
-    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
-    out_stream: *mut FFI_ArrowArrayStream,
+pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_create(
+    out_cancellation: *mut *mut ScalardbAnalyticsConnectorCancellation,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
-        // SAFETY: the caller passes a valid filter or null.
-        let namespaces = unsafe { read_name_filter(namespaces, "the namespace filter") }?;
-        // SAFETY: forwarded from the caller.
-        unsafe {
-            start_metadata(
-                session,
-                MetadataRequest::NamespaceList { namespaces },
-                timeout_milliseconds,
-                out_operation,
-                out_stream,
-            )
-        }
+        let handle = Box::new(ScalardbAnalyticsConnectorCancellation {
+            cancellation: Cancellation::new(),
+        });
+        // SAFETY: the caller passes a writable output pointer.
+        unsafe { write(out_cancellation, Box::into_raw(handle), "out_cancellation") }
     })
 }
 
-/// Starts a table list across the matching namespaces and returns its
-/// operation and stream.
-///
-/// Each row is one table or one range that could not be read. A null filter
-/// matches every name. Otherwise as `scalardb_analytics_connector_namespace_list_start`.
+/// Cancels every metadata request running with the cancellation, from any
+/// thread, and every later request given it: they return `cancellation`.
 ///
 /// # Safety
 ///
-/// `session` is a live handle, `namespaces` and `tables` are null or valid
-/// filters, and `out_operation` and `out_stream` are writable.
+/// `cancellation` is a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_list_start(
+pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_cancel(
+    cancellation: *const ScalardbAnalyticsConnectorCancellation,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        // SAFETY: the caller passes a live handle.
+        unsafe { reference(cancellation, "cancellation") }?
+            .cancellation
+            .cancel()
+    })
+}
+
+/// Frees a cancellation. No request may be running with it.
+///
+/// # Safety
+///
+/// `cancellation` is null or a live handle, not used after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_cancellation_free(
+    cancellation: *mut ScalardbAnalyticsConnectorCancellation,
+) {
+    // SAFETY: the caller passes a live handle or null.
+    unsafe { close(cancellation, |_| ()) }
+}
+
+/// Lists the namespaces whose names exactly match `namespaces`, or all of
+/// them when it is null.
+///
+/// Metadata requests return their whole result when the call returns. The
+/// timeout counts from the call, and `cancellation`, which may be null, stops
+/// the call from another thread. A failure returns only the error. A session
+/// running a read returns `invalid state`.
+///
+/// # Safety
+///
+/// `session` is an open handle, `namespaces` is null or a valid filter,
+/// `cancellation` is null or a live handle, and `out_list` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list(
+    session: *const ScalardbAnalyticsConnectorSession,
+    namespaces: *const ScalardbAnalyticsConnectorNameFilter,
+    timeout_milliseconds: u64,
+    cancellation: *const ScalardbAnalyticsConnectorCancellation,
+    out_list: *mut *mut ScalardbAnalyticsConnectorNamespaceList,
+) -> *mut ScalardbAnalyticsConnectorError {
+    contain(|| {
+        // The output is checked first, so a null pointer is rejected before
+        // the source is queried or a result is built.
+        require_output(out_list, "out_list")?;
+        // SAFETY: the caller passes valid handles, a filter, or null.
+        let (session, namespaces, cancellation) = unsafe {
+            (
+                &reference(session, "session")?.state,
+                read_name_filter(namespaces, "the namespace filter")?,
+                optional_cancellation(cancellation),
+            )
+        };
+        let entries =
+            session.namespace_list(&namespaces, timeout(timeout_milliseconds), cancellation)?;
+        let mut arena = Arena::default();
+        let view = arena.namespace_list(&entries);
+        // SAFETY: the caller passes a writable output pointer.
+        unsafe { write_owned(out_list, view, arena, "out_list") }
+    })
+}
+
+/// Frees a namespace list.
+///
+/// # Safety
+///
+/// `list` is null or a live result, not used after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_namespace_list_free(
+    list: *mut ScalardbAnalyticsConnectorNamespaceList,
+) {
+    // SAFETY: forwarded from the caller.
+    unsafe { Owned::free(list) }
+}
+
+/// Lists the tables of the matching namespaces whose names exactly match
+/// `tables`. A null filter matches every name. Otherwise as
+/// `scalardb_analytics_connector_namespace_list`.
+///
+/// # Safety
+///
+/// `session` is an open handle, `namespaces` and `tables` are null or valid
+/// filters, `cancellation` is null or a live handle, and `out_list` is
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_list(
     session: *const ScalardbAnalyticsConnectorSession,
     namespaces: *const ScalardbAnalyticsConnectorNameFilter,
     tables: *const ScalardbAnalyticsConnectorNameFilter,
     timeout_milliseconds: u64,
-    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
-    out_stream: *mut FFI_ArrowArrayStream,
+    cancellation: *const ScalardbAnalyticsConnectorCancellation,
+    out_list: *mut *mut ScalardbAnalyticsConnectorTableList,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
-        // SAFETY: the caller passes valid filters or null.
-        let (namespaces, tables) = unsafe {
+        // The output is checked first, so a null pointer is rejected before
+        // the source is queried or a result is built.
+        require_output(out_list, "out_list")?;
+        // SAFETY: the caller passes valid handles, filters, or null.
+        let (session, namespaces, tables, cancellation) = unsafe {
             (
+                &reference(session, "session")?.state,
                 read_name_filter(namespaces, "the namespace filter")?,
                 read_name_filter(tables, "the table filter")?,
+                optional_cancellation(cancellation),
             )
         };
-        // SAFETY: forwarded from the caller.
-        unsafe {
-            start_metadata(
-                session,
-                MetadataRequest::TableList { namespaces, tables },
-                timeout_milliseconds,
-                out_operation,
-                out_stream,
-            )
-        }
+        let entries = session.table_list(
+            &namespaces,
+            &tables,
+            timeout(timeout_milliseconds),
+            cancellation,
+        )?;
+        let mut arena = Arena::default();
+        let view = arena.table_list(&entries);
+        // SAFETY: the caller passes a writable output pointer.
+        unsafe { write_owned(out_list, view, arena, "out_list") }
     })
 }
 
-/// Starts a table metadata request and returns its operation and stream.
-///
-/// `tables` is an Arrow stream of the requested tables: one column `table` of
-/// type `list<utf8>`, each row a name path. The library reads it during the
-/// call and releases it, whether or not the call succeeds; malformed input
-/// returns `invalid request`. Each output row is one requested table: its
-/// state (complete, incomplete, could not be read, or does not exist), its
-/// table metadata, its source metadata as JSON, and retrieval info. Otherwise
-/// as `scalardb_analytics_connector_namespace_list_start`.
+/// Frees a table list.
 ///
 /// # Safety
 ///
-/// `session` is a live handle, `tables` is a valid Arrow stream the caller
-/// moves to the library, and `out_operation` and `out_stream` are writable.
+/// `list` is null or a live result, not used after this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_start(
+pub unsafe extern "C" fn scalardb_analytics_connector_table_list_free(
+    list: *mut ScalardbAnalyticsConnectorTableList,
+) {
+    // SAFETY: forwarded from the caller.
+    unsafe { Owned::free(list) }
+}
+
+/// Reads one record per requested table, in request order, including tables
+/// that do not exist or could not be read. Otherwise as
+/// `scalardb_analytics_connector_namespace_list`.
+///
+/// # Safety
+///
+/// `session` is an open handle, `tables` points to `table_count` valid name
+/// sequences, `cancellation` is null or a live handle, and `out_result` is
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata(
     session: *const ScalardbAnalyticsConnectorSession,
-    tables: *mut FFI_ArrowArrayStream,
+    tables: *const ScalardbAnalyticsConnectorNames,
+    table_count: usize,
     timeout_milliseconds: u64,
-    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
-    out_stream: *mut FFI_ArrowArrayStream,
+    cancellation: *const ScalardbAnalyticsConnectorCancellation,
+    out_result: *mut *mut ScalardbAnalyticsConnectorTableMetadataResult,
 ) -> *mut ScalardbAnalyticsConnectorError {
     contain(|| {
-        if tables.is_null() {
-            return Err(invalid_request("tables is null"));
-        }
-        // SAFETY: the caller moves a valid stream; it is taken before any
-        // other check so that the library always releases it.
-        let tables = unsafe { ArrowArrayStreamReader::from_raw(tables) }
-            .map_err(|error| invalid_request(&format!("the tables cannot be read: {error}")))?;
-        let tables = read_table_input(tables)?;
-        // SAFETY: forwarded from the caller.
-        unsafe {
-            start_metadata(
-                session,
-                MetadataRequest::TableMetadata { tables },
-                timeout_milliseconds,
-                out_operation,
-                out_stream,
+        // The output is checked first, so a null pointer is rejected before
+        // the source is queried or a result is built.
+        require_output(out_result, "out_result")?;
+        // SAFETY: the caller passes valid handles, name sequences, or null.
+        let (session, tables, cancellation) = unsafe {
+            (
+                &reference(session, "session")?.state,
+                read_slice(tables, table_count, "the tables")?
+                    .iter()
+                    .map(|table| read_table_reference(table, "a requested table"))
+                    .collect::<Result<Vec<_>, _>>()?,
+                optional_cancellation(cancellation),
             )
-        }
+        };
+        let result =
+            session.table_metadata(&tables, timeout(timeout_milliseconds), cancellation)?;
+        let mut arena = Arena::default();
+        let view = arena.table_metadata_result(&result);
+        // SAFETY: the caller passes a writable output pointer.
+        unsafe { write_owned(out_result, view, arena, "out_result") }
     })
 }
 
-/// Starts a metadata request on a session and writes its operation and stream.
+/// Frees a table metadata result.
 ///
 /// # Safety
 ///
-/// `session` is null or a live handle; non-null output pointers are writable.
-unsafe fn start_metadata(
-    session: *const ScalardbAnalyticsConnectorSession,
-    request: MetadataRequest,
-    timeout_milliseconds: u64,
-    out_operation: *mut *mut ScalardbAnalyticsConnectorOperation,
-    out_stream: *mut FFI_ArrowArrayStream,
-) -> Result<(), ConnectorError> {
+/// `result` is null or a live result, not used after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scalardb_analytics_connector_table_metadata_result_free(
+    result: *mut ScalardbAnalyticsConnectorTableMetadataResult,
+) {
     // SAFETY: forwarded from the caller.
-    let session = &unsafe { reference(session, "session") }?.state;
-    if out_operation.is_null() || out_stream.is_null() {
-        return Err(invalid_request("an output pointer is null"));
+    unsafe { Owned::free(result) }
+}
+
+/// Writes an output tree to a required output pointer, freeing it when the
+/// pointer is null.
+///
+/// # Safety
+///
+/// A non-null `pointer` is writable.
+unsafe fn write_owned<V>(
+    pointer: *mut *mut V,
+    view: V,
+    arena: Arena,
+    name: &str,
+) -> Result<(), ConnectorError> {
+    if pointer.is_null() {
+        return Err(invalid_request(&format!("{name} is null")));
     }
-    let operation = session.start_metadata(request, timeout(timeout_milliseconds))?;
-    // SAFETY: both output pointers are non-null and writable.
-    unsafe { write_operation(operation, out_operation, out_stream) };
+    // SAFETY: forwarded from the caller.
+    unsafe { pointer.write(Owned::into_raw(view, arena)) };
     Ok(())
+}
+
+/// Rejects a null output pointer.
+fn require_output<T>(pointer: *mut T, name: &str) -> Result<(), ConnectorError> {
+    if pointer.is_null() {
+        return Err(invalid_request(&format!("{name} is null")));
+    }
+    Ok(())
+}
+
+/// Borrows an optional cancellation.
+///
+/// # Safety
+///
+/// A non-null `cancellation` is a live handle.
+unsafe fn optional_cancellation<'a>(
+    cancellation: *const ScalardbAnalyticsConnectorCancellation,
+) -> Option<&'a Cancellation> {
+    // SAFETY: forwarded from the caller.
+    unsafe { cancellation.as_ref() }.map(|handle| &handle.cancellation)
 }
 
 /// Writes a started operation's handle and its exported result stream.
