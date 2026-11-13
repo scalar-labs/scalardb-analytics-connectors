@@ -57,9 +57,9 @@ PostgreSQL server:
 ```sh
 nix develop --command cargo fmt --all -- --check
 nix develop --command cargo build --workspace --all-targets
-nix develop --command cargo test --workspace
-nix develop --command cargo test -p connector-api --features postgresql
+nix develop --command cargo test --workspace --all-features
 nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
+nix develop --command cargo deny check bans licenses
 nix develop .#msrv --command cargo build --workspace --all-targets
 nix develop .#msrv --command cargo test --workspace
 ```
@@ -70,4 +70,6 @@ Repository-authored source code and documentation are licensed under Apache
 License 2.0. Cargo packages declare `Apache-2.0` through workspace metadata.
 Third-party and native dependencies must retain their own license notices and
 be reviewed before distribution; native libraries must not be added to
-`connector-sdk` or Connector crates.
+`connector-sdk` or Connector crates. `deny.toml` states this policy for the
+dependencies that ship in the library, and CI enforces it
+([Dependency policy check](docs/connector-implementation.md#dependency-policy-check)).

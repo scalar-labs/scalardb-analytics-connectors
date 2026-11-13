@@ -291,7 +291,6 @@ name = "connector-postgresql"
 version = "0.1.0"
 dependencies = [
  "adbc_core",
- "adbc_driver_manager",
  "analytics-types",
  "arrow-array",
  "connector-adbc",

@@ -1,0 +1,45 @@
+# Dependency policy for the code that ships in the connector library.
+# Run it with `cargo deny check bans licenses`.
+
+[graph]
+# Inspect the platforms the library is built for, including Linux when the
+# check runs on macOS, where some crates choose different dependencies.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+# Every Connector feature of connector-api enters the inspected graph.
+all-features = true
+# Test-only dependencies do not ship in the library.
+exclude-dev = true
+
+[licenses]
+# Licenses that permit distributing the library inside the product.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+    # Native dependencies stay inside ADBC drivers: these crates compile or
+    # link native code, and openssl-sys links the system OpenSSL.
+    { crate = "bindgen", reason = "generates bindings to a native library" },
+    { crate = "cc", reason = "compiles native code" },
+    { crate = "cmake", reason = "builds native code" },
+    { crate = "openssl-sys", reason = "links OpenSSL; use rustls" },
+    { crate = "pkg-config", reason = "locates a system library to link" },
+    { crate = "vcpkg", reason = "locates a native library to link" },
+    # Connectors load ADBC drivers through connector-adbc.
+    { crate = "adbc_driver_manager", wrappers = ["connector-adbc"], reason = "use connector-adbc for ADBC access" },
+]

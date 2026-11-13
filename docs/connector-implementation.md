@@ -49,6 +49,9 @@ A connector for a new Connector is built in this order:
    this connector alone, the calling-convention conformance tests and the
    metadata and data read conformance tests ([Tests](#tests)).
 6. Register it as a `connector-api` feature and build it into the artifact.
+   Run the [dependency policy check](#dependency-policy-check) to confirm that
+   the connector brings in no native code, no ADBC driver loading of its own,
+   and no license that prevents distribution.
 
 These steps change neither the connector SDK, the contract, nor the callers of
 the connector API; `connector-api` only gains a feature, without code changes
@@ -476,15 +479,51 @@ as follows:
 
 - The three connector SDK crates, `connector-api`, and connector crates must
   build without system libraries. Reader crates and clients used by
-  direct-access connectors are included, as dependencies of connector crates. CI
-  inspects the dependency tree and fails when a crate depending on a native
-  library enters them.
+  direct-access connectors are included, as dependencies of connector crates.
+  CI enforces this with the [dependency policy check](#dependency-policy-check).
 - TLS in our own ADBC drivers and direct-access implementations uses rustls and
   does not depend on OpenSSL.
 - The licenses and origins of ADBC drivers and their native dependencies are
   managed in distribution metadata. Where drivers are placed and how they are
   bundled is owned by the product application's distribution, not by this
   repository.
+
+### Dependency policy check
+
+`deny.toml` at the repository root states the policy for the dependencies that
+ship in the library, and `cargo deny check bans licenses` enforces it in CI.
+Run it before submitting a connector:
+
+```sh
+nix develop --command cargo deny check bans licenses
+```
+
+The check inspects every `connector-api` feature for the Linux and macOS
+targets, so it also reports dependencies that appear only on Linux. Development
+and test dependencies are not inspected. It fails in the following cases:
+
+| Failure | Cause | Usual resolution |
+| --- | --- | --- |
+| A crate that compiles or links native code is banned (`cc`, `cmake`, `pkg-config`, `bindgen`, `vcpkg`, `openssl-sys`) | A source client or reader crate builds a native library. A common path is a client's default `native-tls` feature, which links OpenSSL on Linux but uses the system framework on macOS. | Disable the client's default features and select its rustls feature, or choose a pure Rust client. With ADBC access, the native code belongs in the ADBC driver. |
+| `adbc_driver_manager` is banned for the connector crate | The connector loads ADBC drivers itself instead of through `connector-adbc`. | Use the access component that `connector-adbc` supplies ([ADBC driver handling](connector-internals.md#adbc-driver-handling)). |
+| A license is rejected | A dependency's license is not in the allowed list. | Choose another crate, or add the license to `allow` after confirming that it permits distributing the library. |
+
+A connector that intentionally accepts a dependency outside the policy, such as
+a private in-house connector that uses a GPL library or a native client,
+records an explicit exception in `deny.toml` so that it is visible in review.
+The exception covers only the named crate, and the policy keeps applying to
+every other crate:
+
+```toml
+[licenses]
+exceptions = [{ crate = "<dependency>", allow = ["GPL-3.0-only"] }]
+
+[bans]
+deny = [
+    # `wrappers` lists the crates allowed to depend on the banned crate directly.
+    { crate = "cc", wrappers = ["<dependency>"], reason = "..." },
+]
+```
 
 ## Initial PostgreSQL and MySQL conventions
 

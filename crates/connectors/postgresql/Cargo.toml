@@ -9,7 +9,6 @@ description = "PostgreSQL connector for ScalarDB Analytics"
 
 [dependencies]
 adbc_core.workspace = true
-adbc_driver_manager.workspace = true
 analytics-types.workspace = true
 arrow-array.workspace = true
 connector-adbc.workspace = true

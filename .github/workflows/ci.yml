@@ -19,11 +19,11 @@ jobs:
       - name: Build workspace
         run: nix develop --command cargo build --workspace --all-targets
       - name: Test workspace
-        run: nix develop --command cargo test --workspace
-      - name: Test the library with the PostgreSQL connector
-        run: nix develop --command cargo test -p connector-api --features postgresql
+        run: nix develop --command cargo test --workspace --all-features
       - name: Lint workspace
         run: nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Check dependency policy
+        run: nix develop --command cargo deny check bans licenses
       - name: Verify MSRV build
         run: nix develop .#msrv --command cargo build --workspace --all-targets
       - name: Verify MSRV tests
