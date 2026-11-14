@@ -9,19 +9,35 @@
 //! | `numeric(p,s)` | Utf8 decimal text | Text to `Decimal128(p, s)`; `NaN` and infinities are `data` errors |
 //! | `uuid` | FixedSizeBinary(16) | Bytes to canonical text |
 //! | `time with time zone` | Binary wire value | Wire value to PostgreSQL's text form |
+//! | `date`, `timestamp`, `timestamp with time zone` | Their Analytics storage | Checked against PostgreSQL's range |
 //!
 //! `json`, `jsonb`, and enums arrive as Utf8, which is their storage.
+//!
+//! The driver moves dates and timestamps from PostgreSQL's 2000 epoch to the
+//! Unix epoch with wrapping arithmetic, so `infinity`, `-infinity`, and
+//! timestamps beyond the range of Arrow microsecond timestamps arrive as
+//! wrong values. Each of them wraps to below PostgreSQL's earliest value,
+//! 4714-11-24 BC, which no value the server stores can be, so a value below it
+//! is a `data` error.
 
 use std::sync::Arc;
 
 use analytics_types::AnalyticsType;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, FixedSizeBinaryArray, StringArray, builder::StringBuilder,
+    Array, ArrayRef, BinaryArray, Date32Array, FixedSizeBinaryArray, StringArray,
+    TimestampMicrosecondArray, builder::StringBuilder,
 };
 use connector_sdk::{
     ConnectorError, ErrorKind,
-    convert::{decimal128_from_text, downcast, uuid_text_from_bytes},
+    convert::{decimal128_from_text, downcast, not_carried, uuid_text_from_bytes},
 };
+
+/// PostgreSQL's earliest date, 4714-11-24 BC, in days since the Unix epoch.
+const EARLIEST_DATE: i32 = -2_440_588;
+
+/// PostgreSQL's earliest timestamp, 4714-11-24 BC 00:00, in microseconds
+/// since the Unix epoch.
+const EARLIEST_TIMESTAMP: i64 = EARLIEST_DATE as i64 * 86_400_000_000;
 
 /// Converts one column of the driver's output to `target`'s Analytics storage.
 pub(crate) fn convert_column(
@@ -38,6 +54,24 @@ pub(crate) fn convert_column(
             column,
         )?)?),
         AnalyticsType::TimeWithTimeZone => Arc::new(timetz_text(downcast::<BinaryArray>(column)?)?),
+        AnalyticsType::Date => {
+            let dates = downcast::<Date32Array>(column)?;
+            if dates.iter().flatten().any(|days| days < EARLIEST_DATE) {
+                return Err(not_carried("Date"));
+            }
+            Arc::clone(column)
+        }
+        AnalyticsType::Timestamp | AnalyticsType::TimestampTz => {
+            let timestamps = downcast::<TimestampMicrosecondArray>(column)?;
+            if timestamps
+                .iter()
+                .flatten()
+                .any(|micros| micros < EARLIEST_TIMESTAMP)
+            {
+                return Err(not_carried("a microsecond timestamp"));
+            }
+            Arc::clone(column)
+        }
         _ => Arc::clone(column),
     })
 }
@@ -108,6 +142,36 @@ fn malformed_timetz() -> ConnectorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_before_postgresql_range_are_data_errors() {
+        let convert = |days: Vec<Option<i32>>| {
+            let column: ArrayRef = Arc::new(Date32Array::from(days));
+            convert_column(&column, &AnalyticsType::Date).map(|_| ())
+        };
+        assert!(convert(vec![Some(EARLIEST_DATE), None, Some(i32::MAX)]).is_ok());
+        // `infinity` as the driver returns it.
+        let error = convert(vec![Some(1), Some(-2_147_472_692)]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Data);
+        assert!(convert(vec![Some(EARLIEST_DATE - 1)]).is_err());
+    }
+
+    #[test]
+    fn timestamps_before_postgresql_range_are_data_errors() {
+        for target in [AnalyticsType::Timestamp, AnalyticsType::TimestampTz] {
+            let convert = |micros: Vec<Option<i64>>| {
+                let column: ArrayRef = Arc::new(TimestampMicrosecondArray::from(micros));
+                convert_column(&column, &target).map(|_| ())
+            };
+            assert!(convert(vec![Some(EARLIEST_TIMESTAMP), None, Some(i64::MAX)]).is_ok());
+            // `infinity` and 294276-12-31 23:59:59.999999 as the driver returns them.
+            for wrapped in [-9_222_425_352_054_775_809, -9_222_426_057_709_551_617] {
+                let error = convert(vec![Some(wrapped)]).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::Data);
+            }
+            assert!(convert(vec![Some(EARLIEST_TIMESTAMP - 1)]).is_err());
+        }
+    }
 
     #[test]
     fn timetz_matches_postgresql_output() {

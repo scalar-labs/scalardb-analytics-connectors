@@ -116,7 +116,9 @@ INSERT INTO value_types VALUES
 CREATE TABLE special (id integer NOT NULL, amount numeric(10, 2), clock time);
 INSERT INTO special VALUES (1, 'NaN', '12:00'), (2, 1.50, '24:00:00'), (3, -0.01, '00:00');
 CREATE TABLE infinite (id integer NOT NULL, day date, stamp timestamp, instant timestamptz);
-INSERT INTO infinite VALUES (1, 'infinity', 'infinity', 'infinity');
+INSERT INTO infinite VALUES
+  (1, 'infinity', 'infinity', 'infinity'),
+  (2, '-infinity', '-infinity', '-infinity');
 CREATE TABLE beyond (id integer NOT NULL, stamp timestamp);
 INSERT INTO beyond VALUES (1, '294276-12-31 23:59:59.999999');
 CREATE TABLE long_span (id integer NOT NULL, span interval);

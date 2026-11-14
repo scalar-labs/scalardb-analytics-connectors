@@ -31,7 +31,12 @@ following values cannot be carried exactly and are `data` errors when a read
 returns them:
 
 - `numeric` `NaN` and infinities;
-- `time` `24:00:00`.
+- `time` `24:00:00`;
+- `date`, `timestamp`, and `timestamp with time zone` `infinity` and
+  `-infinity`, and timestamps beyond the range of Arrow microsecond
+  timestamps, such as `294276-12-31 23:59:59.999999`. The driver returns them
+  as wrong values below PostgreSQL's earliest date, so the connector rejects
+  any value before 4714-11-24 BC.
 
 ## Pushdown
 
@@ -47,16 +52,10 @@ ordering, and interval comparisons stay in the local plan.
 
 These come from the driver and are not yet handled by the connector:
 
-- `date`, `timestamp`, and `timestamp with time zone` values of `infinity` and
-  `-infinity` are returned as wrong dates or timestamps instead of a `data`
-  error.
 - An interval whose time part does not fit in nanoseconds fails the read as a
   `data-source` error rather than a `data` error.
 - A failed authentication is reported without a SQLSTATE, so it is classified
   as `connection` rather than `authentication`.
-- A `timestamp` value beyond the range of Arrow microsecond timestamps, such
-  as `294276-12-31 23:59:59.999999`, is returned as a wrong timestamp instead
-  of a `data` error.
 
 These come from the connector and its ADBC access:
 

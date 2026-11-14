@@ -19,13 +19,6 @@ use substrait::proto::{Expression, Plan, expression::literal::LiteralType};
 
 use super::{OUTSIDER, READER, SCHEMA, options, server};
 
-/// The README's known limitation for infinite dates and timestamps.
-const INFINITY: &str = "the ADBC driver returns infinite dates and timestamps as wrong values";
-
-/// The README's known limitation for timestamps beyond the Arrow range.
-const BEYOND_RANGE: &str =
-    "the ADBC driver wraps timestamps beyond the Arrow range into wrong values";
-
 pub fn read_cases() -> Vec<ReadCase> {
     let mut cases = vec![
         ReadCase {
@@ -61,19 +54,7 @@ pub fn read_cases() -> Vec<ReadCase> {
                 vec![("id", i32(false)), ("stamp", timestamp(true))],
             )
             .build(),
-            expected: ExpectedPlanning::Planned {
-                local_work: false,
-                result: Expected::KnownDeviation {
-                    contract: error(ErrorKind::Data),
-                    observed: rows(vec![
-                        Arc::new(Int32Array::from(vec![1])),
-                        Arc::new(TimestampMicrosecondArray::from(vec![
-                            -9_222_426_057_709_551_617,
-                        ])),
-                    ]),
-                    reason: BEYOND_RANGE,
-                },
-            },
+            expected: remote(error(ErrorKind::Data)),
         },
         ReadCase {
             name: "an interval whose time does not fit in nanoseconds cannot be carried",
@@ -92,44 +73,27 @@ pub fn read_cases() -> Vec<ReadCase> {
             },
         },
     ];
-    let infinite = |name, column, ty, observed: ArrayRef| ReadCase {
-        name,
-        offered: ReadPlan::new([SCHEMA, "infinite"], vec![("id", i32(false)), (column, ty)])
-            .build(),
-        expected: ExpectedPlanning::Planned {
-            local_work: false,
-            result: Expected::KnownDeviation {
-                contract: error(ErrorKind::Data),
-                observed: rows(vec![Arc::new(Int32Array::from(vec![1])), observed]),
-                reason: INFINITY,
-            },
-        },
-    };
-    cases.extend([
-        infinite(
-            "an infinite date cannot be carried",
-            "day",
-            date(true),
-            Arc::new(Date32Array::from(vec![-2_147_472_692])),
-        ),
-        infinite(
+    // `infinity` and `-infinity` of each type.
+    for (name, column, ty) in [
+        ("an infinite date cannot be carried", "day", date(true)),
+        (
             "an infinite timestamp cannot be carried",
             "stamp",
             timestamp(true),
-            Arc::new(TimestampMicrosecondArray::from(vec![
-                -9_222_425_352_054_775_809,
-            ])),
         ),
-        infinite(
+        (
             "an infinite timestamptz cannot be carried",
             "instant",
             timestamp_tz(true),
-            Arc::new(
-                TimestampMicrosecondArray::from(vec![-9_222_425_352_054_775_809])
-                    .with_timezone("UTC"),
-            ),
         ),
-    ]);
+    ] {
+        cases.push(ReadCase {
+            name,
+            offered: ReadPlan::new([SCHEMA, "infinite"], vec![("id", i32(false)), (column, ty)])
+                .build(),
+            expected: remote(error(ErrorKind::Data)),
+        });
+    }
     cases.extend(filter_cases());
     cases
 }
