@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "conformance")]
+pub mod conformance;
 mod connector;
 pub mod convert;
 mod error;

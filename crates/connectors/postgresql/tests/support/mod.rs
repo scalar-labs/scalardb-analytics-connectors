@@ -8,12 +8,10 @@
 
 #![allow(dead_code)]
 
-pub mod plan;
-
 use std::{
     io::Write,
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::OnceLock,
     task::{Context, Poll, Waker},
     thread,
@@ -148,6 +146,39 @@ impl Server {
         } else {
             Err(String::from_utf8_lossy(&output.stderr).into_owned())
         }
+    }
+
+    /// Starts `sql` as the superuser in a `psql` process that keeps running,
+    /// identified at the server by `application_name`.
+    pub fn spawn_psql(&self, application_name: &str, sql: &str) -> Child {
+        let mut child = Command::new("docker")
+            .args([
+                "exec",
+                "-i",
+                "-e",
+                &format!("PGAPPNAME={application_name}"),
+                &self.container,
+                "psql",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                "postgres",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-qAt",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("psql starts");
+        child
+            .stdin
+            .take()
+            .expect("stdin is piped")
+            .write_all(sql.as_bytes())
+            .expect("psql reads the SQL");
+        child
     }
 
     /// Recreates `schema` empty and runs `sql` in it.

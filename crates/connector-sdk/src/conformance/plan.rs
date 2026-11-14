@@ -1,6 +1,24 @@
-//! Offered Substrait plans in the connector profile, as an adapter would build them.
+//! Offered Substrait plans in the connector profile, as an Adapter would build
+//! them, for fixtures to describe their read requests.
+//!
+//! A plan reads one named table, optionally filters it, and optionally
+//! projects plain columns:
+//!
+//! ```ignore
+//! use connector_sdk::conformance::plan::*;
+//! use substrait::proto::expression::literal::LiteralType;
+//!
+//! let offered = ReadPlan::new(["schema", "table"], vec![("id", i32(false)), ("label", text(true))])
+//!     .filter(call("equal", vec![column(1), literal(LiteralType::String("a".to_owned()))]))
+//!     .project(vec![(0, "id")])
+//!     .build();
+//! ```
+//!
+//! Every plan declares the comparison and Boolean functions [`call`] accepts
+//! and the logical type of registered extension-encoded types, so any plan
+//! built here passes common validation when its columns match the table.
 
-use connector_sdk::{BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, LOGICAL_TYPE_URI};
+use crate::{BOOLEAN_FUNCTIONS_URI, COMPARISON_FUNCTIONS_URI, LOGICAL_TYPE_URI};
 use substrait::proto::{
     Expression, FilterRel, FunctionArgument, NamedStruct, Plan, PlanRel, ProjectRel, ReadRel, Rel,
     RelCommon, RelRoot, Type, expression,
@@ -28,35 +46,44 @@ const FUNCTIONS: [(u32, &str, &str); 11] = [
     (BOOLEAN_URI, "not", "not:bool"),
 ];
 
-/// A read of `namespace.table` with an optional filter and projection.
+/// A read of one named table with an optional filter and projection.
 pub struct ReadPlan {
-    pub table: [&'static str; 2],
+    /// The table's names, namespace first.
+    pub table: Vec<String>,
+    /// The base schema: every column the read binds, in table order, with
+    /// its Substrait type. The connector checks them against the table.
     pub columns: Vec<(&'static str, Type)>,
+    /// A Boolean condition over base-schema positions ([`column()`]).
     pub filter: Option<Expression>,
-    /// Output base-schema positions and their names.
+    /// Output base-schema positions and their names; without it the read
+    /// returns every base-schema column.
     pub project: Option<Vec<(i32, &'static str)>>,
 }
 
 impl ReadPlan {
-    pub fn new(table: [&'static str; 2], columns: Vec<(&'static str, Type)>) -> Self {
+    /// A read of `table` that returns every column of `columns`.
+    pub fn new<const N: usize>(table: [&str; N], columns: Vec<(&'static str, Type)>) -> Self {
         Self {
-            table,
+            table: table.map(str::to_owned).to_vec(),
             columns,
             filter: None,
             project: None,
         }
     }
 
+    /// Keeps only the rows for which `condition` is true.
     pub fn filter(mut self, condition: Expression) -> Self {
         self.filter = Some(condition);
         self
     }
 
+    /// Returns only the given base-schema positions, under the given names.
     pub fn project(mut self, columns: Vec<(i32, &'static str)>) -> Self {
         self.project = Some(columns);
         self
     }
 
+    /// The offered plan: the read, then the filter, then the projection.
     pub fn build(self) -> Plan {
         let names: Vec<String> = self
             .columns
@@ -74,7 +101,7 @@ impl ReadPlan {
                     }),
                 }),
                 read_type: Some(read_rel::ReadType::NamedTable(read_rel::NamedTable {
-                    names: self.table.map(str::to_owned).to_vec(),
+                    names: self.table,
                     advanced_extension: None,
                 })),
                 ..Default::default()
@@ -171,7 +198,10 @@ fn type_declaration(uri: u32, anchor: u32, name: &str) -> SimpleExtensionDeclara
     }
 }
 
-/// Calls a declared function such as `equal` or `and` with a Boolean result.
+/// Calls a declared function with a Boolean result: `equal`, `not_equal`,
+/// `lt`, `lte`, `gt`, `gte`, `is_null`, `is_not_null`, `and`, `or`, or `not`.
+///
+/// It panics for any other name.
 #[allow(deprecated)]
 pub fn call(function: &str, arguments: Vec<Expression>) -> Expression {
     let anchor = FUNCTIONS
@@ -197,6 +227,7 @@ pub fn call(function: &str, arguments: Vec<Expression>) -> Expression {
     }
 }
 
+/// A reference to the base-schema column at `position`, counted from 0.
 pub fn column(position: i32) -> Expression {
     Expression {
         rex_type: Some(expression::RexType::Selection(Box::new(
@@ -221,6 +252,8 @@ pub fn column(position: i32) -> Expression {
     }
 }
 
+/// A literal of a Substrait built-in type, such as
+/// `LiteralType::I32(1)` or `LiteralType::String(..)`.
 pub fn literal(value: expression::literal::LiteralType) -> Expression {
     Expression {
         rex_type: Some(expression::RexType::Literal(expression::Literal {
@@ -230,7 +263,8 @@ pub fn literal(value: expression::literal::LiteralType) -> Expression {
     }
 }
 
-/// A logical literal of a registered extension-encoded type over a string carrier.
+/// A logical literal of a registered extension-encoded type over a string
+/// carrier, such as `logical_text("uuid", "{}", "a0eebc99-...")`.
 pub fn logical_text(name: &str, parameters: &str, value: &str) -> Expression {
     use expression::literal::{LiteralType, Struct, UserDefined, user_defined::Val};
     literal(LiteralType::UserDefined(UserDefined {
@@ -268,6 +302,7 @@ fn nullability(nullable: bool) -> i32 {
 
 macro_rules! simple_type {
     ($name:ident, $kind:ident, $message:ident) => {
+        #[doc = concat!("The Substrait `", stringify!($message), "` type.")]
         pub fn $name(nullable: bool) -> Type {
             Type {
                 kind: Some(r#type::Kind::$kind(r#type::$message {
@@ -289,6 +324,7 @@ simple_type!(text, String, String);
 simple_type!(binary, Binary, Binary);
 simple_type!(date, Date, Date);
 
+/// The Substrait decimal type of `precision` and `scale`.
 pub fn decimal(precision: i32, scale: i32, nullable: bool) -> Type {
     Type {
         kind: Some(r#type::Kind::Decimal(r#type::Decimal {
@@ -300,6 +336,7 @@ pub fn decimal(precision: i32, scale: i32, nullable: bool) -> Type {
     }
 }
 
+/// A time of day in microseconds, the precision of the Analytics `Time` type.
 pub fn time(nullable: bool) -> Type {
     Type {
         kind: Some(r#type::Kind::PrecisionTime(r#type::PrecisionTime {
@@ -310,6 +347,7 @@ pub fn time(nullable: bool) -> Type {
     }
 }
 
+/// A timestamp without time zone in microseconds.
 pub fn timestamp(nullable: bool) -> Type {
     Type {
         kind: Some(r#type::Kind::PrecisionTimestamp(
@@ -322,6 +360,7 @@ pub fn timestamp(nullable: bool) -> Type {
     }
 }
 
+/// A timestamp with time zone in microseconds.
 pub fn timestamp_tz(nullable: bool) -> Type {
     Type {
         kind: Some(r#type::Kind::PrecisionTimestampTz(
@@ -334,6 +373,7 @@ pub fn timestamp_tz(nullable: bool) -> Type {
     }
 }
 
+/// A compound interval of months, days, and nanoseconds.
 pub fn interval(nullable: bool) -> Type {
     Type {
         kind: Some(r#type::Kind::IntervalCompound(r#type::IntervalCompound {
@@ -344,7 +384,8 @@ pub fn interval(nullable: bool) -> Type {
     }
 }
 
-/// A registered extension-encoded type, such as `uuid` with parameters `{}`.
+/// A registered extension-encoded type, such as `uuid` with parameters `{}`
+/// or `enum` with `{"members":[...]}`, as the Analytics type model encodes it.
 pub fn logical(name: &str, parameters: &str, nullable: bool) -> Type {
     Type {
         kind: Some(r#type::Kind::UserDefined(r#type::UserDefined {

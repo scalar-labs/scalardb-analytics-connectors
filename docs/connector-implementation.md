@@ -45,9 +45,9 @@ A connector for a new Connector is built in this order:
    description of accepted options
    ([Static information](connector-contract.md#static-information)), the form
    of Data Source access, and, with ADBC access, the ADBC driver.
-5. Put fixtures and expectations in `conformance/fixtures/<source>` and pass, for
-   this connector alone, the calling-convention conformance tests and the
-   metadata and data read conformance tests ([Tests](#tests)).
+5. Write the connector's fixture for the conformance suite in
+   `crates/connectors/<source>/tests` and pass the suite for this connector
+   alone ([Tests](#tests)).
 6. Register it as a `connector-api` feature and build it into the artifact.
    Run the [dependency policy check](#dependency-policy-check) to confirm that
    the connector brings in no native code, no ADBC driver loading of its own,
@@ -333,30 +333,45 @@ control, so keeping secrets and literals out of their logs is a selection
 criterion for them
 ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers)).
 
-That secrets do not leak is checked by the calling-convention conformance tests,
-which require that secret values never appear anywhere in logs or errors.
+That secrets and literals do not leak through the connector is checked by the
+conformance suite ([What the suite checks](#what-the-suite-checks)).
 
 ## Tests
 
+A connector shows that it meets the
+[connector contract](connector-contract.md) by passing the conformance suite,
+which the connector SDK provides and which knows no Connector, with a fixture
+of its own. Behavior that does not depend on the Connector is implemented
+once, in the connector SDK crates and `connector-api`, and is tested once
+there; the suite does not repeat it.
+
 ### Test kinds
 
-| Test | Checks | How it runs |
+| Test | Checks | Where it runs |
 | --- | --- | --- |
-| Calling-convention conformance tests | [Calling-convention conformance tests](connector-contract.md#calling-convention-conformance-tests) | For every connector, with minimal fixtures |
-| Metadata conformance tests | [Metadata conformance tests](connector-contract.md#metadata-conformance-tests) | With per-source-kind fixtures |
-| Data read conformance tests | [Data read conformance tests](connector-contract.md#data-read-conformance-tests) | The same |
-| Query Engine adapter integration tests | Native planner callback mapping, scan-state replacement, and removal or retention of native operators ([Integration tests](adapter-implementation.md#integration-tests)) | Per supported Query Engine and pinned version |
+| Conformance suite | The Connector-dependent part of the contract's [calling-convention](connector-contract.md#calling-convention-conformance-tests), [metadata](connector-contract.md#metadata-conformance-tests), and [data read](connector-contract.md#data-read-conformance-tests) conformance tests ([What the suite checks](#what-the-suite-checks)) | The `connector-sdk` `conformance` feature, run from `crates/connectors/<source>/tests` with the connector's fixture against a source started in a container |
+| C ABI tests | Unit lifetimes and release order at the C boundary, requests while a read stream is open, cancellations and timeouts passed through the C ABI, retrieving an operation's error after a failed pull, restoring a remote execution in another session, and converting metadata and comparisons to and from C structures for every Analytics type | In `connector-api`, with the SDK's in-memory test Connector where a Connector is needed |
+| Connector SDK runtime tests | Dispatch by Connector name, option validation, the session lease and usability, lazy reads, cancellation, the timeout watcher, panic containment, the schema check, and secret-safe errors | In the connector SDK, with its in-memory test Connector |
 | Connector SDK planning tests | Common validation, direct planning-result construction, and rule composition | In the connector SDK |
+| ADBC access tests | The query lifecycle with ADBC (no source I/O before the first pull, cancellation before and during execution and pulls, releasing the reader), the driver version check, and error classification by ADBC status and SQLSTATE class | In `connector-adbc` |
 | SQL translation tests | Direct validated-plan traversal, physical names loaded into planning metadata, and delegation of identifier and literal rendering | In `connector-sql`, with a source-neutral diagnostic dialect fixture |
+| Query Engine adapter integration tests | Native planner callback mapping, scan-state replacement, and removal or retention of native operators ([Integration tests](adapter-implementation.md#integration-tests)) | Per supported Query Engine and pinned version |
 
 Every read request plan used in tests has passed the Substrait validator.
 
-Connector conformance tests call through the connector API's C ABI only, from
-`conformance`. They never call connector internals, so the connector contract
-is checked at the same boundary callers use. They can prove that planning
-returns `Planned` or `Unsupported`, that planned queries carry the correct
-remote/local decomposition, and that remote queries execute correctly, but they
-cannot observe a Query Engine's native plan.
+The suite calls the connector through the SDK runtime, as `connector-api`
+does, with only that connector built into the library. It never calls the
+connector trait or the connector's private functions directly, so session
+leases, cancellations, and timeouts behave as callers see them. It does not go
+through the C ABI, which adds no Connector-dependent behavior: the C ABI tests
+check its metadata conversions for every Analytics type, and read results
+cross it unchanged through the Arrow C stream interface, so calling a real
+connector through it would check nothing more, and the connector crate runs
+the suite without building `connector-api`
+([Build cycle and versions](connector-internals.md#build-cycle-and-versions)).
+The suite can prove that planning returns `Planned` or `Unsupported`, that
+planned queries carry the correct remote/local decomposition, and that remote
+queries execute correctly, but it cannot observe a Query Engine's native plan.
 
 What happens to a planned result inside a Query Engine is tested by each
 Adapter's [integration suite](adapter-implementation.md#integration-tests).
@@ -373,22 +388,81 @@ The boundary cases on the connector side have explicit owners:
 Schema or object changes are covered as `stale registration`; there is no
 common plan invalidation protocol.
 
+### What the suite checks
+
+The suite checks the following against the fixture's source:
+
+- **Metadata retrieval.** Every mapping rule of its type mapping returns the
+  expected Analytics type, unmapped types and uncovered rules return
+  unsupported columns, and names, ordinals, nullability, Data Source types,
+  constraints, source identifiers, and missing information match the
+  expectations. The fixtures include several namespaces, names that differ
+  only in case, targets without privilege, and nonexistent tables. Name
+  filters match exactly, and retrieving the same tables twice returns the same
+  table metadata apart from retrieval info
+  ([Metadata conformance tests](connector-contract.md#metadata-conformance-tests)).
+- **Values.** Each covered rule's boundary values (minimum, maximum, precision
+  limit, time zones, and NULL) read as the expected Arrow types and values.
+  Projecting a column with a value that cannot be carried exactly is a `data`
+  error; not projecting it is not.
+- **Pushdown.** Each read case plans as the fixture states, fully remote, with
+  local work, or unsupported, and its remote result returns the stated rows;
+  a fully remote result returns the rows the offered region would. The
+  fixture covers every rewrite rule with values whose comparison meaning
+  varies by column, such as trailing spaces, letter case, accents, and
+  character sets, and with non-normalized expression trees.
+- **Schema check.** Reading after changing a column's type, dropping a
+  referenced column or table, or making a NOT NULL column nullable at the
+  source is `stale registration`; making a nullable column NOT NULL is not
+  ([Data read conformance tests](connector-contract.md#data-read-conformance-tests)).
+- **Stopping at the source.** Cancellation, timeout, and releasing a stream
+  partway stop the query at the source, for metadata requests and reads. A
+  broken source connection makes the session reject the next request as
+  `invalid state`.
+- **Errors.** Each failing request the fixture states returns its kind and
+  retry flag. No error the suite receives reveals, in its message, Data
+  Source message, or diagnostics, a value of an option the connector's
+  descriptor marks secret or a string literal of its request's filter.
+
+Every extension-encoded type a connector can return is registered, because
+the Analytics type model is a closed set of types, so the suite does not
+check registration.
+
+The rest of the contract's calling-convention conformance tests, such as
+release order, cancellations given before a request, and retrieving errors
+mid-stream, do not depend on the Connector and belong to the C ABI, SDK
+runtime, and ADBC access tests.
+
+A behavior a connector does not yet meet is stated in its fixture as a known
+deviation, with what the connector does instead, and recorded in its README's
+known limitations. The suite checks the deviating behavior as stated and fails
+once the connector meets the contract, so a fix also updates the fixture and
+the README.
+
 ### Fixtures
 
-Each Connector's fixtures consist of:
+Each connector's fixture implements the suite's `Fixture` trait in
+`crates/connectors/<source>/tests` and consists of:
 
 - a procedure that prepares the source, such as SQL that creates tables, types,
   and values, applied to a source started in a container;
-- expected table metadata, excluding retrieval info and in the contract's
-  deterministic order
+- metadata requests with their expected results: lists, and table metadata
+  excluding retrieval info and in the contract's deterministic order
   ([Retrieval info and determinism](connector-contract.md#retrieval-info-and-determinism));
-  and
-- expected reads: per request, the expected Arrow schema and values.
+- read cases: per offered region, its planning outcome and the expected values
+  or error of its remote result;
+- source changes between planning and reading, and failing requests with the
+  credential each uses; and
+- the source-side operations the suite cannot perform through the contract:
+  a read that waits at the source, a read that outlasts its first batch,
+  making metadata requests wait, observing whether the fixture's queries run,
+  and breaking the fixture's connections.
 
 ### Compatibility table
 
-Each connector publishes the tested combinations of Data Source version, ADBC driver
-version (ADBC access), and platform as its compatibility table.
+Each connector publishes, in its README, the combinations of Data Source
+version, ADBC driver version (ADBC access), and platform that passed its
+conformance tests as its compatibility table.
 
 | Axis | Initial range |
 | --- | --- |

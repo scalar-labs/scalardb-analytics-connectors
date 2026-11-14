@@ -280,6 +280,7 @@ dependencies = [
  "analytics-types",
  "arrow-array",
  "arrow-buffer",
+ "arrow-data",
  "arrow-schema",
  "connector-sdk",
  "futures-core",

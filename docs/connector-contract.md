@@ -357,9 +357,12 @@ or item is added to the connector API.
 ### Calling-convention conformance tests
 
 These tests check the calling conventions and the ADBC driver version check
-([Data Source access rules](#data-source-access-rules)) for every connector, regardless
-of Connector. Cancellation and timeout are tested with both metadata and read
-requests; stream release applies to reads.
+([Data Source access rules](#data-source-access-rules)), which hold for every
+connector. The parts implemented independently of Connector are tested once
+where they are implemented, and the conformance suite checks, with each
+connector's fixture, the parts that depend on it, such as stopping the query
+at the source ([Tests](connector-implementation.md#tests)). Cancellation and timeout are
+tested with both metadata and read requests; stream release applies to reads.
 
 | Action | Expected result |
 | --- | --- |
@@ -756,8 +759,9 @@ rules and the [error kinds](#errors). Errors reach as follows:
 
 ### Metadata conformance tests
 
-These tests check, independently of implementation, that a connector meets
-this section:
+The conformance suite checks, with each connector's fixture and through the
+caller-facing runtime rather than the connector's internals, that the
+connector meets this section ([Tests](connector-implementation.md#tests)):
 
 - Each Connector has fixtures containing every mapping rule of its type
   mapping, unmapped types, constraints, targets without privilege, nonexistent
@@ -959,8 +963,9 @@ read in one query may reflect different points in time.
 
 ### Data read conformance tests
 
-These tests check that a connector meets this section and produces the types
-and values it returns in metadata retrieval:
+The conformance suite checks, with each connector's fixture, that the
+connector meets this section and produces the types and values it returns in
+metadata retrieval ([Tests](connector-implementation.md#tests)):
 
 - Each Connector has fixtures with boundary values for every mapping rule
   (minimum, maximum, precision limit, time zones, NULL) and values that cannot

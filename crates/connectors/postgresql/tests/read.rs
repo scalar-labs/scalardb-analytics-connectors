@@ -13,6 +13,7 @@ use arrow_array::{
     Time64MicrosecondArray, TimestampMicrosecondArray, types::IntervalMonthDayNano,
 };
 use connector_postgresql::PostgresConnector;
+use connector_sdk::conformance::plan::*;
 use connector_sdk::{
     Connector, ConnectorError, DiagnosticValue, ErrorKind, PlannedPushdown, PlannedRead,
     PlanningError, PushdownRequest, PushdownResult, RemoteExecution, execute_planned,
@@ -21,8 +22,8 @@ use connector_sql::SqlRead;
 use substrait::proto::{Expression, Plan, expression::literal::LiteralType};
 
 use support::{
-    PASSWORD, PostgresSession, collect, collect_ok, library, open, open_session, options, plan::*,
-    server, session,
+    PASSWORD, PostgresSession, collect, collect_ok, library, open, open_session, options, server,
+    session,
 };
 
 type Read = PlannedRead<SqlRead>;

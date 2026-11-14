@@ -69,13 +69,12 @@ and `connector-sql`.
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
-| `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, the comparison of two observations of one table, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads, synchronous metadata requests and the cancellations callers pass to them, cancellation, the timeout watcher, and panic containment | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
+| `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, the comparison of two observations of one table, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads, synchronous metadata requests and the cancellations callers pass to them, cancellation, the timeout watcher, and panic containment. Its `conformance` module, behind the feature of that name, is the conformance suite that connector crates run through `runtime` with their fixtures ([Tests](connector-implementation.md#tests)) | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: the `AdbcConnector` trait and the `Adbc<C>` access component built from it (loading drivers through the ADBC driver manager and checking their versions, passing options, opening Data Sources and connecting sessions), running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by ADBC status and SQL-standard SQLSTATE class where the Connector's error table does not match ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
 | `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: the `SqlConnector` trait and the catalog, planner, and executor components built from it, running catalog queries, the filter and projection rewrite rules over the Connector's semantic decisions, generating SQL from remote `LogicalPlan` values with the Connector's dialect, and sending the planned statement | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its `Connector` implementation and its declarations to the layer traits, written as Rust code and constant tables. An ADBC-access Connector also implements `AdbcConnector`, and a SQL-speaking one also `SqlConnector`; a direct-access Connector supplies its own components and reads the Data Source itself. | Knowledge of other Connectors |
 | `connector-api` | The connector API's C ABI and its header, the C structures of metadata and comparisons and their conversion to and from the SDK's types, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
 | `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
-| `conformance` | The runner that tests the contract through the connector API only, and per-Connector fixtures | Dependencies on Connector internals |
 
 The [connector contract](connector-contract.md) is the semantic source of truth.
 Rust crates enforce the implemented behavior, and callers in other languages,
@@ -89,7 +88,6 @@ connector-api --> connectors/<connector> (direct access) -----------------------
 connector-api --> connector-sdk
 connector-api --> analytics-types   (Analytics types in metadata structures)
 connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
-conformance --> connector-api C ABI and contract
 ~~~
 
 - The three connector SDK crates do not depend on connector crates.
@@ -114,8 +112,9 @@ conformance --> connector-api C ABI and contract
 Connectors can be added on a life cycle independent of the rest. This means:
 
 - **Development and testing:** each crate builds and tests on its own. For
-  example, the PostgreSQL connector runs its tests and the PostgreSQL
-  conformance tests without building other connectors.
+  example, the PostgreSQL connector runs the conformance suite with its
+  fixture ([Tests](connector-implementation.md#tests)) without building other
+  connectors.
 - **Addition:** adding a Connector is completed by adding a connector crate,
   the Connector's type mapping, and, with ADBC access, its ADBC driver. The
   connector SDK, the C ABI, and its callers do not change; `connector-api`

@@ -54,6 +54,20 @@ These come from the driver and are not yet handled by the connector:
   `data-source` error rather than a `data` error.
 - A failed authentication is reported without a SQLSTATE, so it is classified
   as `connection` rather than `authentication`.
+- A `timestamp` value beyond the range of Arrow microsecond timestamps, such
+  as `294276-12-31 23:59:59.999999`, is returned as a wrong timestamp instead
+  of a `data` error.
+
+These come from the connector and its ADBC access:
+
+- Releasing a read stream partway drops the driver's reader without
+  cancelling its statement, so the query keeps running at the server.
+- A connection the server terminates, which PostgreSQL reports with SQLSTATE
+  `57P01`, is classified as `data-source` rather than `connection`, so the
+  session stays usable until its next request fails.
+
+The [conformance suite](#tests) checks each of these as a known deviation and
+fails once the connector meets the contract.
 
 ## Compatibility
 
@@ -66,7 +80,9 @@ Only combinations that passed this crate's tests are listed.
 ## Tests
 
 The integration tests start a PostgreSQL container with Docker and load the
-driver from `ADBC_DRIVER_DIRECTORY`, which the Nix development shell sets:
+driver from `ADBC_DRIVER_DIRECTORY`, which the Nix development shell sets.
+`tests/conformance` runs the SDK's connector conformance suite with this
+connector's fixture:
 
 ```sh
 nix develop --command cargo test -p connector-postgresql
