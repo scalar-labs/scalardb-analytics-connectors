@@ -37,8 +37,8 @@ call the C API that `connector-api` exports and depend on no crate.
 
 Developer documentation starts at [docs/architecture.md](docs/architecture.md).
 It explains the repository boundaries and links to the connector contract, the
-shared Analytics type model, plan-pushdown model, type mappings, connector
-internals, and implementation conventions.
+shared Analytics type model, plan-pushdown model, type mappings, the connector SDK
+design, and implementation conventions.
 
 ## Development
 

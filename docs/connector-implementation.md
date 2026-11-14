@@ -3,15 +3,15 @@
 ## Summary
 
 This document defines the conventions for implementing one Connector's
-connector on the structure in [Connector internals](connector-internals.md):
+connector on the structure in [Connector SDK](connector-sdk.md):
 how a connector is built, how metadata is retrieved, types and values, reads
 and plan-aware pushdown decisions, errors and logs, tests,
 choosing the form of Data Source access and an ADBC driver, direct access, isolating
 native dependencies, the initial PostgreSQL and MySQL conventions, and how the
 conventions apply to other sources. What is promised to callers is defined by
 the [connector contract](connector-contract.md); this document defines how to
-meet it. Terms follow the [vocabulary](connector-internals.md#vocabulary) of
-Connector internals.
+meet it. Terms follow the [vocabulary](connector-sdk.md#vocabulary) of the
+Connector SDK.
 
 ## Building a connector
 
@@ -57,8 +57,8 @@ A connector for a new Connector is built in this order:
    write one under `adbc-drivers/<source>` ([Our own ADBC drivers](#our-own-adbc-drivers)).
    For direct access, choose the reader crates.
 3. Create `crates/connectors/<source>` and implement the
-   [connector trait](connector-internals.md#connector-trait) in Rust code and
-   constant tables ([Connector behavior as code](connector-internals.md#connector-behavior-as-code)).
+   [connector trait](connector-sdk.md#connector-trait) in Rust code and
+   constant tables ([Connector behavior as code](connector-sdk.md#connector-behavior-as-code)).
    Every connector implements `Connector`, which names its components, its
    error handler, and its query, and declares its descriptor and value
    conversion. A source that speaks SQL through ADBC also implements
@@ -91,18 +91,18 @@ A connector for a new Connector is built in this order:
    available to the development shell's `ADBC_DRIVER_DIRECTORY` in
    `flake.nix`, where the tests load it. Build it into the artifact and run the
    [dependency policy check](#dependency-policy-check) to confirm that
-   the connector brings in no native code, no ADBC driver loading of its own,
+   the connector brings in no native dependency, no ADBC driver loading of its own,
    and no license that prevents distribution.
 
 These steps change neither the connector SDK crates, the contract, nor the
 callers of the connector API. In `connector-api`, the feature and its registry
 entry are the only change
-([Build cycle and versions](connector-internals.md#build-cycle-and-versions)).
+([Build cycle and versions](connector-sdk.md#build-cycle-and-versions)).
 
 ### What a connector writes
 
 Everything a connector decides is Rust in its crate
-([Connector behavior as code](connector-internals.md#connector-behavior-as-code)).
+([Connector behavior as code](connector-sdk.md#connector-behavior-as-code)).
 Within that, a correspondence that the documents already state as a table is
 written as a constant table or a `match` over the source's values, so it can be
 checked against the document line by line. Behavior that has to interpret
@@ -395,7 +395,7 @@ What may and may not be emitted is defined in
 [Errors](connector-contract.md#errors). It is implemented as follows:
 
 - Secret values are held in the secret-holding type
-  ([Credential boundary](connector-internals.md#credential-boundary)) and never
+  ([Credential boundary](connector-sdk.md#credential-boundary)) and never
   appear in log strings, even through `Debug`.
 - Filter literals and generated SQL text are never fields of log events.
 - Error messages returned by the data source appear only in the error
@@ -445,7 +445,7 @@ check its metadata conversions for every Analytics type, and read results
 cross it unchanged through the Arrow C stream interface, so calling a real
 connector through it would check nothing more, and the connector crate runs
 the suite without building `connector-api`
-([Build cycle and versions](connector-internals.md#build-cycle-and-versions)).
+([Build cycle and versions](connector-sdk.md#build-cycle-and-versions)).
 The suite can prove that planning returns `Planned` or `Unsupported`, that
 planned queries carry the correct remote/local decomposition, and that remote
 queries execute correctly, but it cannot observe a Query Engine's native plan.
@@ -540,7 +540,9 @@ Each connector's fixture implements the suite's `Fixture` trait in
 Each connector publishes, in its README
 ([template](../crates/connectors/README.md#readme-template)), the combinations
 of Data Source version, ADBC driver version (ADBC access), and platform that
-passed its conformance tests as its compatibility table.
+passed its conformance tests as its compatibility table. Raising the ADBC driver
+version or a reader crate version means rerunning that connector's
+conformance suite with the new version.
 
 | Axis | Initial range |
 | --- | --- |
@@ -551,12 +553,57 @@ passed its conformance tests as its compatibility table.
 
 ## Choosing Data Source access and ADBC drivers
 
-The form of Data Source access is chosen by applying the rules in
-[Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access)
-in their stated order. ADBC-access sources follow
+A connector uses one of the two forms of
+[Data Source access](connector-contract.md#connector-api-and-data-source-access).
+The form is chosen from the source's nature, in this order:
+
+1. A source that needs a native dependency uses ADBC access, even if rule 3
+   would otherwise apply. A native dependency is a native library that the
+   build or the running process obtains from outside the Rust dependency graph,
+   such as a system library (OpenSSL, an ODBC driver manager) or a vendor's
+   prebuilt client (Oracle Instant Client). Direct access is built into the
+   library and has no native dependencies
+   ([Isolating native dependencies](#isolating-native-dependencies)), while an
+   ADBC driver is a separate artifact that can contain them. Deciding native
+   dependencies first keeps them out of the library.
+2. A source whose protocol returns typed results that describe themselves uses
+   ADBC access. RDBMSs, data warehouses, OLAP engines, and external Query
+   Engines belong here.
+3. A source whose results cannot be typed without its catalog or metadata, or
+   that has no server to connect to, uses direct access. Files and table
+   formats (Parquet, CSV, Iceberg, Delta Lake), SaaS and REST APIs, and streams
+   such as Kafka belong here, including a SaaS API with its own query language,
+   such as Salesforce SOQL.
+
+ADBC is used where it fits because existing drivers already provide
+connection, authentication, query submission, Arrow results, and cancellation,
+leaving only source knowledge (catalog reading, dialect, and type
+correspondence) to the connector. A driver that decodes results typed by the
+source's own protocol needs no type knowledge beyond that protocol. When the
+results cannot be typed without the source's catalog, as with the untyped JSON
+of a REST API, a driver would have to read the catalog to choose Arrow types
+while the connector reads it again to map Analytics types, so the type
+knowledge would live in two components with little gained from ADBC. Files and
+table formats do not fit ADBC at all: there is no server to connect to, the
+catalog comes from file listings or table-format metadata, skipping by
+partitions and statistics is planned in process, and Arrow reader crates
+already exist. SaaS and REST APIs also read in pages, and streams are
+unbounded.
+
+The breadth of sources reached through ADBC access therefore depends on the
+ADBC driver ecosystem and the maturity of the shared SQL-family processing
+rather than on the number of connectors. Where an ADBC driver exists, a
+connector reduces to source knowledge: catalog reading, dialect, and type
+correspondence.
+
+ADBC-access sources follow
 [Choosing an existing ADBC driver](#choosing-an-existing-adbc-driver) and
 [Our own ADBC drivers](#our-own-adbc-drivers); direct-access sources follow
-[Direct access](#direct-access).
+[Direct access](#direct-access). Either form meets the
+[Data Source access rules](connector-contract.md#data-source-access-rules).
+
+ADBC access requires ADBC API 1.1.0 or later, because cancellation and
+detailed errors were introduced in 1.1.0.
 
 ### Choosing an existing ADBC driver
 
@@ -589,14 +636,14 @@ gets our own:
   that are already the type mapping's Analytics types to reduce conversion in
   the connector.
 - It implements `AdbcErrorFromArrayStream`
-  ([ADBC driver handling](connector-internals.md#adbc-driver-handling)).
+  ([ADBC driver handling](connector-sdk.md#adbc-driver-handling)).
 - Pure Rust source clients are preferred. Keeping secret values out of logs and
   cancellation that stops the query at the source are client selection
   criteria.
 
 ### Direct access
 
-- Implement the [`Connector` trait](connector-internals.md#connector-trait)
+- Implement the [`Connector` trait](connector-sdk.md#connector-trait)
   and its components in the connector crate, reading the Data Source directly
   inside them.
 - Choose reader crates and source clients that return Arrow and satisfy the
@@ -604,27 +651,34 @@ gets our own:
   [Data Source access rules](connector-contract.md#data-source-access-rules). Whether they
   have native dependencies is checked as in
   [Isolating native dependencies](#isolating-native-dependencies).
-- Pin reader crate versions and fix the settings that change how types and
-  values are produced, as in
+- Write the implementation in Rust without native dependencies
+  ([Isolating native dependencies](#isolating-native-dependencies)).
+- Pin reader crate versions as dependencies of the connector crate and fix the
+  settings that change how types and values are produced, as in
   [Data Source access rules](connector-contract.md#data-source-access-rules); how fixed
   settings are chosen is in [Fixed settings](#fixed-settings).
 - Cancellation, timeouts, and cleanup follow
-  [Cancellation and timeouts](connector-internals.md#cancellation-and-timeouts)
-  and [Cleanup](connector-internals.md#cleanup).
+  [Cancellation and timeouts](connector-sdk.md#cancellation-and-timeouts)
+  and [Cleanup](connector-sdk.md#cleanup).
 
 ## Isolating native dependencies
 
 The rule that native dependencies stay inside ADBC drivers
-([Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access),
-[Data Source access rules](connector-contract.md#data-source-access-rules)) is implemented
-as follows:
+([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers))
+is implemented as follows:
 
 - The three connector SDK crates, `connector-api`, and connector crates must
   build without system libraries. Reader crates and clients used by
   direct-access connectors are included, as dependencies of connector crates.
   CI enforces this with the [dependency policy check](#dependency-policy-check).
+- A crate that compiles C or assembly it vendors into a self-contained static
+  object, such as the cryptography crate `ring`, is not a native dependency:
+  it links no system library and needs nothing outside the Rust dependency
+  graph except a C compiler at build time. Such a crate is accepted only by
+  name in `deny.toml`, so that each one is reviewed.
 - TLS in our own ADBC drivers and direct-access implementations uses rustls and
-  does not depend on OpenSSL.
+  does not depend on OpenSSL. Its cryptography provider is a crate of the kind
+  above, such as `ring`.
 - The licenses and origins of ADBC drivers and their native dependencies are
   managed in distribution metadata. Where drivers are placed and how they are
   bundled is owned by the product application's distribution, not by this
@@ -646,8 +700,8 @@ and test dependencies are not inspected. It fails in the following cases:
 
 | Failure | Cause | Usual resolution |
 | --- | --- | --- |
-| A crate that compiles or links native code is banned (`cc`, `cmake`, `pkg-config`, `bindgen`, `vcpkg`, `openssl-sys`) | A source client or reader crate builds a native library. A common path is a client's default `native-tls` feature, which links OpenSSL on Linux but uses the system framework on macOS. | Disable the client's default features and select its rustls feature, or choose a pure Rust client. With ADBC access, the native code belongs in the ADBC driver. |
-| `adbc_driver_manager` is banned for the connector crate | The connector loads ADBC drivers itself instead of through `connector-adbc`. | Use the access component that `connector-adbc` supplies ([ADBC driver handling](connector-internals.md#adbc-driver-handling)). |
+| A crate that compiles or links native code is banned (`cc`, `cmake`, `pkg-config`, `bindgen`, `vcpkg`, `openssl-sys`) | A source client or reader crate builds a native library. A common path is a client's default `native-tls` feature, which links OpenSSL on Linux but uses the system framework on macOS. | Disable the client's default features and select its rustls feature, or choose a pure Rust client. With ADBC access, the native code belongs in the ADBC driver. A crate that only compiles vendored code into a self-contained object ([Isolating native dependencies](#isolating-native-dependencies)) is added to the ban's `wrappers` after review. |
+| `adbc_driver_manager` is banned for the connector crate | The connector loads ADBC drivers itself instead of through `connector-adbc`. | Use the access component that `connector-adbc` supplies ([ADBC driver handling](connector-sdk.md#adbc-driver-handling)). |
 | A license is rejected | A dependency's license is not in the allowed list. | Choose another crate, or add the license to `allow` after confirming that it permits distributing the library. |
 
 A connector that intentionally accepts a dependency outside the policy, such as
@@ -726,7 +780,7 @@ every case the contract, connector traits, and connector SDK stay the same.
   common contract. Direct access keeps the Rust gRPC client in the connector;
   ADBC access keeps it inside the driver. Any JVM implementation remains subject
   to the exception boundary in
-  [Implementation form](connector-internals.md#implementation-form).
+  [Implementation form](connector-sdk.md#implementation-form).
 - **Connection settings and credentials:** the ScalarDB Cluster endpoint and
   authentication information.
 - **Cancellation and timeouts:** gRPC call cancellation, the same in every form.

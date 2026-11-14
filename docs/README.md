@@ -14,7 +14,9 @@ links to the relevant top-level document before changing an architectural unit.
 Use the remaining top-level documents by responsibility:
 
 - [connector-contract.md](connector-contract.md) defines what callers and
-  connector implementations may rely on across the connector boundary.
+  connector implementations may rely on across the connector boundary. It is
+  the external contract: the SDK design and the implementation conventions
+  follow and reference it, and it references none of them.
 - [analytics-types.md](analytics-types.md) defines the shared type-system mental
   model; each connector's README applies it to its Connector.
 - [pushdown-planning.md](pushdown-planning.md)
@@ -23,8 +25,9 @@ Use the remaining top-level documents by responsibility:
   interfaces.
 - [query-engine-pushdown.md](query-engine-pushdown.md) maps the planner
   contracts of Spark, Trino, DataFusion, and DuckDB onto that shared model.
-- [connector-internals.md](connector-internals.md) explains SDK, source-access,
-  lifecycle, and assembly ownership.
+- [connector-sdk.md](connector-sdk.md) explains the design of the connector SDK
+  crates and `connector-api`: their responsibilities, source access, lifecycle,
+  and assembly.
 - [connector-implementation.md](connector-implementation.md) gives the
   conventions for implementing and testing one Connector.
 - [adapter-implementation.md](adapter-implementation.md) gives the conventions

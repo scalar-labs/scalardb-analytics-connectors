@@ -1,9 +1,13 @@
-# Connector internals
+# Connector SDK
 
 ## Summary
 
-This document describes how the connector API library is built to satisfy the
-[connector contract](connector-contract.md): crate responsibilities and
+This document describes the design of the connector SDK (`connector-sdk`,
+`connector-adbc`, and `connector-sql`) and of `connector-api`, which assembles
+the SDK and the Connectors into the connector API library that satisfies the
+[connector contract](connector-contract.md). Read it to change those crates,
+or to look up the traits and flows a Connector implementation relies on. It
+covers crate responsibilities and
 dependency rules, how processing is divided between the connector SDK and
 connectors, the validated Substrait planning state, the traits a
 connector supplies, the connector API implementation, lifetimes and resource ownership,
@@ -97,8 +101,7 @@ connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
   belongs in a connector SDK crate.
 - Connector crates do not depend on native libraries. Native dependencies stay
   inside ADBC drivers
-  ([Connector API and Data Source access](connector-contract.md#connector-api-and-data-source-access),
-  [Data Source access rules](connector-contract.md#data-source-access-rules)).
+  ([Isolating native dependencies](connector-implementation.md#isolating-native-dependencies)).
 - A direct-access connector depends only on `connector-sdk`, not on
   `connector-adbc` or `connector-sql`.
 - A connector that uses ADBC access for a source that does not speak SQL, as

@@ -33,7 +33,9 @@ allow = [
 multiple-versions = "allow"
 deny = [
     # Native dependencies stay inside ADBC drivers: these crates compile or
-    # link native code, and openssl-sys links the system OpenSSL.
+    # link native code, and openssl-sys links the system OpenSSL. A crate that
+    # only compiles vendored code into a self-contained object, such as ring,
+    # is listed in `wrappers` after review.
     { crate = "bindgen", reason = "generates bindings to a native library" },
     { crate = "cc", reason = "compiles native code" },
     { crate = "cmake", reason = "builds native code" },

@@ -6,9 +6,8 @@ The connector contract is what Query Engine adapters and the Physical Catalog
 may rely on when they call a connector. It defines the two capabilities, the
 calling conventions shared by every request, metadata retrieval, data read,
 the representation of read requests, and how these map onto the connector API.
-It does not define how a connector is built; that belongs to
-[Connector internals](connector-internals.md) and
-[Connector implementation conventions](connector-implementation.md).
+It does not define how a connector is built; implementations follow this
+contract, and this contract depends on none of them.
 
 This document is the semantic source of truth for the connector boundary.
 Analytics types are defined by the [Analytics type model](analytics-types.md),
@@ -57,17 +56,13 @@ not ADBC is recorded in
 
 Data Source access is the part of a Connector that reads the Data Source's catalog,
 sends queries to the Data Source, and receives the results as Arrow. It takes one
-of two forms, and a Connector uses exactly one form per supported system:
+of two forms, and a Connector uses exactly one form per supported system, which
+its [static information](#static-information) states:
 
-- **ADBC access** goes through an ADBC (Arrow Database Connectivity) driver.
-  An existing driver for the source is used when one exists, such as the
-  Apache Arrow ADBC project's PostgreSQL driver. Otherwise we write our own
-  ADBC driver that handles only connecting, querying, receiving Arrow, and
-  cancellation. ADBC API 1.1.0 or later is required because cancellation and
-  detailed errors were introduced in 1.1.0.
-- **Direct access** is performed by the connector itself, through Rust crates
-  that return Arrow (reader crates, such as `parquet`, `iceberg-rust`, and
-  `delta-rs`) or a client for the source's API.
+- **ADBC access** goes through an ADBC (Arrow Database Connectivity) driver, an
+  artifact separate from the library that the library loads from the location
+  it receives at initialization.
+- **Direct access** is performed by code built into the library.
 
 ~~~text
 adapter / Physical Catalog
@@ -77,35 +72,15 @@ connector SDK + Connectors (one library)
    |
    +- ADBC access ---> ADBC driver (separate artifact per source) ---> data source
    |
-   +- direct access (reader crates built into the library) ---------> data source
+   +- direct access (built into the library) -----------------------> data source
 ~~~
 
-The form is chosen from the source's nature, in this order:
+The rules each form follows are in
+[Data Source access rules](#data-source-access-rules).
 
-1. A source that needs a client library with native code uses ADBC access,
-   even if rule 3 would otherwise apply. Direct access is built into the
-   library and is written in Rust without native dependencies, while an ADBC
-   driver is a separate artifact that can contain its native dependencies.
-   Deciding native dependencies first keeps them out of the library.
-2. A source with SQL or a wire protocol, such as an RDBMS, data warehouse,
-   OLAP engine, or external Query Engine, uses ADBC access.
-3. A source that does not fit ADBC's model uses direct access. Files and table
-   formats (Parquet, CSV, Iceberg, Delta Lake), SaaS and REST APIs, and streams
-   such as Kafka belong here.
-
-ADBC is used where it fits because existing drivers already provide
-connection, authentication, query submission, Arrow results, and cancellation,
-leaving only source knowledge (catalog reading, dialect, and type
-correspondence) to the connector. Files and table formats do not fit ADBC at
-all: there is no server to connect to, the catalog comes from file listings or
-table-format metadata, skipping by partitions and statistics is planned in
-process, and Arrow reader crates already exist. SaaS and REST APIs and streams
-lack the SQL and catalog model ADBC assumes, and their reads are paged or
-unbounded.
-
-In either form, ADBC drivers and reader crates only carry the source's data;
-they never decide types. The connector converts the Arrow types and values they
-return into Analytics values according to the
+In either form, the connector alone decides types: the ADBC driver or the code
+that reads the source only carries the source's data, and the connector turns
+it into Analytics values according to the
 [type mapping](#type-mappings-and-coverage). The connector is the only
 interpreter of the source, as recorded in
 [Make one connector interpret each data source](design/make-one-connector-interpret-each-source.md).
@@ -205,8 +180,8 @@ Credentials are handled as follows:
   sessions using it are alive and erases them once all of them are released.
 - The connector passes secret values to its Data Source access: as options to the
   ADBC driver with ADBC access, which also keeps them for that period, or to
-  the client it uses with direct access. In both forms it uses only drivers,
-  clients, and reader crates that keep secret values out of logs and errors
+  the code that reads the source with direct access. In both forms that driver
+  or code keeps secret values out of logs and errors
   ([Data Source access rules](#data-source-access-rules)).
 - The connector API has no function that returns a received secret value.
 - To rotate credentials, the caller opens a new data source and closes the old
@@ -314,7 +289,7 @@ unresolvable host name is not retryable.
 | `timeout` | The specified time was exceeded (retryable). |
 | `resource` | The source or the connector ran out of a resource such as connections or memory (retryable). |
 | `data-source` | The Data Source could not run the request for a reason not covered above, such as a serialization failure. The Connector decides retryability from the Data Source error. |
-| `internal` | A defect in the connector, its ADBC driver, or a reader crate (not retryable). |
+| `internal` | A defect in the connector, including its ADBC driver or the code that reads the source (not retryable). |
 
 Whether an error fails the whole operation or is recorded per target is
 defined for
@@ -359,11 +334,8 @@ or item is added to the connector API.
 
 These tests check the calling conventions and the ADBC driver version check
 ([Data Source access rules](#data-source-access-rules)), which hold for every
-connector. The parts implemented independently of Connector are tested once
-where they are implemented, and the conformance suite checks, with each
-connector's fixture, the parts that depend on it, such as stopping the query
-at the source ([Tests](connector-implementation.md#tests)). Cancellation and timeout are
-tested with both metadata and read requests; stream release applies to reads.
+connector. Cancellation and timeout are tested with both metadata and read
+requests; stream release applies to reads.
 
 | Action | Expected result |
 | --- | --- |
@@ -399,9 +371,7 @@ This section does not define:
   difference means to a receiver is the receiver's;
 - reading rows, which is [Data read](#data-read) and
   [Read request representation](#read-request-representation);
-- how the connector SDK and connectors are built, which is
-  [Connector internals](connector-internals.md) and
-  [Connector implementation conventions](connector-implementation.md); or
+- how connectors are built; or
 - which data sources the product allows to be registered.
 
 ### Metadata requests
@@ -538,9 +508,9 @@ The same table can receive different Analytics types from a different
 connector, connector version, or ADBC driver or driver version. A different
 type mapping or a different fixed setting appears as a different connector
 version ([Type mappings and coverage](#type-mappings-and-coverage),
-[Data Source types](#data-source-types)). With direct access, reader crates are
-built into the connector and their versions are part of the connector's
-version ([Data Source access rules](#data-source-access-rules)), so the
+[Data Source types](#data-source-types)). With direct access, the code that
+reads the source is built into the connector and its versions are part of the
+connector's version ([Data Source access rules](#data-source-access-rules)), so the
 connector's name and version identify them. To trace the cause of a
 difference, table metadata carries retrieval info:
 
@@ -754,7 +724,7 @@ returns one reason:
 | Reason | Meaning |
 | --- | --- |
 | Not mapped | The type mapping states that the type is not mapped |
-| Mapping not implemented | The type mapping defines a mapping, but this connector version does not implement it: its ADBC driver, reader crate, or own conversion cannot produce values of that Analytics type without changing them, so the rule is outside its coverage ([Type mappings and coverage](#type-mappings-and-coverage)). A later connector version may map it. |
+| Mapping not implemented | The type mapping defines a mapping, but this connector version does not implement it: its ADBC driver, the code that reads the source, or its own conversion cannot produce values of that Analytics type without changing them, so the rule is outside its coverage ([Type mappings and coverage](#type-mappings-and-coverage)). A later connector version may map it. |
 | Parameter out of range | The type is in the type mapping, but a parameter such as precision or unit exceeds the mappable range |
 
 A connector never implicitly converts an unsupported column to a nearby type.
@@ -776,9 +746,8 @@ rules and the [error kinds](#errors). Errors reach as follows:
 
 ### Metadata conformance tests
 
-The conformance suite checks, with each connector's fixture and through the
-caller-facing runtime rather than the connector's internals, that the
-connector meets this section ([Tests](connector-implementation.md#tests)):
+These tests check, with each connector's fixture, that the connector meets
+this section:
 
 - Each Connector has fixtures containing every mapping rule of its type
   mapping, unmapped types, constraints, targets without privilege, nonexistent
@@ -844,20 +813,16 @@ request has no separate Query Engine or session-semantics side channel. An
 Adapter must express required semantics in the Substrait plan or a declared
 extension; if it cannot, it must not offer that native region.
 
-The SDK produces a `LogicalPlan` as the result of validation and conversion.
-The Connector then resolves opaque
-`NamedTable` bindings into its own private planning metadata and obtains the
-Data Source facts required by that complete region. The SDK applies the
-Connector-supplied semantic rewrite rules. The private metadata exists only
-during planning and does not cross the connector API. The result is a
-remote Substrait plan, an optional local Substrait plan, and a Connector-owned
-query of type `Q` for the remote plan. The session's planner and executor
-share the concrete query type `Q`. A successful request becomes a
-`PlannedPushdown`. It contains the plans, opaque bindings, and the remote
-execution: the query together with the remote output schema. The local plan,
-when present, consumes that remote output through
-the reserved `ExtensionLeafRel(RemoteResult)` and must not independently read a
-named table.
+After validating the offered plan, the connector resolves its opaque
+`NamedTable` bindings, obtains the Data Source facts required by that complete
+region, and decomposes it. The facts it uses exist only during planning and do
+not cross the connector API. The result is a remote Substrait plan, an
+optional local Substrait plan, and a Connector-owned query for the remote plan.
+A successful request becomes a `PlannedPushdown`. It contains the plans,
+opaque bindings, and the remote execution: the query together with the remote
+output schema. The local plan, when present, consumes that remote output
+through the reserved `ExtensionLeafRel(RemoteResult)` and must not
+independently read a named table.
 Credentials, secret values, open connections, and process-local pointers are
 not part of the result.
 
@@ -884,11 +849,20 @@ the planned query runs. If they change between planning and execution, the
 result is not guaranteed. The only check at execution is the
 [schema check](#schema-check).
 
-Common structural checks inspect the same `PlannedPushdown`; they do not create
-a second planning-result type. Stable identity and persistence are not part of
-the shared contract until a concrete consumer requires them; the only restore
-is a remote execution carried to another process as described above. The
-complete model is in [Boundary checks](pushdown-planning.md#boundary-checks).
+Every `PlannedPushdown` has this structure:
+
+- the remote plan terminates in one table read;
+- a local plan, when present, terminates in one `RemoteResult` whose schema
+  equals the remote output schema; and
+- the local plan's output schema equals the offered plan's output schema, or,
+  without a local plan, the remote output schema equals it.
+
+The structure does not prove that the decomposition is semantically equivalent
+to the offered plan; the connector guarantees that
+([Planning and residual operators](#planning-and-residual-operators)). Stable
+identity and persistence are not part of the shared contract until a concrete
+consumer requires them; the only restore is a remote execution carried to
+another process as described above.
 
 Remote execution accepts the remote execution of the adopted `PlannedPushdown`. Its Arrow stream must have
 exactly the remote plan's output column names, order, Analytics types, and
@@ -981,9 +955,9 @@ read in one query may reflect different points in time.
 
 ### Data read conformance tests
 
-The conformance suite checks, with each connector's fixture, that the
-connector meets this section and produces the types and values it returns in
-metadata retrieval ([Tests](connector-implementation.md#tests)):
+These tests check, with each connector's fixture, that the connector meets
+this section and produces the types and values it returns in metadata
+retrieval:
 
 - Each Connector has fixtures with boundary values for every mapping rule
   (minimum, maximum, precision limit, time zones, NULL) and values that cannot
@@ -1054,9 +1028,7 @@ A plan whose required shape or fields cannot be read is rejected as `invalid
 request`. A plan outside the shared contract shape is also rejected as
 `invalid request`. A requested plan inside the shared subset can still be
 `Unsupported` by a connector for its current Data Source facts; that is a
-normal planning outcome, not an invalid request. Adapters check in their own
-tests that the plans they build have the expected shape
-([Plan construction](adapter-implementation.md#plan-construction)).
+normal planning outcome, not an invalid request.
 
 The initial accepted offered shape is:
 
@@ -1121,8 +1093,8 @@ namespace, and table. A caller copies it from the table metadata, whether it
 read the metadata from the Connector or from a store of registered metadata
 such as the Physical Catalog
 ([Catalog paths](architecture.md#catalog-paths)), and never builds it from
-other spellings of the names. The SDK validates `namedTable` as a non-empty
-opaque `TableBinding`. Only the Connector interprets it. During Connector planning, the Connector must ensure
+other spellings of the names. Validation requires `namedTable` to be a
+non-empty opaque table binding. Only the Connector interprets it. During Connector planning, the Connector must ensure
 that the binding belongs to the current Data Source Session and resolve the
 physical relation, columns, and source facts required by its rules and query
 generator. Their representation and validation are Connector-private; failures
@@ -1146,19 +1118,17 @@ Details of the shape:
 
 A plan in the current common validation subset reads exactly one named table.
 The offered plan expresses logical operators as `FilterRel` and `ProjectRel`.
-Connector rewrite rules operate on the strictly typed `LogicalPlan`; generated
-remote and local plans are checked by internal decomposition-contract
-assertions rather than passed through the external-input validator. Converting
-them back to Substrait preserves explicit `FilterRel` and `ProjectRel` nodes,
-with the local operators above `RemoteResult`. Limit, aggregation, sort, TopN,
+The remote and local plans a connector returns have the structure in
+[Read request](#read-request) and keep explicit `FilterRel` and `ProjectRel`
+nodes, with the local operators above `RemoteResult`. Limit, aggregation, sort, TopN,
 and join remain outside the common validation subset until their end-to-end
 validation, execution, and adapter rewrite paths exist. Adding them does not
 add operator-specific planner methods: they become additional shapes inside a
 complete request.
 
-The library pins the Rust Substrait protobuf dependency used to represent
-`Plan`; request-shape validation does not impose a separate runtime policy on
-the plan's version metadata. Adapters build only a complete region their native
+Request-shape validation does not impose a runtime policy on the plan's
+Substrait version metadata; the library accepts the Substrait version it was
+built with. Adapters build only a complete region their native
 planner can rewrite around safely; they do not need to convert a whole SQL
 statement or native plan.
 
@@ -1169,16 +1139,17 @@ CNF, DNF, or another normal form. A filter remains a Substrait expression tree,
 including nested expressions and disjunctions. The initial shared validation
 profile resolves declared function anchors through the pinned comparison and
 Boolean extension URIs, resolves direct base-schema field positions, typed
-scalar literals, function result types, and arity into `LogicalExpression`, and
-checks that a filter condition has a Boolean result. It does not independently
-type-check a Query Engine-produced expression tree. Substrait expressions are
-regenerated from the connector-owned model when a plan crosses the boundary.
+scalar literals, function result types, and arity, and checks that a filter
+condition has a Boolean result. It does not independently type-check a Query
+Engine-produced expression tree. The Substrait expressions in returned plans
+are regenerated by the connector rather than copied from the offered plan.
 A declared function outside the initial mapping remains structurally valid but
 is marked as preventing pushdown, so the containing operator remains in the
-local plan. SQL translation also reports `Unsupported` if such an expression is
-presented in a remote plan. Connector rewrite rules use the metadata loaded for
-the planning call to decide whether each concrete expression has the required
-meaning for the Data Source and session before it remains in the remote plan.
+local plan; a connector never places such an expression in a remote plan and
+reports `Unsupported` rather than generate one. Before an expression remains in
+the remote plan, the connector decides from the Data Source and session facts
+it obtained for the planning call whether that expression has the required
+meaning there.
 The offered semantics of a comparison are the comparison its Analytics type
 defines ([Comparison](analytics-types.md#comparison)); a Data Source's own
 comparison does not change them.
@@ -1259,19 +1230,12 @@ another URI, a user-defined type that does not reference the declared
 
 The Adapter offers a complete native region it can safely rewrite around. It
 may issue other complete requests for alternative regions or topologies.
-Pushdown planning evaluates that whole offered `LogicalPlan`. The Connector resolves
-required source facts and supplies
-its finite, tested rewrite rules; the SDK applies those rules in sequence.
-Every rule converts one complete remote/local plan into another. Planning
-returns a remote plan, an optional local plan, and the directly executable
-remote query. Data Source attributes used by the rule come from the Data Source
-Session and must be valid for planned execution rather than copied from an
-older Physical Catalog registration.
-
-Rules are evaluated in deterministic configured order. The initial `QueryPlan`
-reduces the remote plan to the base read and represents the offered filter and
-projection over `RemoteResult` in the local plan. A rule that cannot move or
-rewrite more work returns that plan unchanged; an error stops rule evaluation.
+Pushdown planning evaluates that whole offered plan. The Connector resolves
+the required source facts and decides, with its finite, tested rewrite rules,
+which work runs remotely. Planning returns a remote plan, an optional local
+plan, and the directly executable remote query. Data Source attributes used in
+that decision come from the Data Source Session and must be valid for planned
+execution rather than copied from an older Physical Catalog registration.
 
 The Connector result is one of:
 
@@ -1288,17 +1252,17 @@ limits to the Connector.
 
 The remote plan need not be a structural subset of the offered plan. A rewrite
 may introduce intermediate aggregates, such as remote `SUM` and `COUNT` with a
-local division for partial `AVG` pushdown. The Connector owns the semantic
-equivalence guarantee for each rule; the SDK does not prove it.
+local division for partial `AVG` pushdown. The Connector guarantees that the
+remote plan followed by the local plan is semantically equivalent to the
+offered plan.
 
 The Adapter owns native scan state, join shape, and local-plan conversion. If it wants
 the optimizer to compare materially different regions or join topologies, it
 issues multiple complete requests. The Connector does not combine those
-requests. The SDK does not evaluate arbitrary residual predicates over Arrow
-batches.
+requests. The connector does not evaluate residual predicates over the Arrow
+batches it returns; remaining work is in the local plan.
 
-Only the connector's plan-aware result authorizes a rewrite. The complete
-ownership and lifecycle model is in [Pushdown planning](pushdown-planning.md).
+Only the connector's plan-aware result authorizes a rewrite.
 
 ## Connector API
 
@@ -1342,11 +1306,11 @@ The connector API has these functions:
   as a serialized `Plan`, with no envelope or version field of its own: the
   library and its adapters are built together
   ([Compatibility and versions](#compatibility-and-versions)). The Adapter constructs that
-  region from a maximal native pattern it can rewrite around. After common
-  validation, the Connector loads private metadata for the opaque table
-  bindings and any Data Source facts required by the region. The standard SDK
-  planner applies the Connector's tested remote/local rewrite rules, and the
-  Connector constructs the remote executable query. The result is `Planned` or
+  region from a maximal native pattern it can rewrite around. After
+  validation, the Connector resolves the opaque table bindings and any Data
+  Source facts required by the region, decomposes it, and constructs the
+  remote executable query ([Planning and residual operators](#planning-and-residual-operators)).
+  The result is `Planned` or
   `Unsupported`; a planned result carries remote and optional local Substrait
   plans plus the executable query. Planning, including its metadata loading,
   is bounded by a timeout the library fixes; the caller passes none and cannot
@@ -1403,8 +1367,6 @@ planning result. Source attributes used in planning are treated as unchanged
 ([Read request](#read-request)), and a schema or object mismatch found by the
 [schema check](#schema-check) is `stale registration`. The current execution does not invoke
 the optimizer again, but its caller may retry the query and cause replanning.
-The complete responsibility and control flow are in
-[Pushdown planning](pushdown-planning.md).
 
 A metadata request returns its whole result, and both comparisons return
 their differences, as trees of C structures that pass to the caller, which
@@ -1507,8 +1469,8 @@ settings of its own, so adding a Connector does not change the application
 
 ### Data Source access rules
 
-Each connector chooses one form of Data Source access by the rules in
-[Connector API and Data Source access](#connector-api-and-data-source-access) and states
+Each connector uses one form of Data Source access
+([Connector API and Data Source access](#connector-api-and-data-source-access)) and states
 it in its static information.
 
 With ADBC access:
@@ -1528,24 +1490,18 @@ With ADBC access:
   errors and whose cancellation stops the query at the source.
 - The name and version of the driver used are recorded in retrieval info,
   because a different driver version can return different types or values.
-- Raising the driver version means rerunning that connector's metadata and
-  data read conformance tests with the new version.
 
 With direct access:
 
-- The implementation is written in Rust without native dependencies and built
-  into the library.
-- The connector fixes the reader crate settings that change how types and
+- The code that reads the source is built into the library.
+- The connector fixes the settings of that code that change how types and
   values are produced, and raises its version when it changes them.
-- The implementation and the clients and reader crates it uses keep secret
-  values out of logs and errors.
-- The implementation can stop reads and source calls in progress on
-  cancellation and timeout ([Cancellation and timeouts](#cancellation-and-timeouts)).
-- Reader crate versions are pinned as dependencies of the connector crate.
-  Changing one raises the connector version, and retrieval info identifies it
-  through the connector's name and version.
-- Raising a reader crate version means rerunning that connector's metadata and
-  data read conformance tests with the new version.
+- That code keeps secret values out of logs and errors.
+- The connector can stop reads and source calls in progress on cancellation
+  and timeout ([Cancellation and timeouts](#cancellation-and-timeouts)).
+- The versions of the libraries that code uses are fixed for each connector
+  version. Changing one raises the connector version, and retrieval info
+  identifies it through the connector's name and version.
 
 ## Support tiers
 
@@ -1558,7 +1514,7 @@ and [Unsupported columns](#unsupported-columns) they satisfy.
 | Tier | What it is | Rules not met | Recurring problem |
 | --- | --- | --- | --- |
 | Data Source-specific | Reads the source's own catalog (for table formats and files, their own metadata) through an ADBC driver dedicated to the source or through direct access | None | None |
-| Generic ODBC | Reaches the source through an ADBC driver that uses ODBC, adding per-source dialect tables and type mappings on top of the processing shared by SQL sources | For sources whose own catalog cannot be read through ODBC, Data Source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
+| Generic ODBC | Reaches the source through an ADBC driver that uses ODBC, with a dialect and type mapping per source | For sources whose own catalog cannot be read through ODBC, Data Source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
 
 When Data Source types come from an ODBC driver's report, their origin differs
 from the origin in the existing source kind's type mapping. Because there is
@@ -1571,19 +1527,12 @@ Source-specific. The connector reads the engine's catalog and maps the engine's
 types; how the engine maps the sources behind it is the engine's
 responsibility, not the connector's.
 
-The breadth of sources reached through ADBC access depends on the ADBC driver
-ecosystem and the maturity of the shared SQL-family processing rather than on
-the number of connectors. Where an ADBC driver exists, a connector reduces to
-source knowledge: catalog reading, dialect, and type correspondence.
-
 ## Implementability
 
 The contract must be implementable by connectors other than PostgreSQL and
-MySQL.
-[Applying the conventions to other sources](connector-implementation.md#applying-the-conventions-to-other-sources)
-shows how Oracle, ScalarDB, generic ODBC, Trino, and Iceberg connectors meet
-each item or stay within the contract by recording what they do not offer.
-From those cases, the contract does not presuppose that:
+MySQL, such as connectors for Oracle, ScalarDB, generic ODBC, Trino, and
+Iceberg, each meeting every item or staying within the contract by recording
+what it does not offer. The contract therefore does not presuppose that:
 
 - requests run at the source as SQL; planning requests arrive as Substrait,
   and the connector decides support and translation from the plan and current

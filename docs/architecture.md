@@ -136,7 +136,7 @@ An outer component may select and compose capabilities from inner components.
 An inner component must not inspect or branch on the identity of an outer
 source. Connector crates do not depend on one another. The detailed
 responsibilities and dependency rules are in
-[Connector internals](connector-internals.md#structure-and-dependency-direction).
+[Connector SDK](connector-sdk.md#structure-and-dependency-direction).
 
 ## Connector flow
 
@@ -260,12 +260,12 @@ inside the Analytics type system.
 | [Analytics type model](analytics-types.md) | Understand the shared type vocabulary and its Arrow encoding |
 | [Pushdown planning](pushdown-planning.md) | Define the pushdown glossary, lifecycle, query decomposition, remote query generation, ownership, and planning boundary |
 | [Query-engine pushdown integration](query-engine-pushdown.md) | Map Spark, Trino, DataFusion, or DuckDB planner hooks onto the shared pushdown model |
-| [Connector internals](connector-internals.md) | Change the connector SDK, the connector API implementation, or crate structure |
+| [Connector SDK](connector-sdk.md) | Change the connector SDK, the connector API implementation, or crate structure |
 | [Connector implementation conventions](connector-implementation.md) | Implement or change one Connector |
 | [Query Engine adapter implementation conventions](adapter-implementation.md) | Implement or change one Query Engine adapter |
 
 Callers of connectors (adapters, the Physical Catalog, and the application)
 need the contract and the type model. Connector implementers continue with the
-type mappings, the internals, and the implementation conventions, in that
+type mappings, the connector SDK, and the implementation conventions, in that
 order. Adapter implementers continue with pushdown planning, the Query Engine
 pushdown mapping, and the adapter implementation conventions.

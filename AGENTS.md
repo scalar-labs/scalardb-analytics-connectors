@@ -3,7 +3,7 @@
 ## Sources of truth
 
 - Start with `README.md` and `docs/architecture.md`. Follow
-  `docs/connector-contract.md` for the contract, `docs/connector-internals.md`
+  `docs/connector-contract.md` for the contract, `docs/connector-sdk.md`
   for crate boundaries, `docs/connector-implementation.md` for Connector
   conventions, and `docs/adapter-implementation.md` for Query Engine adapter
   conventions.
@@ -14,7 +14,7 @@
   from the file tree. Keep model-owned logic and flows nearby, and separate
   external representations and I/O at boundaries.
 - Follow the crate responsibilities and dependency direction in `README.md` and
-  `docs/connector-internals.md`.
+  `docs/connector-sdk.md`.
 - Keep domain concepts and the data model minimal. Do not introduce another
   name, trait, wrapper, or intermediate representation when existing types and
   operations already express the behavior.
