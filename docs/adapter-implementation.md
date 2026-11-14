@@ -142,12 +142,14 @@ An adapter follows these conventions when it translates a native region:
   native planner presents together are offered as one plan. Alternative regions
   or join topologies are separate requests
   ([Alternative requests and joins](query-engine-pushdown.md#alternative-requests-and-joins)).
-- **The binding is copied, not built.** `namedTable` carries the table binding
-  exactly as the Physical Catalog stores it. The adapter never derives it from
-  source names, because only the Connector interprets it.
-- **The base schema is the registered schema.** `baseSchema` encodes the
-  Analytics types and nullability that the Physical Catalog registered for the
-  table, with every nullability explicit. Unsupported columns are not part of
+- **The binding is copied, not built.** `namedTable` carries the table's name
+  path exactly as its table metadata returns it, whichever
+  [catalog path](architecture.md#catalog-paths) supplied the metadata. The
+  adapter never builds it from a user's spelling of the names, because only the
+  Connector interprets it.
+- **The base schema is the table metadata's schema.** `baseSchema` encodes the
+  Analytics types and nullability that the table metadata gives the table, with
+  every nullability explicit. Unsupported columns are not part of
   it, so a native region that uses one is not offered
   ([Relation to table metadata and unsupported columns](connector-contract.md#relation-to-table-metadata-and-unsupported-columns)).
 - **Scan-local hooks become explicit operators.** When a Query Engine hands the

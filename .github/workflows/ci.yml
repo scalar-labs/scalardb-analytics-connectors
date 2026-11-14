@@ -20,6 +20,13 @@ jobs:
         run: nix develop --command cargo build --workspace --all-targets
       - name: Test workspace
         run: nix develop --command cargo test --workspace --all-features
+      - name: Build DuckDB adapter
+        run: |
+          nix develop --command cargo build -p connector-api --features test-connector,postgresql
+          nix develop --command cmake -S adapters/duckdb -B target/duckdb-adapter -G Ninja
+          nix develop --command cmake --build target/duckdb-adapter
+      - name: Test DuckDB adapter
+        run: nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
       - name: Lint workspace
         run: nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Check dependency policy

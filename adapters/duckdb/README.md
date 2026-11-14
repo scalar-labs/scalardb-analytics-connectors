@@ -1,0 +1,249 @@
+# DuckDB adapter
+
+The DuckDB Query Engine adapter attaches each Data Source to DuckDB as one
+read-only catalog and plans every scan of its tables through the connector
+API's pushdown planning. It is a C++ DuckDB extension built with CMake against
+DuckDB v1.5.2, the version the Nix development shell provides; the adapter
+uses DuckDB's C++ API, so a binary works only with that DuckDB version.
+
+The adapter follows the
+[adapter implementation conventions](../../docs/adapter-implementation.md).
+This document records what is specific to DuckDB.
+
+## Attaching Data Sources
+
+A Data Source attaches with the `scalardb_analytics` type. The path names the
+Connector, and every other option is a connection option of that Connector.
+Each option has the value type the Connector declares in the library's static
+information: a string, a 64-bit integer, or a boolean. A value of another type
+is rejected rather than converted, so `port '5432'` fails where `port 5432` is
+accepted, and an option the Connector does not declare fails the ATTACH:
+
+```sql
+ATTACH 'postgresql' AS pg (TYPE scalardb_analytics,
+    host '127.0.0.1', port 5432, database 'postgres', user 'postgres', password '...');
+SELECT * FROM pg.public.orders WHERE id = 1;
+```
+
+The catalog's schemas are the Connector's readable namespaces, named by their
+name path joined with dots, such as `test.public`; a name containing a dot or
+a double quote is double-quoted inside it, as in `test."a.b"`, so that distinct
+name paths never share a schema name. Its tables are their
+tables, with the columns that have an Analytics type. A column without one
+(unsupported, or its type not read) is a virtual column: `*` and `DESCRIBE`
+leave it out, naming it fails with the reason it has no Analytics type, and
+the table's comment (`duckdb_tables()`) lists such columns with their
+reasons. A table has no `rowid`. Schema and table names resolve as DuckDB
+identifiers do: an exact match, or else the one name that differs only in
+case. A name the lists do not hold is described by its own request before it
+is reported missing, so a namespace or table the Connector could not read
+fails with the Connector's reason rather than as one that does not exist. The
+lists, which DuckDB's enumeration such as `information_schema` shows, hold
+only what the Connector could read. Namespaces, tables, table metadata, and
+names described as missing are read when DuckDB first looks them up and are
+kept for the life of the attached catalog, because DuckDB's
+catalog entries must outlive the lookups that return them; to see changes in
+the source, DETACH and ATTACH again. One exception is a table the Connector
+reports as a stale registration, when planning or reading finds that its
+shape no longer matches the source: the failing query reports it with that
+kind, and the next query that uses the table describes it again. The
+replaced entry is kept, since a bound query may still use it. Every Connector
+error names its kind, as the contract does. Writes and DDL fail. ANALYZE and
+VACUUM fail because DuckDB keeps statistics only for its own tables, but only
+after reading the whole table. ATTACH fails when the
+database disables external access (`enable_external_access`).
+
+Three DuckDB settings limit how long a request to a Data Source may take, in
+milliseconds; 0, the default, sets no limit:
+
+| Setting | Limits | Read when |
+| --- | --- | --- |
+| `scalardb_analytics_connection_timeout` | Connecting while the Data Source and its sessions open, which cannot be cancelled | the Data Source is attached |
+| `scalardb_analytics_metadata_timeout` | Each catalog request: namespace and table lists and descriptions | the Data Source is attached |
+| `scalardb_analytics_read_timeout` | Each read, from its first row to its end | a scan starts |
+
+A request over its limit fails with the `timeout` kind. Interrupting a DuckDB
+query does not cancel a request already sent to the Data Source; it ends when
+the source answers or its limit passes. Planning is limited by the library
+itself.
+
+`PRAGMA scalardb_analytics_attach('<file>')` attaches every Data Source a JSON
+definitions file lists, each as its own catalog as an ATTACH does. It attaches
+them directly rather than through generated ATTACH statements, so the
+connection options never appear in DuckDB's query log:
+
+```json
+[
+  {"name": "pg", "connector": "postgresql", "options": {"host": "127.0.0.1", "password": "..."}},
+  {"name": "sales", "connector": "mysql", "options": {"host": "..."}}
+]
+```
+
+Each entry has exactly a non-empty string `name` and `connector` and an
+optional `options` object whose values are strings, integers, or booleans;
+names are unique ignoring
+case, and an option may not be one DuckDB takes for itself in ATTACH (`type`,
+`read_only`, `readonly`, `read_write`, `readwrite`, `hidden`, `default_table`,
+`recovery_mode`). A file that breaks any of these is rejected with a message
+that names the entry and key but no value. Either every entry is attached or
+none is: when one fails to attach, the ones attached before it are detached.
+
+The file stands in for the list of registered Data Sources while no catalog
+service provides it. Its connection options, including credentials, are plain
+text. DuckDB resolves a PRAGMA while it parses a batch of statements, so the
+pragma runs in a batch after the one that loads the extension, not in the same
+batch.
+
+## Entry points
+
+The loadable extension, `scalardb_analytics.duckdb_extension`, owns the
+connector API library: it initializes the library when DuckDB loads it and
+never shuts it down, because DuckDB does not unload extensions. It reads the
+ADBC driver directory from the environment variable
+`SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY`, because DuckDB applies an
+extension's own settings only after loading it. The extension is unsigned, so
+DuckDB loads it only with unsigned extensions allowed.
+
+An application that embeds DuckDB and owns an initialized library uses
+[`scalardb_analytics_duckdb.hpp`](include/scalardb_analytics_duckdb.hpp)
+instead: `Register` adds the attach type and the pragma to a database without
+touching the library's lifecycle.
+
+## Catalog sources
+
+A Query Engine reads table metadata through one of two paths
+([Catalog paths](../../docs/architecture.md#catalog-paths)): through the
+Physical Catalog, or directly from the Connector. The adapter implements the
+direct path and keeps the other one replaceable:
+
+| Part | Responsibility |
+| --- | --- |
+| `CatalogSource` | Lists namespaces and tables, and describes one namespace (`NamespaceMetadata`) or one table (`TableMetadata`, the connector API structures) |
+| `ConnectorCatalogSource` | The direct path, over `namespace_list`, `table_list`, and `table_metadata`; a namespace is described by a list filtered to its name |
+| `CreateCatalog` | Builds the DuckDB catalog of one Data Source from any catalog source |
+
+A catalog source returns table metadata with the means to release it, and the
+adapter owns it from then on: it releases the metadata when the table's
+catalog entry is dropped. A component that holds registered metadata, such as
+a Physical Catalog client, implements `CatalogSource`, opens the
+`DataSource`, and calls `CreateCatalog` from its own attach function; it
+depends on this adapter, not the reverse.
+
+## Planning a scan
+
+DuckDB's filter pushdown optimizer calls the scan's `pushdown_complex_filter`
+for every scan, with or without filters. At its first call the adapter offers
+the scan's region as one complete request: a bare read of the table, the
+pushed filters Substrait can express, and the columns the query references. A
+filter it cannot express, such as one calling a DuckDB function, stays in
+DuckDB. Only equality is offered for extension-encoded types, whose order the
+Analytics types do not define. DuckDB binds an Enum column compared with a
+string as the column cast to VARCHAR; the adapter offers that as Enum equality
+when the string is a member, and leaves it in DuckDB otherwise.
+
+Floating-point comparisons are offered although NaN makes their meanings
+differ, as a known limitation. DuckDB orders NaN above every other value and
+treats NaN as equal to NaN; an offered comparison has its Analytics meaning,
+which the contract does not define for NaN. A comparison a Connector keeps in
+the local plan is lowered back to DuckDB's comparison and keeps DuckDB's
+meaning, as the PostgreSQL Connector does for every floating-point comparison.
+One a Connector evaluates at its Data Source may select rows holding NaN
+differently from DuckDB.
+
+DuckDB may call again after a region was adopted, as its CTE filter pusher
+does for a materialized CTE. The adopted region has already taken its filters
+out of DuckDB, so planning again with only the new filters would lose them;
+the new filters stay in DuckDB. When the filter pushdown optimizer is
+disabled, DuckDB never calls, and the scan plans a read of the columns it is
+asked for when it starts, with every filter left in DuckDB.
+
+```text
+pushdown_complex_filter(filters)
+  request 1: ReadRel -> FilterRel(expressible filters) -> ProjectRel(columns)
+    adoptable: record the result in the scan and remove the covered filters
+  request 2: ReadRel -> ProjectRel(columns), every filter left in DuckDB
+    adoptable: record the result
+  neither:   nothing changes; the scan fails at execution with the reasons
+```
+
+A result is adoptable when the remote output is the shape the adapter reads
+and its local plan lowers to DuckDB expressions that produce the requested
+columns. Adoption changes the scan's bind data and DuckDB's filter list
+together; an unsupported result, an error, or a result that cannot be lowered
+changes neither, and its remote execution is freed. A later call, with filters
+DuckDB pushes further down, keeps an adopted result and leaves those filters in
+DuckDB. A scan whose region was never offered, as when DuckDB's optimizer is
+disabled, plans the read of its columns alone when it starts.
+
+Execution starts a read of the adopted remote execution, checks the stream's
+Arrow schema against the planned remote output, converts batches with DuckDB's
+Arrow reader, and evaluates the local filter and projection in the scan.
+
+Joins, aggregation, and other regions need a DuckDB optimizer extension and
+are not offered.
+
+## Type mapping
+
+Each Analytics type maps to one DuckDB type
+([Execution](../../docs/analytics-types.md#execution)):
+
+| Analytics type | DuckDB type | Loss |
+| --- | --- | --- |
+| Boolean | BOOLEAN | Lossless |
+| Byte, SmallInt, Int, BigInt | TINYINT, SMALLINT, INTEGER, BIGINT | Lossless |
+| Float, Double | FLOAT, DOUBLE | Lossless |
+| Decimal(p, s), s ≥ 0 | DECIMAL(p, s) | Lossless |
+| Decimal(p, s), s < 0 | DOUBLE | DuckDB has no negative scale; the value becomes an approximate floating-point number. Inside an Array, Map, or Struct it is not mapped, and a table with such a column cannot be bound |
+| Text | VARCHAR | Lossless |
+| Blob | BLOB | Lossless |
+| Date | DATE | Lossless |
+| Time | TIME | Lossless |
+| Timestamp | TIMESTAMP | Lossless |
+| TimestampTz | TIMESTAMP WITH TIME ZONE | Lossless |
+| Duration | INTERVAL | The microseconds are kept; INTERVAL arithmetic is not that of a fixed-length duration |
+| Interval | INTERVAL | Nanoseconds are truncated to microseconds |
+| Array(T) | LIST of T's type | As T |
+| Map(K, V) | MAP of K's and V's types | As K and V |
+| Struct(...) | STRUCT of the fields' types | As each field |
+| Uuid | UUID | Lossless |
+| Json | JSON | Lossless; the text is kept as DuckDB's JSON type |
+| Enum | ENUM of the members | Lossless |
+| Year | SMALLINT | The meaning of a year is lost |
+| TimeWithTimeZone | VARCHAR | The time-of-day meaning is lost and the text is kept, because DuckDB's TIMETZ compares instants rather than time and zone |
+
+The Uuid and TimeWithTimeZone rows depend on their Arrow storage, which may
+still change.
+
+## Building and testing
+
+The connector API library is built first, with the Connectors the tests open;
+CMake links the extension and the tests against it. The PostgreSQL tests start
+a PostgreSQL server in Docker, as the PostgreSQL Connector's own tests do.
+
+```sh
+nix develop --command cargo build -p connector-api --features test-connector,postgresql
+nix develop --command cmake -S adapters/duckdb -B target/duckdb-adapter -G Ninja
+nix develop --command cmake --build target/duckdb-adapter
+nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
+```
+
+`ctest` runs two suites. The end-to-end test,
+[`test/e2e.sh`](test/e2e.sh), runs the DuckDB CLI of the development shell,
+loads the built extension, which initializes the library itself, and queries
+PostgreSQL as a user would: complete and partial pushdown with their plans, an
+aggregate, a join with a DuckDB table, a rejected write, and the bulk-attach
+pragma with the query log checked for the password.
+
+The integration tests embed DuckDB through the embedding entry. Against the
+items of [Integration tests](../../docs/adapter-implementation.md#integration-tests):
+
+| Item | Coverage |
+| --- | --- |
+| Complete pushdown; partial pushdown with intermediate columns | PostgreSQL cases, including one query with a filter pushed to PostgreSQL and a filter kept local, and the end-to-end test through the loadable extension |
+| Unlowerable local plan, then another request adopted; unsupported results and errors; the DuckDB rollback case | Test Connector cases |
+| Fully-local fallback; read, projection, and filter offered as one region; execution of the adopted remote execution | Test Connector cases, over rows that each filter tells apart. Execution covers one batch larger than DuckDB's vector size, a value of every Analytics type with its mapped type, a scan the optimizer never offers, and a later callback. The local plan runs inside the scan over its one remote stream, so no case can observe a second read |
+| Every offered plan passes validation | A test Connector case over a table of every Analytics type kind, one condition per query on each comparable one, each stating whether it is offered |
+| Connector-introduced expressions | Not covered: no Connector produces a local expression beyond the offered filter and column selections yet |
+| The first scan initializes the exact base `ReadRel` before later attempts | Not applicable: a scan makes its attempts in one callback, each from the base `ReadRel` built from the table metadata |
+| Alternative join shapes | Out of scope: the adapter offers no join regions, which need an optimizer extension |
+| Native handle persistence | Out of scope: DuckDB plans and executes in one process |

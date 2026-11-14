@@ -307,7 +307,7 @@ unresolvable host name is not retryable.
 | `permission` | There is no privilege to read a particular target (not retryable). |
 | `invalid request` | The request's shape or range is invalid (not retryable). |
 | `invalid state` | The call order or session state prevents accepting the request ([Units and concurrency](#units-and-concurrency), [Cancellation and timeouts](#cancellation-and-timeouts)). Finish the running stream or reopen an unusable session. |
-| `stale registration` | The table shape registered in the Physical Catalog no longer matches the source: the schema check found a type or nullability mismatch ([Schema check](#schema-check)), or a table or column the request references no longer exists. Re-registration is required (not retryable). |
+| `stale registration` | The table shape used for planning, registered in the Physical Catalog or read earlier from the Connector, no longer matches the source: the schema check found a type or nullability mismatch ([Schema check](#schema-check)), or a table or column the request references no longer exists. The table metadata must be read again, by re-registration or by the caller's own reread (not retryable). |
 | `data` | A value that cannot be carried exactly was encountered ([Values](#values)) (not retryable). |
 | `cancellation` | The caller cancelled (not retryable). The caller cancelled, so the caller decides whether to resend. |
 | `timeout` | The specified time was exceeded (retryable). |
@@ -890,8 +890,9 @@ differs between metadata retrieval and data read would contradict the
 single-interpreter principle and is not allowed.
 
 Unsupported columns never appear in a read stream. The expected schema is built
-from the Physical Catalog's Analytics types and contains no unsupported
-columns. A request that references an unsupported column in its projection or
+from the Analytics types of the table metadata used for planning, through
+either [catalog path](architecture.md#catalog-paths), and contains no
+unsupported columns. A request that references an unsupported column in its projection or
 filter fails during Query Engine planning
 ([Unsupported columns](analytics-types.md#unsupported-columns)) and never
 reaches the connector. If one does reach it, the connector returns
@@ -1097,8 +1098,14 @@ The `RemoteResult` schema equals the remote plan's output schema, and column
 references in the local `FilterRel` and `ProjectRel` are positions in it. The
 Adapter replaces the leaf with the remote Arrow stream.
 
-The SDK validates `namedTable` as a non-empty opaque `TableBinding`. Only the
-Connector interprets it. During Connector planning, the Connector must ensure
+A table's binding is the name path its
+[table metadata](#table-metadata) returns, the names of its catalog, if any,
+namespace, and table. A caller copies it from the table metadata, whether it
+read the metadata from the Connector or from a store of registered metadata
+such as the Physical Catalog
+([Catalog paths](architecture.md#catalog-paths)), and never builds it from
+other spellings of the names. The SDK validates `namedTable` as a non-empty
+opaque `TableBinding`. Only the Connector interprets it. During Connector planning, the Connector must ensure
 that the binding belongs to the current Data Source Session and resolve the
 physical relation, columns, and source facts required by its rules and query
 generator. Their representation and validation are Connector-private; failures

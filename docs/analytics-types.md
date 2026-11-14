@@ -201,13 +201,15 @@ that mapping:
 | Enum | ENUM, lossless | StringType; the member set and order are lost |
 
 The table must be complete. The library and its adapters are updated
-together, so an adapter never receives a type missing from its table. Everything else, such as precision and scale, timestamp unit and time
+together, so an adapter never receives a type missing from its table. The
+DuckDB adapter's complete table is in its
+[README](../adapters/duckdb/README.md#type-mapping). Everything else, such as precision and scale, timestamp unit and time
 zone, nullability, and nesting, is carried by the Arrow schema.
 
 ### Unexpected types
 
 An adapter converts the schema it receives at the head of the stream into Query
-Engine types according to the Physical Catalog types used for planning. If a
+Engine types according to the Analytics types used for planning. If a
 column name, storage type or its parameters, extension name, or nullability
 differs from the planned type, conversion fails and so does the query. This
 failure happens after the connector's

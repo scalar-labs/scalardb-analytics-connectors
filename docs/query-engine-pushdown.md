@@ -147,8 +147,9 @@ offer or reinstall the same region through its standard connector API.
 | DataFusion | `TableProvider::scan` receives projection, filters, and limit and returns an `ExecutionPlan` | Scan-local requests fit the standard provider boundary. Aggregation and join regions require a custom optimizer rule; proposals outside the installed rule's lowering support are discarded. |
 | DuckDB | Table functions receive projected columns and pushed filters | Scan-local projection and filter requests fit this boundary. Aggregation, join, and arbitrary local-plan replacement require an optimizer extension; unlowerable proposals are discarded. |
 
-These are future Adapter integration requirements, not implementations present
-in this repository. Relevant upstream contracts are [Spark Data Source V2](https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/connector/read/ScanBuilder.html),
+The [DuckDB adapter](../adapters/duckdb/README.md) implements the DuckDB row's
+scan-local boundary; the other rows are future Adapter integration
+requirements. Relevant upstream contracts are [Spark Data Source V2](https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/connector/read/ScanBuilder.html),
 [Trino `ConnectorMetadata`](https://github.com/trinodb/trino/blob/master/core/trino-spi/src/main/java/io/trino/spi/connector/ConnectorMetadata.java),
 [DataFusion `TableProvider`](https://docs.rs/datafusion/latest/datafusion/catalog/trait.TableProvider.html),
 and [DuckDB table functions](https://github.com/duckdb/duckdb/blob/main/src/include/duckdb/function/table_function.hpp).

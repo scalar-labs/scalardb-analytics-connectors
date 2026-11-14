@@ -111,6 +111,13 @@
           };
           # Directory of the ADBC drivers that connector tests load.
           adbcDriverDirectory = "${adbcDriverPostgresql}/lib";
+          # The Substrait protobuf definitions of the specification version that
+          # the Rust `substrait` crate pins; the DuckDB adapter generates its
+          # C++ Substrait types from them.
+          substraitProto = pkgs.fetchzip {
+            url = "https://github.com/substrait-io/substrait/archive/refs/tags/v0.69.0.tar.gz";
+            sha256 = "0ga2frvw9w22d8axamlb08b01piy44p3lphbnk9102vrymh5mgn6";
+          };
         in
         {
           packages.adbc-driver-postgresql = adbcDriverPostgresql;
@@ -127,6 +134,21 @@
                 name = "ADBC_DRIVER_DIRECTORY";
                 value = adbcDriverDirectory;
               }
+              # Inputs of the DuckDB adapter's CMake build.
+              {
+                name = "SUBSTRAIT_PROTO_DIR";
+                value = "${substraitProto}/proto";
+              }
+              {
+                name = "CMAKE_PREFIX_PATH";
+                value = pkgs.lib.makeSearchPath "" [
+                  pkgs.duckdb.dev
+                  pkgs.duckdb.lib
+                  pkgs.protobuf
+                  (pkgs.lib.getDev pkgs.abseil-cpp)
+                  pkgs.catch2_3
+                ];
+              }
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               {
@@ -138,6 +160,10 @@
               rustToolchain
               pkgs.clang
               pkgs.protobuf
+              pkgs.cmake
+              pkgs.ninja
+              pkgs.pkg-config
+              pkgs.duckdb
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
 

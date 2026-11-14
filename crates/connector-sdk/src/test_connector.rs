@@ -2,11 +2,15 @@
 //!
 //! It is registered only with the `test-connector` feature and never ships in
 //! a product build. Its catalog is described on [`TestCatalog`]. A plan's
-//! table binding selects what its read does:
+//! table binding selects what its read does: the binding `batches`, `<n>` or
+//! `rows`, `<n>`, or a binding whose last name is one of the others, so that an
+//! adapter can name them by a namespace and a table.
 //!
 //! | Binding | Read behavior |
 //! | --- | --- |
 //! | `batches`, `<n>` | Returns `n` batches of one row each |
+//! | `rows`, `<n>` | Returns one batch of `n` rows |
+//! | `values` | Returns a row of a fixed value of each column's type, then a row of nulls; it is checked against the unlisted table `test`, `values`, which has a column of every Analytics type |
 //! | `block` | Blocks the first pull until the read is cancelled |
 //! | `fail` | Fails the first pull with a Data Source error carrying details |
 //! | `break-connection` | Fails the first pull with a broken connection |
@@ -14,6 +18,7 @@
 //! | `check-blocks` | The schema check's catalog read blocks until the read is cancelled |
 //! | `break-connection-planning` | Planning fails with a broken connection |
 //! | `panic-planning` | Planning panics |
+//! | `unlowerable` | Returns 2 batches; a local filter is replaced by one comparing interval literals |
 //! | anything else | Planning returns unsupported |
 //!
 //! Every plan reads one non-null 64-bit integer column `value`. A planned read
@@ -32,18 +37,27 @@ use std::{
 };
 
 use crate::{
-    Access, Catalog, Column, ColumnType, Component, ConnectionOptions, Connector,
+    Access, BinaryOperator, Catalog, Column, ColumnType, Component, ConnectionOptions, Connector,
     ConnectorDescriptor, ConnectorError, Constraint, ConstraintKind, DataSourceAccess,
     DiagnosticEntry, DiagnosticValue, ErrorClass, ErrorKind, ExecutableQueryResult,
     ExecutionCancel, ExecutionOutput, Executor, GenericErrorHandler, LibrarySettings, Listed,
-    LogicalPlan, LogicalRelation, NameFilter, NamespacePath, OptionDescriptor, OptionValue,
-    OptionValueType, Planner, PlanningError, PortableQuery, Reported, RewriteRuleSet, Session,
-    SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
-    UniqueKind, UnsupportedReason,
+    LiteralValue, LogicalExpression, LogicalExpressionKind, LogicalPlan, LogicalRelation,
+    NameFilter, NamespacePath, OptionDescriptor, OptionValue, OptionValueType, Planner,
+    PlanningError, PortableQuery, QueryPlan, Reported, RewriteContext, RewriteRule, RewriteRuleSet,
+    Session, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
+    TableReference, UniqueKind, UnsupportedReason,
 };
-use analytics_types::{AnalyticsType, ArrayType, DecimalType};
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use arrow_schema::{Schema, SchemaRef};
+use analytics_types::{
+    AnalyticsField, AnalyticsType, ArrayType, DecimalType, EnumType, MapType, StructType,
+};
+use arrow_array::{
+    ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DurationMicrosecondArray,
+    Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
+    IntervalMonthDayNanoArray, ListArray, MapArray, RecordBatch, StringArray, StructArray,
+    Time64MicrosecondArray, TimestampMicrosecondArray, types::IntervalMonthDayNano,
+};
+use arrow_buffer::{NullBuffer, OffsetBuffer};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures_core::Stream;
 
 /// What the test Data Source observed, shared with the test through its label.
@@ -72,6 +86,9 @@ pub struct TestConnector;
 
 /// The table every planned read checks its schema against.
 const READS: [&str; 2] = ["test", "reads"];
+/// The unlisted table with a nullable column of every Analytics type, which
+/// a values read is checked against.
+const VALUES: [&str; 2] = ["test", "values"];
 
 impl Connector for TestConnector {
     type Access = TestAccess;
@@ -103,6 +120,24 @@ impl Connector for TestConnector {
                     value_type: OptionValueType::String,
                     default: None,
                     description: "A credential the source never reveals.".to_owned(),
+                },
+                OptionDescriptor {
+                    key: "attempts".to_owned(),
+                    secret: false,
+                    required: false,
+                    value_type: OptionValueType::Integer,
+                    default: None,
+                    description: "Accepted and unused, so callers can pass an integer option."
+                        .to_owned(),
+                },
+                OptionDescriptor {
+                    key: "verbose".to_owned(),
+                    secret: false,
+                    required: false,
+                    value_type: OptionValueType::Boolean,
+                    default: None,
+                    description: "Accepted and unused, so callers can pass a boolean option."
+                        .to_owned(),
                 },
             ],
             access: TestAccess::description(),
@@ -164,7 +199,13 @@ impl Access<TestConnector> for TestAccess {
 /// What a planned read does at the Data Source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Behavior {
+    /// One row per batch, valued by its position.
     Batches(u32),
+    /// One batch of this many rows, valued by their positions.
+    Rows(u32),
+    /// One batch of two rows: a fixed value of each column's Analytics type,
+    /// then nulls.
+    Values,
     Block,
     Fail,
     BreakConnection,
@@ -182,6 +223,8 @@ impl PortableQuery for TestQuery {
     fn to_bytes(&self) -> Vec<u8> {
         let behavior = match self.behavior {
             Behavior::Batches(count) => format!("batches {count}"),
+            Behavior::Rows(count) => format!("rows {count}"),
+            Behavior::Values => "values".to_owned(),
             Behavior::Block => "block".to_owned(),
             Behavior::Fail => "fail".to_owned(),
             Behavior::BreakConnection => "break-connection".to_owned(),
@@ -197,6 +240,8 @@ impl PortableQuery for TestQuery {
         let (behavior, schema) = text.split_once('\n').ok_or_else(invalid)?;
         let behavior = match behavior.split_once(' ') {
             Some(("batches", count)) => Behavior::Batches(count.parse().map_err(|_| invalid())?),
+            Some(("rows", count)) => Behavior::Rows(count.parse().map_err(|_| invalid())?),
+            None if behavior == "values" => Behavior::Values,
             None if behavior == "block" => Behavior::Block,
             None if behavior == "fail" => Behavior::Fail,
             None if behavior == "break-connection" => Behavior::BreakConnection,
@@ -211,22 +256,45 @@ impl PortableQuery for TestQuery {
 /// Plans a whole read remotely; its binding selects the read's behavior.
 pub struct TestPlanner;
 
-impl Planner<TestConnector> for TestPlanner {
+/// What the binding selected for one planning call.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestFacts {
     /// The read's behavior, or `None` when the binding names no behavior.
-    type Facts = Option<Behavior>;
+    behavior: Option<Behavior>,
+    /// Whether a local filter is replaced by one an adapter cannot lower.
+    unlowerable: bool,
+}
+
+impl Planner<TestConnector> for TestPlanner {
+    type Facts = TestFacts;
 
     fn planning_facts(
         _session: &Session<TestConnector>,
         offered_plan: &LogicalPlan,
-    ) -> Result<(TableReference, Option<Behavior>), PlanningError> {
+    ) -> Result<(TableReference, TestFacts), PlanningError> {
         let reads = TableReference::new(names(&READS)).expect("fixture names are non-empty");
         let Some((table_binding, _)) = offered_plan.table_read() else {
-            return Ok((reads, None));
+            return Ok((reads, TestFacts::default()));
         };
-        if matches!(table_binding.components(), [name] if name == "check-blocks") {
+        if matches!(table_binding.components(), [.., name] if name == "check-blocks") {
             let blocking = TableReference::new(names(&["test", "block"]))
                 .expect("fixture names are non-empty");
-            return Ok((blocking, Some(Behavior::Batches(1))));
+            return Ok((
+                blocking,
+                TestFacts {
+                    behavior: Some(Behavior::Batches(1)),
+                    unlowerable: false,
+                },
+            ));
+        }
+        if matches!(table_binding.components(), [.., name] if name == "unlowerable") {
+            return Ok((
+                reads,
+                TestFacts {
+                    behavior: Some(Behavior::Batches(2)),
+                    unlowerable: true,
+                },
+            ));
         }
         let behavior = match table_binding.components() {
             [name, count] if name == "batches" => {
@@ -234,12 +302,20 @@ impl Planner<TestConnector> for TestPlanner {
                     ConnectorError::new(ErrorKind::InvalidRequest, false, "invalid batch count")
                 })?))
             }
-            [name] if name == "block" => Some(Behavior::Block),
-            [name] if name == "fail" => Some(Behavior::Fail),
-            [name] if name == "break-connection" => Some(Behavior::BreakConnection),
-            [name] if name == "panic" => Some(Behavior::Panic),
-            [name] if name == "panic-planning" => panic!("the test connector panicked in planning"),
-            [name] if name == "break-connection-planning" => {
+            [name, count] if name == "rows" => {
+                Some(Behavior::Rows(count.parse().map_err(|_| {
+                    ConnectorError::new(ErrorKind::InvalidRequest, false, "invalid row count")
+                })?))
+            }
+            [.., name] if name == "values" => Some(Behavior::Values),
+            [.., name] if name == "block" => Some(Behavior::Block),
+            [.., name] if name == "fail" => Some(Behavior::Fail),
+            [.., name] if name == "break-connection" => Some(Behavior::BreakConnection),
+            [.., name] if name == "panic" => Some(Behavior::Panic),
+            [.., name] if name == "panic-planning" => {
+                panic!("the test connector panicked in planning")
+            }
+            [.., name] if name == "break-connection-planning" => {
                 return Err(PlanningError::Connector(ConnectorError::new(
                     ErrorKind::Connection,
                     true,
@@ -248,18 +324,32 @@ impl Planner<TestConnector> for TestPlanner {
             }
             _ => None,
         };
-        Ok((reads, behavior))
+        // A values read is checked against the table of every type.
+        let table = if matches!(behavior, Some(Behavior::Values)) {
+            TableReference::new(names(&VALUES)).expect("fixture names are non-empty")
+        } else {
+            reads
+        };
+        Ok((
+            table,
+            TestFacts {
+                behavior,
+                unlowerable: false,
+            },
+        ))
     }
 
-    fn rewrite_rules() -> RewriteRuleSet<Option<Behavior>> {
-        RewriteRuleSet::new()
+    fn rewrite_rules() -> RewriteRuleSet<TestFacts> {
+        let mut rules = RewriteRuleSet::new();
+        rules.push(UnlowerableLocalFilter);
+        rules
     }
 
     fn generate_query(
         remote_plan: &LogicalPlan,
-        behavior: &Option<Behavior>,
+        facts: &TestFacts,
     ) -> Result<ExecutableQueryResult<TestQuery>, PlanningError> {
-        Ok(match behavior {
+        Ok(match &facts.behavior {
             Some(behavior) if matches!(remote_plan.relation(), LogicalRelation::Read { .. }) => {
                 ExecutableQueryResult::Executable(TestQuery {
                     behavior: *behavior,
@@ -273,6 +363,68 @@ impl Planner<TestConnector> for TestPlanner {
                 reason: "the test connector does not know this table".to_owned(),
             },
         })
+    }
+}
+
+/// Replaces the condition of a local filter with `interval = interval` when
+/// the binding asks for it, so the local plan carries a literal adapters do
+/// not lower. It exists to test adapters' rejection of a planned result.
+struct UnlowerableLocalFilter;
+
+impl RewriteRule<TestFacts> for UnlowerableLocalFilter {
+    fn id(&self) -> &'static str {
+        "test.unlowerable-local-filter"
+    }
+
+    fn rewrite(
+        &self,
+        plan: QueryPlan,
+        context: RewriteContext<'_, TestFacts>,
+    ) -> Result<QueryPlan, PlanningError> {
+        let Some(local) = plan.local_plan().filter(|_| context.metadata.unlowerable) else {
+            return Ok(plan);
+        };
+        let LogicalRelation::Project {
+            input,
+            expressions,
+            output_mapping,
+        } = local.relation()
+        else {
+            return Ok(plan);
+        };
+        let LogicalRelation::Filter { input, .. } = input.as_ref() else {
+            return Ok(plan);
+        };
+        let interval = || LogicalExpression {
+            data_type: AnalyticsType::Interval,
+            nullable: false,
+            kind: LogicalExpressionKind::Literal(LiteralValue::Interval {
+                months: 1,
+                days: 0,
+                nanoseconds: 0,
+            }),
+        };
+        let condition = LogicalExpression {
+            data_type: AnalyticsType::Boolean,
+            nullable: false,
+            kind: LogicalExpressionKind::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(interval()),
+                right: Box::new(interval()),
+            },
+        };
+        let relation = LogicalRelation::Project {
+            input: Box::new(LogicalRelation::Filter {
+                input: input.clone(),
+                condition,
+            }),
+            expressions: expressions.clone(),
+            output_mapping: output_mapping.clone(),
+        };
+        let local_plan = local
+            .clone()
+            .with_root(relation, local.output_names().to_vec());
+        Ok(QueryPlan::new(plan.remote_plan().clone(), Some(local_plan)))
     }
 }
 
@@ -361,6 +513,110 @@ impl ExecutionCancel for TestCancel {
     }
 }
 
+/// `value` in each `valid` row and null in the others.
+fn each<T: Copy>(valid: &[bool], value: T) -> Vec<Option<T>> {
+    valid.iter().map(|&valid| valid.then_some(value)).collect()
+}
+
+/// A column of `field` with a fixed value of its Analytics type in each
+/// `valid` row and null in the others.
+///
+/// A nested value holds one element, entry, or field value, each a fixed
+/// value of its own type; a struct's fields hold values in its null rows too,
+/// since a field may be non-null.
+fn sample(field: &Field, valid: &[bool]) -> ArrayRef {
+    let rows = valid.len();
+    let nulls = Some(NullBuffer::from(valid.to_vec()));
+    let data_type = AnalyticsField::try_from_arrow(field)
+        .expect("test plans carry Analytics types")
+        .data_type()
+        .clone();
+    // One child value per valid row, and offsets that give each valid row
+    // one of them.
+    let children = valid.iter().filter(|&&valid| valid).count();
+    let offsets = || OffsetBuffer::from_lengths(valid.iter().map(|&valid| usize::from(valid)));
+    match (data_type, field.data_type()) {
+        (AnalyticsType::Boolean, _) => Arc::new(BooleanArray::from_iter(each(valid, true))),
+        (AnalyticsType::Byte, _) => Arc::new(Int8Array::from_iter(each(valid, 7))),
+        (AnalyticsType::SmallInt, _) => Arc::new(Int16Array::from_iter(each(valid, 7))),
+        (AnalyticsType::Year, _) => Arc::new(Int16Array::from_iter(each(valid, 2026))),
+        (AnalyticsType::Int, _) => Arc::new(Int32Array::from_iter(each(valid, 42))),
+        (AnalyticsType::BigInt, _) => Arc::new(Int64Array::from_iter(each(valid, 42))),
+        (AnalyticsType::Float, _) => Arc::new(Float32Array::from_iter(each(valid, 0.5))),
+        (AnalyticsType::Double, _) => Arc::new(Float64Array::from_iter(each(valid, 2.5))),
+        (AnalyticsType::Decimal(decimal), _) => Arc::new(
+            Decimal128Array::from_iter(each(valid, 1050))
+                .with_precision_and_scale(decimal.precision(), decimal.scale())
+                .expect("a declared decimal type is valid"),
+        ),
+        (AnalyticsType::Text, _) => Arc::new(StringArray::from_iter(each(valid, "text"))),
+        (AnalyticsType::Uuid, _) => Arc::new(StringArray::from_iter(each(
+            valid,
+            "6f1e1c2a-0000-4000-8000-000000000001",
+        ))),
+        (AnalyticsType::Json, _) => Arc::new(StringArray::from_iter(each(valid, "{\"a\":1}"))),
+        (AnalyticsType::Enum(members), _) => {
+            let first = members.members()[0].as_str();
+            Arc::new(StringArray::from_iter(each(valid, first)))
+        }
+        (AnalyticsType::TimeWithTimeZone, _) => {
+            Arc::new(StringArray::from_iter(each(valid, "10:00:00+09")))
+        }
+        (AnalyticsType::Blob, _) => Arc::new(BinaryArray::from_iter(each(valid, &[1u8, 2][..]))),
+        // 2026-01-02, 10:20:30.123456, and 2026-01-02 10:20:30.
+        (AnalyticsType::Date, _) => Arc::new(Date32Array::from_iter(each(valid, 20_455))),
+        (AnalyticsType::Time, _) => Arc::new(Time64MicrosecondArray::from_iter(each(
+            valid,
+            37_230_123_456,
+        ))),
+        (AnalyticsType::Timestamp, _) => Arc::new(TimestampMicrosecondArray::from_iter(each(
+            valid,
+            1_767_349_230_000_000,
+        ))),
+        (AnalyticsType::TimestampTz, _) => Arc::new(
+            TimestampMicrosecondArray::from_iter(each(valid, 1_767_349_230_000_000))
+                .with_timezone("UTC"),
+        ),
+        (AnalyticsType::Duration, _) => {
+            Arc::new(DurationMicrosecondArray::from_iter(each(valid, 3_000_000)))
+        }
+        (AnalyticsType::Interval, _) => Arc::new(IntervalMonthDayNanoArray::from_iter(each(
+            valid,
+            IntervalMonthDayNano::new(1, 2, 3_000_000_000),
+        ))),
+        (AnalyticsType::Array(_), DataType::List(element)) => Arc::new(ListArray::new(
+            Arc::clone(element),
+            offsets(),
+            sample(element, &vec![true; children]),
+            nulls,
+        )),
+        (AnalyticsType::Map(_), DataType::Map(entries, ordered)) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                unreachable!("map entries are a struct");
+            };
+            let entry_values = fields
+                .iter()
+                .map(|field| sample(field, &vec![true; children]))
+                .collect();
+            Arc::new(MapArray::new(
+                Arc::clone(entries),
+                offsets(),
+                StructArray::new(fields.clone(), entry_values, None),
+                nulls,
+                *ordered,
+            ))
+        }
+        (AnalyticsType::Struct(_), DataType::Struct(fields)) => {
+            let values = fields
+                .iter()
+                .map(|field| sample(field, &vec![true; rows]))
+                .collect();
+            Arc::new(StructArray::new(fields.clone(), values, nulls))
+        }
+        (data_type, _) => unreachable!("{data_type:?} is stored as its Arrow type"),
+    }
+}
+
 struct TestStream {
     behavior: Behavior,
     produced: u32,
@@ -371,12 +627,14 @@ struct TestStream {
 }
 
 impl TestStream {
-    fn batch(&self) -> RecordBatch {
+    /// A batch whose rows hold the values `first` up to `first + rows`.
+    fn batch(&self, first: u32, rows: u32) -> RecordBatch {
+        let values: Vec<i64> = (first..first + rows).map(i64::from).collect();
         let columns = self
             .schema
             .fields()
             .iter()
-            .map(|_| Arc::new(Int64Array::from(vec![i64::from(self.produced)])) as ArrayRef)
+            .map(|_| Arc::new(Int64Array::from(values.clone())) as ArrayRef)
             .collect();
         RecordBatch::try_new(Arc::clone(&self.schema), columns)
             .expect("test plans have only 64-bit integer columns")
@@ -394,11 +652,29 @@ impl Stream for TestStream {
         }
         match this.behavior {
             Behavior::Batches(count) if this.produced < count => {
-                let batch = this.batch();
+                let batch = this.batch(this.produced, 1);
                 this.produced += 1;
                 Poll::Ready(Some(Ok(batch)))
             }
-            Behavior::Batches(_) => Poll::Ready(None),
+            Behavior::Rows(count) if this.produced == 0 => {
+                this.produced = 1;
+                Poll::Ready(Some(Ok(this.batch(0, count))))
+            }
+            Behavior::Values if this.produced == 0 => {
+                this.produced = 1;
+                let columns = this
+                    .schema
+                    .fields()
+                    .iter()
+                    .map(|field| sample(field, &[true, false]))
+                    .collect();
+                Poll::Ready(Some(Ok(RecordBatch::try_new(
+                    Arc::clone(&this.schema),
+                    columns,
+                )
+                .expect("samples follow the schema"))))
+            }
+            Behavior::Batches(_) | Behavior::Rows(_) | Behavior::Values => Poll::Ready(None),
             Behavior::Block => Poll::Ready(Some(Err(this.stop.wait()))),
             Behavior::Fail => Poll::Ready(Some(Err(source_failure()))),
             Behavior::BreakConnection => Poll::Ready(Some(Err(ConnectorError::new(
@@ -465,6 +741,7 @@ pub enum TestFixture {
     OrderView,
     Events,
     Reads,
+    Values,
 }
 
 impl SourceTableMetadata for TestTable {
@@ -507,6 +784,27 @@ impl SourceTableMetadata for TestTable {
                 false,
                 Reported::NotOffered,
             ),
+            TestFixture::Values => TableMetadata::new(
+                table,
+                TableKind::Table,
+                Reported::NotOffered,
+                every_type()
+                    .into_iter()
+                    .zip(1..)
+                    .map(|((name, analytics_type), ordinal)| Column {
+                        name: name.to_owned(),
+                        ordinal,
+                        nullable: true,
+                        source_id: Reported::NotOffered,
+                        ty: ColumnType::Mapped {
+                            data_source_type: name.to_owned(),
+                            analytics_type,
+                        },
+                    })
+                    .collect(),
+                false,
+                Reported::NotOffered,
+            ),
             TestFixture::Events => TableMetadata::new(
                 table,
                 TableKind::Other("partitioned table".to_owned()),
@@ -530,6 +828,62 @@ impl SourceTableMetadata for TestTable {
             ),
         }
     }
+}
+
+/// The columns of the `values` table: one of every Analytics type, named
+/// as adapters' tests name them. A Decimal is `(10, 2)`, or `(10, -2)` for
+/// `neg`; an Array holds Text, a Map maps Text to BigInt, a Struct has one
+/// BigInt field `f`, and an Enum has the members `pending` and `done`.
+fn every_type() -> Vec<(&'static str, AnalyticsType)> {
+    let decimal =
+        |scale| AnalyticsType::Decimal(DecimalType::new(10, scale).expect("a valid decimal type"));
+    vec![
+        ("b", AnalyticsType::Boolean),
+        ("i8", AnalyticsType::Byte),
+        ("i16", AnalyticsType::SmallInt),
+        ("i32", AnalyticsType::Int),
+        ("i64", AnalyticsType::BigInt),
+        ("f32", AnalyticsType::Float),
+        ("f64", AnalyticsType::Double),
+        ("dec", decimal(2)),
+        ("neg", decimal(-2)),
+        ("txt", AnalyticsType::Text),
+        ("blb", AnalyticsType::Blob),
+        ("d", AnalyticsType::Date),
+        ("t", AnalyticsType::Time),
+        ("ts", AnalyticsType::Timestamp),
+        ("tstz", AnalyticsType::TimestampTz),
+        ("dur", AnalyticsType::Duration),
+        ("iv", AnalyticsType::Interval),
+        ("u", AnalyticsType::Uuid),
+        ("j", AnalyticsType::Json),
+        ("y", AnalyticsType::Year),
+        ("tz", AnalyticsType::TimeWithTimeZone),
+        (
+            "e",
+            AnalyticsType::Enum(EnumType::new(names(&["pending", "done"]))),
+        ),
+        (
+            "arr",
+            AnalyticsType::Array(ArrayType::new(AnalyticsType::Text, true)),
+        ),
+        (
+            "m",
+            AnalyticsType::Map(MapType::new(
+                AnalyticsType::Text,
+                AnalyticsType::BigInt,
+                true,
+            )),
+        ),
+        (
+            "st",
+            AnalyticsType::Struct(StructType::new(vec![AnalyticsField::new(
+                "f",
+                AnalyticsType::BigInt,
+                true,
+            )])),
+        ),
+    ]
 }
 
 fn column(name: &str, ordinal: u32, source_id: Reported<String>, ty: ColumnType) -> Column {
@@ -800,6 +1154,7 @@ impl Catalog<TestConnector> for TestCatalog {
                         "order_view" => read(TestFixture::OrderView),
                         "events" => read(TestFixture::Events),
                         "reads" => read(TestFixture::Reads),
+                        "values" => read(TestFixture::Values),
                         "secret" => TableRecord::Unavailable {
                             table: table.clone(),
                             reason: "permission denied for the table".to_owned(),

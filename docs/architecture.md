@@ -20,8 +20,10 @@ layers do not depend on a particular source or assembled connector.
 
 ## Product context
 
-Connectors serve the other ScalarDB Analytics components, which live outside
-this repository:
+Connectors serve the other ScalarDB Analytics components. Query Engine
+adapters live in this repository under `adapters/`, beside the connectors they
+call, starting with the [DuckDB adapter](../adapters/duckdb/README.md); the
+type conversion library and the Physical Catalog live outside it:
 
 | Component | Unit | Responsibility | Does not hold |
 | --- | --- | --- | --- |
@@ -34,10 +36,11 @@ this repository:
 Adding a data source adds no adapter, and adding a Query Engine adds no
 connector.
 
-Every column registered in the Physical Catalog carries an Analytics type, or is
-an unsupported column, together with its Data Source type. Logical plan construction,
-catalog browsing, and cross-node references use those Analytics types without
-contacting the source. During connector pushdown, the Connector resolves the
+Every column in table metadata carries an Analytics type, or is an unsupported
+column, together with its Data Source type. Logical plan construction, catalog
+browsing, and cross-node references use those Analytics types, registered in the
+Physical Catalog or read from the Connector ([Catalog paths](#catalog-paths)),
+without contacting the source again. During connector pushdown, the Connector resolves the
 opaque binding and obtains the current source facts needed to decide remote
 execution safety. A Query Engine maps Analytics types to its own types through
 its adapter. The reasons for this arrangement, including the properties it
@@ -48,9 +51,31 @@ A schema appears at three points, each with a distinct role:
 
 | Point | Origin of the schema | Role |
 | --- | --- | --- |
-| Planning | The Physical Catalog's Analytics types, returned by the connector at registration | Plan without contacting the source |
-| Read start | The Analytics types the connector derives now | Compared with the Physical Catalog's types by the [schema check](connector-contract.md#schema-check) |
+| Planning | The Analytics types in the table metadata the Query Engine plans with, through either [catalog path](#catalog-paths) | Plan without contacting the source |
+| Read start | The Analytics types the connector derives now | Compared with the planned types by the [schema check](connector-contract.md#schema-check) |
 | Read | The values the connector returns with the schema | Consistent, because one component decided the schema and produced the values |
+
+### Catalog paths
+
+A Query Engine reads the catalog it plans with, the namespaces, tables, and
+table metadata of a Data Source, through one of two paths:
+
+| Path | Source of table metadata | Access control |
+| --- | --- | --- |
+| Through the Physical Catalog | The table metadata the Connector returned at registration, which the Physical Catalog persists | ScalarDB Analytics authentication and authorization decide what a user sees |
+| Directly from the Connector | The Connector's metadata requests on an open Data Source | Only the Data Source's own privileges for the connection's credentials apply |
+
+Both paths serve the same table metadata, so planning does not depend on the
+path: the Physical Catalog holds what the Connector returned, and a direct
+read returns it now. In particular, a table's binding in an offered plan is the
+name path its table metadata returns, whichever path supplied it
+([Read request representation](connector-contract.md#read-request-representation)).
+
+An adapter reads the direct path itself and accepts the other as a
+replaceable source of table metadata, so that the component reaching the
+Physical Catalog depends on the adapter rather than the reverse. How a product
+deployment positions the direct path, which bypasses ScalarDB Analytics access
+control, is not decided here.
 
 ## System shape
 
@@ -66,6 +91,14 @@ connector-api
     +---------------------------------------------->      |
                                                           v
                                                    analytics-types
+~~~
+
+Query Engine adapters sit outside the Rust workspace, in their Query Engine's
+language, and depend only on the C API that `connector-api` exports, as any
+other caller does:
+
+~~~text
+adapters/duckdb (C++, CMake) --> C API of connector-api
 ~~~
 
 The [connector contract](connector-contract.md) defines the language-neutral
@@ -97,6 +130,7 @@ formats implement that contract without becoming a Data Source-specific layer.
 | connector-sql | Behavior shared by SQL-family connectors |
 | Connector | One supported system's catalog interpretation, type mappings, and Data Source-specific processing |
 | connector-api | C API implementation and assembly of the connector crates |
+| DuckDB adapter | DuckDB's catalog of attached Data Sources, scan planning and result adoption, and the Analytics-to-DuckDB type mapping |
 
 An outer component may select and compose capabilities from inner components.
 An inner component must not inspect or branch on the identity of an outer
