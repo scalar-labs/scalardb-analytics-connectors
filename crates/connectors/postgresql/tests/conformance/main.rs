@@ -156,7 +156,7 @@ impl Fixture for PostgresFixture {
     fn known_interruption_deviations(&self) -> Vec<(Interruption, &'static str)> {
         vec![(
             Interruption::BrokenConnection,
-            "SQLSTATE 57P01 from a terminated backend is classified as `data-source`",
+            "the Rust ADBC driver manager does not import a stream error's SQLSTATE, so a terminated connection is `data-source`",
         )]
     }
 

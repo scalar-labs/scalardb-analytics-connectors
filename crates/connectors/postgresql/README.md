@@ -57,11 +57,14 @@ These come from the driver and are not yet handled by the connector:
 - A failed authentication is reported without a SQLSTATE, so it is classified
   as `connection` rather than `authentication`.
 
-This comes from the connector:
+This comes from the Rust ADBC driver manager, which does not yet import an
+error's status, SQLSTATE, and details from a result stream
+([apache/arrow-adbc#4984](https://github.com/apache/arrow-adbc/issues/4984)):
 
-- A connection the server terminates, which PostgreSQL reports with SQLSTATE
-  `57P01`, is classified as `data-source` rather than `connection`, so the
-  session stays usable until its next request fails.
+- A connection the server terminates while a read is pulled fails the read as
+  a `data-source` error, because only the error's message reaches the
+  connector, rather than as a `connection` error. The session therefore stays
+  usable until its next request fails.
 
 The [conformance suite](#tests) checks each of these as a known deviation and
 fails once the connector meets the contract.

@@ -1010,9 +1010,13 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
   not leave the connector, such as SQL text in a driver message. Because
   the SQLSTATE comes from ADBC's error details, SQLSTATE classification lives in
   `connector-adbc`, not `connector-sql`, so ADBC-access connectors that do not
-  use `connector-sql` can use it. Errors mid-stream are retrieved in detail with
-  `AdbcErrorFromArrayStream`; when a driver does not support it, the error is
-  classified as `data-source` from its message alone.
+  use `connector-sql` can use it. Errors mid-stream are meant to be retrieved
+  in detail with `AdbcErrorFromArrayStream`, but the Rust ADBC driver manager
+  does not yet import it
+  ([apache/arrow-adbc#4984](https://github.com/apache/arrow-adbc/issues/4984)),
+  so every mid-stream error currently arrives as its message alone and is
+  classified as `data-source`, even when the source reported a connection
+  failure.
 - **Our own ADBC drivers:** a source without an existing ADBC driver gets one
   under `adbc-drivers`, built with the Apache Arrow ADBC project's Rust crates
   `adbc_core` and `adbc_ffi`. `adbc_ffi` does not implement
