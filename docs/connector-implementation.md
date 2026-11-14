@@ -20,11 +20,12 @@ Connector internals.
 Steps 1 and 2 below are decisions rather than code. Writing the connector
 crate (step 3) starts once they are made:
 
-- The Connector has a type mapping in [Type mappings](type-mappings.md), and
-  every extension-encoded type it uses is registered in the
+- The Connector's type mapping is decided, and every extension-encoded type it
+  uses is registered in the
   [Analytics type model](analytics-types.md#registered-extension-encoded-types).
   Defining a mapping or registering a type is a decision about the product's
-  type system, made and reviewed on its own before the connector is written.
+  type system, recorded in the issue tracker and reviewed on its own before
+  the connector is written.
 - The form of Data Source access and, with ADBC access, the ADBC driver are
   chosen ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers)).
 - Every item the connector must decide and the documents leave open, such as
@@ -45,9 +46,9 @@ then uses the SDK's public API like every other connector.
 
 A connector for a new Connector is built in this order:
 
-1. Confirm that the Connector has a type mapping in
-   [Type mappings](type-mappings.md); if not, define it first. There is one type
-   mapping per Connector and a connector does not invent its own. If the
+1. Decide the Connector's type mapping
+   ([Type mappings and coverage](connector-contract.md#type-mappings-and-coverage)).
+   There is one type mapping per Connector. If the
    mapping uses a new extension-encoded type, register it in the
    [Analytics type model](analytics-types.md#registered-extension-encoded-types)
    first.
@@ -77,9 +78,13 @@ A connector for a new Connector is built in this order:
    `crates/connectors/<source>/tests` and pass the suite for this connector
    alone ([Tests](#tests)). Write the connector's README from the
    [template](../crates/connectors/README.md), recording its Data Source
-   access, source metadata, coverage and unsupported types, pushdown, known
-   deviations, and the
+   access, source metadata, type mapping, coverage and unsupported types,
+   pushdown, known deviations, and the
    [compatibility table](#compatibility-table) of what the suite passed with.
+   The README's type mapping records the decided mapping, how the source
+   compares each type differently from the
+   [Analytics comparison](analytics-types.md#comparison), and which comparisons
+   the connector evaluates at the source.
 6. Register it in `connector-api`: an optional dependency and a feature of the
    same name in its `Cargo.toml`, and one entry behind that feature in
    `registry::built_in_connectors`. With ADBC access, also make the driver
@@ -111,7 +116,7 @@ written as code. The PostgreSQL connector shows where each part lives:
 | Fixed session settings and driver options | Constants, applied when the connection is opened | `lib.rs`, which passes them through `AdbcConnector::database_options` in the libpq connection string and driver options |
 | Catalog queries and excluded namespaces | SQL constants and functions run through `CatalogReads` | `catalog/listing.rs`, `catalog/table_metadata.rs` |
 | Source metadata | A document type implementing `SourceTableMetadata`, shaped by the concepts its readers use rather than by the catalog's rows, and carrying what states a table's meaning, such as comments and view definitions; code assembles it from the catalog rows and derives table metadata from it, such as resolving domains to their base types | `catalog/table_metadata.rs` assembles it; `catalog/source_metadata.rs` defines it and derives table metadata; the README's "Source metadata" section describes it |
-| Type mapping | A `match` from the parsed Data Source type to the Analytics type, mirroring [Type mappings](type-mappings.md) | `catalog/type_mapping.rs` |
+| Type mapping | A `match` from the parsed Data Source type to the Analytics type, mirroring the type mapping in the connector's README | `catalog/type_mapping.rs`; the README's "Type mapping" section |
 | Conversion of the driver's output | A table of driver Arrow type and building block per rule, and code for the conversions the SDK does not provide | `driver_output.rs` |
 | SQL spelling of identifiers and literals | `SqlDialect` code | `dialect.rs` |
 | Planning facts and remote-execution guards | Code that loads the facts the offered plan needs and decides, per expression, whether the source evaluates it with the same meaning | `pushdown.rs` |
@@ -158,7 +163,7 @@ domain or enum name, as the type mapping says.
 ### Reading the catalog
 
 - Data Source types are read from the origin the type mapping names
-  ([Common rules](type-mappings.md#common-rules)), never substituted by ADBC
+  ([Type mappings and coverage](connector-contract.md#type-mappings-and-coverage)), never substituted by ADBC
   `GetObjects` or a client library's metadata API, which report types by the
   driver's rules. With direct access, when a reader crate returns the type found
   in table-format metadata or a file footer unchanged, that type is the origin's
@@ -702,7 +707,7 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Cancellation and timeouts:** the driver's cancellation, which must stop the
   query at the source.
 - **Metadata:** read from `ALL_TABLES`, `ALL_TAB_COLUMNS`, and related views.
-  Data Source types and mapping are in [Oracle](type-mappings.md#oracle).
+  The type mapping is decided when the connector is started.
 - **Constraints:** primary keys, unique constraints, foreign keys, and CHECK
   constraints.
 - **Identifiers:** object IDs.
@@ -788,8 +793,8 @@ every case the contract, connector traits, and connector SDK stay the same.
   credentials, with secrets as separate options.
 - **Cancellation and timeouts:** the connector stops data file reads and calls
   to the catalog and object storage in progress.
-- **Metadata:** the schema in the table metadata. Data Source types and mapping are
-  in [Iceberg](type-mappings.md#iceberg).
+- **Metadata:** the schema in the table metadata. The type mapping is decided
+  when the connector is started.
 - **Constraints:** no enforced constraints. The schema's identifier fields can
   be returned as a declared-only, unenforced primary key
   ([Constraints](connector-contract.md#constraints)).

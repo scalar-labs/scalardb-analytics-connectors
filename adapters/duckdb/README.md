@@ -136,19 +136,10 @@ for every scan, with or without filters. At its first call the adapter offers
 the scan's region as one complete request: a bare read of the table, the
 pushed filters Substrait can express, and the columns the query references. A
 filter it cannot express, such as one calling a DuckDB function, stays in
-DuckDB. Only equality is offered for extension-encoded types, whose order the
-Analytics types do not define. DuckDB binds an Enum column compared with a
-string as the column cast to VARCHAR; the adapter offers that as Enum equality
-when the string is a member, and leaves it in DuckDB otherwise.
-
-Floating-point comparisons are offered although NaN makes their meanings
-differ, as a known limitation. DuckDB orders NaN above every other value and
-treats NaN as equal to NaN; an offered comparison has its Analytics meaning,
-which the contract does not define for NaN. A comparison a Connector keeps in
-the local plan is lowered back to DuckDB's comparison and keeps DuckDB's
-meaning, as the PostgreSQL Connector does for every floating-point comparison.
-One a Connector evaluates at its Data Source may select rows holding NaN
-differently from DuckDB.
+DuckDB. A comparison is expressed only when the [type mapping](#type-mapping)
+offers it for its operands' type; an offered comparison has its Analytics
+meaning, and one a Connector keeps in the local plan is lowered back to
+DuckDB's comparison.
 
 DuckDB may call again after a region was adopted, as its CTE filter pusher
 does for a materialized CTE. The adopted region has already taken its filters
@@ -185,34 +176,40 @@ are not offered.
 ## Type mapping
 
 Each Analytics type maps to one DuckDB type
-([Execution](../../docs/analytics-types.md#execution)):
+([Execution](../../docs/analytics-types.md#execution)). The offered column
+lists the comparisons the adapter offers between two operands of the type, a
+column and a constant or two columns; the last column states how DuckDB's
+comparison of the mapped type differs from the
+[Analytics comparison](../../docs/analytics-types.md#comparison):
 
-| Analytics type | DuckDB type | Loss |
-| --- | --- | --- |
-| Boolean | BOOLEAN | Lossless |
-| Byte, SmallInt, Int, BigInt | TINYINT, SMALLINT, INTEGER, BIGINT | Lossless |
-| Float, Double | FLOAT, DOUBLE | Lossless |
-| Decimal(p, s), s ≥ 0 | DECIMAL(p, s) | Lossless |
-| Decimal(p, s), s < 0 | DOUBLE | DuckDB has no negative scale; the value becomes an approximate floating-point number. Inside an Array, Map, or Struct it is not mapped, and a table with such a column cannot be bound |
-| Text | VARCHAR | Lossless |
-| Blob | BLOB | Lossless |
-| Date | DATE | Lossless |
-| Time | TIME | Lossless |
-| Timestamp | TIMESTAMP | Lossless |
-| TimestampTz | TIMESTAMP WITH TIME ZONE | Lossless |
-| Duration | INTERVAL | The microseconds are kept; INTERVAL arithmetic is not that of a fixed-length duration |
-| Interval | INTERVAL | Nanoseconds are truncated to microseconds |
-| Array(T) | LIST of T's type | As T |
-| Map(K, V) | MAP of K's and V's types | As K and V |
-| Struct(...) | STRUCT of the fields' types | As each field |
-| Uuid | UUID | Lossless |
-| Json | JSON | Lossless; the text is kept as DuckDB's JSON type |
-| Enum | ENUM of the members | Lossless |
-| Year | SMALLINT | The meaning of a year is lost |
-| TimeWithTimeZone | VARCHAR | The time-of-day meaning is lost and the text is kept, because DuckDB's TIMETZ compares instants rather than time and zone |
+| Analytics type | DuckDB type | Loss | Offered | DuckDB's comparison |
+| --- | --- | --- | --- | --- |
+| Boolean | BOOLEAN | Lossless | Equality and ordering | The same |
+| Byte, SmallInt, Int, BigInt | TINYINT, SMALLINT, INTEGER, BIGINT | Lossless | Equality and ordering | The same |
+| Float, Double | FLOAT, DOUBLE | Lossless | Equality and ordering | The same: NaN equals NaN and orders after every other value, and -0 equals +0 |
+| Decimal(p, s), s ≥ 0 | DECIMAL(p, s) | Lossless | Equality and ordering | The same |
+| Decimal(p, s), s < 0 | DOUBLE | DuckDB has no negative scale; the value becomes an approximate floating-point number. Inside an Array, Map, or Struct it is not mapped, and a table with such a column cannot be bound | None | Compares the approximate numbers |
+| Text | VARCHAR | Lossless | Equality and ordering | The same without a collation; a collated comparison binds through a collation function, which is not offered |
+| Blob | BLOB | Lossless | Equality and ordering | The same |
+| Date | DATE | Lossless | Equality and ordering | The same |
+| Time | TIME | Lossless | Equality and ordering | The same; DuckDB also holds `24:00:00`, which a Time cannot, so a comparison with that constant is not offered |
+| Timestamp | TIMESTAMP | Lossless | Equality and ordering | The same |
+| TimestampTz | TIMESTAMP WITH TIME ZONE | Lossless | Equality and ordering | The same |
+| Duration | INTERVAL | The microseconds are kept; INTERVAL arithmetic is not that of a fixed-length duration | None | The same: an INTERVAL of microseconds alone compares by length |
+| Interval | INTERVAL | Nanoseconds are truncated to microseconds | None | Compares after normalizing 24 hours to a day and 30 days to a month, so 1 month equals 30 days, and orders intervals |
+| Array(T) | LIST of T's type | As T | None | The Analytics types define no comparison |
+| Map(K, V) | MAP of K's and V's types | As K and V | None | The Analytics types define no comparison |
+| Struct(...) | STRUCT of the fields' types | As each field | None | The Analytics types define no comparison |
+| Uuid | UUID | Lossless | Equality | The same equality |
+| Json | JSON | Lossless; the text is kept as DuckDB's JSON type | Equality | The same equality: the text is compared |
+| Enum | ENUM of the members | Lossless | Equality, also with a string constant | The same equality; DuckDB binds an Enum column compared with a string as the column cast to VARCHAR, which is offered as Enum equality when the string is a member and not offered otherwise |
+| Year | SMALLINT | The meaning of a year is lost | Equality | The same equality |
+| TimeWithTimeZone | VARCHAR | The time-of-day meaning is lost and the text is kept, because DuckDB's TIMETZ compares instants rather than time and zone | Equality | The same equality: the text compares time and zone |
 
-The Uuid and TimeWithTimeZone rows depend on their Arrow storage, which may
-still change.
+DuckDB also orders the values of the types the Analytics types do not order,
+such as Enum members by declaration; those comparisons are not offered. The
+Uuid and TimeWithTimeZone rows depend on their Arrow storage, which may still
+change.
 
 ## Building and testing
 

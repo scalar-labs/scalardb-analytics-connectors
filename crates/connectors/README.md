@@ -20,8 +20,7 @@ conformance fixture. Copy this outline and replace each placeholder; the
 # <Source> connector
 
 <One paragraph: the Data Source, the form of Data Source access, the catalog
-the connector reads, and a link to the source's section of
-docs/type-mappings.md.>
+the connector reads, and a link to the Type mapping section below.>
 
 ## Data Source access
 
@@ -46,6 +45,22 @@ version it was read from. That the document's shape can change between
 connector versions, and what that means for comparing stored source
 metadata.>
 
+## Type mapping
+
+<Where Data Source types are read from. The table holds the decided type
+mapping (docs/connector-contract.md#type-mappings-and-coverage) and the
+comparison columns: how the source compares each type differently from the
+Analytics comparison (docs/analytics-types.md#comparison), and which
+comparisons between two operands of the type the connector evaluates at the
+source.>
+
+| Data Source type | Analytics type | <Source>'s comparison | Runs remotely |
+| --- | --- | --- | --- |
+| <Type> | <Analytics type and its conditions> | <"The same", or the difference> | <The comparisons and the conditions on their operands, or "None"> |
+
+<Types that are not mapped, with the reason. Comparisons that agree with the
+Analytics comparison but stay in the local plan.>
+
 ## Coverage
 
 <Which mapping rules of the type mapping this version covers. List each rule
@@ -56,9 +71,7 @@ the values that cannot be carried exactly and are `data` errors.>
 
 | Offered work | Runs remotely when |
 | --- | --- |
-| <Filter, projection, ...> | <The condition under which the source evaluates it with the same meaning> |
-
-<What always stays in the local plan.>
+| <Filter, projection, ...> | <The condition under which the source evaluates it with the same meaning, beyond the comparisons the Type mapping section lists, such as whether a filter moves whole> |
 
 ## Known limitations
 

@@ -258,7 +258,6 @@ inside the Analytics type system.
 | --- | --- |
 | [Connector contract](connector-contract.md) | Call a connector, or check what a connector must guarantee |
 | [Analytics type model](analytics-types.md) | Understand the shared type vocabulary and its Arrow encoding |
-| [Type mappings](type-mappings.md) | Look up how a Connector's Data Source types map to Analytics types |
 | [Pushdown planning](pushdown-planning.md) | Define the pushdown glossary, lifecycle, query decomposition, remote query generation, ownership, and planning boundary |
 | [Query-engine pushdown integration](query-engine-pushdown.md) | Map Spark, Trino, DataFusion, or DuckDB planner hooks onto the shared pushdown model |
 | [Connector internals](connector-internals.md) | Change the connector SDK, the connector API implementation, or crate structure |

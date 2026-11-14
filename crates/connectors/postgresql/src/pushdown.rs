@@ -142,16 +142,18 @@ fn stale(message: &'static str) -> ConnectorError {
 ///
 /// Boolean composition and null tests follow SQL three-valued logic in both
 /// places. A comparison qualifies only between operands of one type whose
-/// PostgreSQL comparison agrees with the Analytics comparison:
+/// PostgreSQL comparison agrees with the Analytics comparison
+/// (`docs/analytics-types.md#comparison`):
 ///
 /// - integers, decimals, Booleans, dates, times, timestamps, and UUIDs order
 ///   identically;
 /// - text equality agrees only on `text` and `varchar` columns with a
 ///   deterministic collation, where equal strings are byte-equal; `character(n)`
 ///   ignores trailing spaces, and text ordering depends on the collation;
-/// - floating-point comparison differs for NaN, enum ordering follows the
-///   declared order, and interval comparison normalizes months to 30 days, so
-///   none of them qualifies.
+/// - enum ordering follows the declared order and interval comparison
+///   normalizes months to 30 days, so neither qualifies;
+/// - floating-point and `bytea` comparisons agree but are not yet evaluated
+///   remotely.
 pub(crate) fn runs_remotely(expression: &LogicalExpression, facts: &PlanningFacts) -> bool {
     match &expression.kind {
         LogicalExpressionKind::Field { .. } => true,

@@ -1,4 +1,4 @@
-//! The PostgreSQL type mapping (`docs/type-mappings.md#postgresql`).
+//! The PostgreSQL type mapping (`crates/connectors/postgresql/README.md#type-mapping`).
 
 use analytics_types::{AnalyticsType, DecimalType, EnumType};
 use connector_sdk::UnsupportedReason;

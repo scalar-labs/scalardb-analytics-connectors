@@ -19,7 +19,7 @@ Type conversion is owned by the boundary where the two type systems meet:
 
 | Boundary | Mapping owner | Example |
 | --- | --- | --- |
-| Data Source to Analytics | Connector, through its [type mapping](type-mappings.md) | PostgreSQL uuid to Analytics Uuid |
+| Data Source to Analytics | Connector, through its [type mapping](connector-contract.md#type-mappings-and-coverage) | PostgreSQL uuid to Analytics Uuid |
 | Analytics to Arrow | analytics-types | Analytics Uuid to Arrow Utf8 plus extension metadata |
 | Analytics to Query Engine | Query Engine adapter ([Execution](#execution)) | Analytics Uuid to DuckDB UUID |
 
@@ -33,47 +33,94 @@ DataFusion, and Spark all ingest Arrow, which keeps adapter mappings small, and
 Arrow extension types carry meanings a storage type alone cannot. The
 Physical Catalog and adapters share the Analytics-to-Arrow conversion.
 
-## Arrow encodings
+## Types
 
-Types with a direct Arrow encoding use exactly one storage type. Only types
-Arrow can represent are admitted, because a type Arrow cannot represent could
-not reach every adapter without conversion.
+Each Analytics type has one Arrow encoding and one comparison. Types with a
+direct Arrow encoding use exactly one storage type; extension-encoded types add
+extension metadata to a storage type
+([Extension-encoded types](#extension-encoded-types)). Only types Arrow can
+represent are admitted, because a type Arrow cannot represent could not reach
+every adapter without conversion.
 
-| Analytics type | Arrow storage type |
-| --- | --- |
-| Boolean | Bool |
-| Byte, SmallInt, Int, BigInt | Int8, Int16, Int32, Int64 |
-| Float, Double | Float32, Float64 |
-| Decimal(p, s) | Decimal128(p, s) |
-| Text | Utf8 |
-| Blob | Binary |
-| Date | Date32 |
-| Time | Time64 in microseconds |
-| Timestamp | Timestamp in microseconds without a time zone |
-| TimestampTz | Timestamp in microseconds with UTC |
-| Duration | Duration in microseconds |
-| Interval | Interval in MonthDayNano |
-| Array(T) | List of T |
-| Map(K, V) | Map of K to V |
-| Struct(f1: T1, ...) | Struct of f1: T1, ... |
+| Analytics type | Arrow encoding | Equality | Ordering |
+| --- | --- | --- | --- |
+| Boolean | Bool | The same value | false before true |
+| Byte, SmallInt, Int, BigInt | Int8, Int16, Int32, Int64 | The same number | Numeric |
+| Float, Double | Float32, Float64 | The same number; -0 equals +0, and NaN equals NaN | Numeric, with NaN after every other value, including positive infinity |
+| Decimal(p, s) | Decimal128(p, s) | The same number | Numeric |
+| Text | Utf8 | The same UTF-8 bytes; no normalization, case folding, or padding, so trailing spaces count | By UTF-8 bytes, which is code point order; a string precedes every longer string it begins |
+| Blob | Binary | The same bytes | By bytes; a value precedes every longer value it begins |
+| Date | Date32 | The same date | Chronological |
+| Time | Time64 in microseconds | The same time of day | Chronological |
+| Timestamp | Timestamp in microseconds without a time zone | The same date and time | Chronological |
+| TimestampTz | Timestamp in microseconds with UTC | The same instant | Chronological by instant |
+| Duration | Duration in microseconds | The same length | By length |
+| Interval | Interval in MonthDayNano | The same months, days, and nanoseconds each, so 1 month and 30 days differ | Not defined: months and days have no fixed length |
+| Array(T) | List of T | Not defined | Not defined |
+| Map(K, V) | Map of K to V | Not defined | Not defined |
+| Struct(f1: T1, ...) | Struct of f1: T1, ... | Not defined | Not defined |
+| Uuid | Utf8, extension `scalardb.analytics.uuid` | The same 36-character canonical text | Not defined |
+| Json | Utf8, extension `scalardb.analytics.json` | The same JSON text, which is the same JSON value only when the source emits canonical form | Not defined |
+| Enum | Utf8, extension `scalardb.analytics.enum` | The same member label | Not defined |
+| Year | Int16, extension `scalardb.analytics.year` | The same year | Not defined |
+| TimeWithTimeZone | Utf8, extension `scalardb.analytics.timetz` | The same time and zone, so `10:00:00+09` and `01:00:00+00` differ | Not defined |
 
 Unsigned integers and decimals with precision above 38 are not admitted, even
 though Arrow has `uint8` through `uint64` and `decimal256`, and MySQL `DECIMAL`
 reaches precision 65 while PostgreSQL `numeric` allows an unspecified
 precision. How type mappings handle such Data Source types is defined in
-[Common rules](type-mappings.md#common-rules). Admitting them is an addition of
-Analytics types ([Adding Analytics types](#adding-analytics-types)).
+[Type mappings and coverage](connector-contract.md#type-mappings-and-coverage).
+Admitting them is an addition of Analytics types
+([Adding Analytics types](#adding-analytics-types)).
 
-Other peer types use namespaced Arrow extension metadata because their
-Analytics meaning is not expressed by an Arrow storage type alone. These are
-called extension-encoded types. The distinction is about Arrow representation,
-not a layer inside the Analytics types.
+### Comparison
+
+The Equality and Ordering columns define each type's comparison: which values
+are equal and, where the type has one, how values are ordered. An offered
+filter compares with this meaning, and a Connector rewrite rule preserves it
+([Filters and types](connector-contract.md#filters-and-types)). A comparison
+with NULL is NULL, following SQL three-valued logic.
+
+The floating-point order is the one PostgreSQL, DuckDB, and Spark use, so their
+comparisons need no correction. IEEE 754 comparison, under which NaN equals
+nothing, is a difference from it.
+
+Comparing the storage values of an extension-encoded type implements its
+equality. A Query Engine that does not recognize the extension compares
+storage values, so they must give the type's equality. When jsonb or JSON is
+not emitted in canonical form, string equality differs from semantic equality.
+A type whose equality holds only conditionally is still extension-encoded,
+with the condition stated in its definition: a type with a direct encoding
+would not make Query Engines implement JSON semantic equality, so it would
+bring no benefit.
+
+A comparison the table does not define has no Analytics meaning, so an adapter
+does not offer it. The comparison semantics of a Data Source or Query Engine do
+not define an Analytics type's comparison either. Sources compare the same kind
+of value differently: one source compares time-with-time-zone values by time
+and zone, as PostgreSQL does, while another may compare them after conversion
+to UTC. Both map to TimeWithTimeZone rather than to separate types, because one
+meaning per Analytics type is what lets values from different sources be
+compared and joined. Each adapter's mapping table states how its Query Engine
+compares differently and which comparisons it offers ([Execution](#execution)).
+Each Connector's type mapping states how its Data Source compares differently
+and which comparisons it evaluates there; a comparison the source evaluates
+differently stays in the local plan
+([Plan-aware support decisions](connector-implementation.md#plan-aware-support-decisions)).
+
+## Extension-encoded types
+
+Types other than those with a direct encoding use namespaced Arrow extension
+metadata because their Analytics meaning is not expressed by an Arrow storage
+type alone. These are called extension-encoded types. The distinction is about
+Arrow representation, not a layer inside the Analytics types.
 
 ### Registered extension-encoded types
 
 Extension-encoded types are registered here, on the product side, and
 connectors use only registered ones. A connector that needs a new one registers
-it here first, then maps to it in its [type mapping](type-mappings.md).
+it here first, then maps to it in its
+[type mapping](connector-contract.md#type-mappings-and-coverage).
 Registration is required because adapter mapping tables and expression planning
 ([Filters and types](connector-contract.md#filters-and-types)) look types up by
 extension name, so one name must mean the same thing in every connector. A
@@ -92,36 +139,6 @@ This table defines the stable names, parameter shapes, value representations,
 equality conditions, and storage encodings. The `analytics-types` conversion
 implementation enforces these encodings in both directions. They describe a
 serialization boundary, not a category or hierarchy inside AnalyticsType.
-
-### Extension equality
-
-Each Analytics type defines one equality, and comparing the storage values of an
-extension-encoded type implements it. A Query Engine that does not recognize
-the extension compares storage values, so they must give the type's equality.
-
-| Analytics type | Storage type | Storage comparison |
-| --- | --- | --- |
-| Uuid | Utf8 (36-character canonical form) | Gives Uuid equality |
-| Json | Utf8 | Gives Json equality only when the source emits canonical form |
-| Enum | Utf8 (member label) | Gives Enum equality |
-| Year | Int16 | Gives Year equality |
-| TimeWithTimeZone | Utf8 (`10:00:00+09`) | Gives TimeWithTimeZone equality: both time and zone are compared, so `10:00:00+09` and `01:00:00+00` are not equal |
-
-The Data Source's comparison semantics do not define an Analytics type's
-equality. Sources compare the same kind of value differently: one source
-compares time-with-time-zone values by time and zone, as PostgreSQL does, while
-another may compare them after conversion to UTC. Both map to TimeWithTimeZone
-rather than to separate types, because one meaning per Analytics type is what
-lets values from different sources be compared and joined. A comparison whose
-source semantics differ from the Analytics type's equality is not pushed down
-to that source; the Connector's planner keeps it local
-([Plan-aware support decisions](connector-implementation.md#plan-aware-support-decisions)).
-
-When jsonb or JSON is not emitted in canonical form, string equality differs
-from semantic equality. A type whose equality holds only conditionally is still
-extension-encoded, with the condition stated in its definition: a type with a
-direct encoding would not make Query Engines implement JSON semantic equality,
-so it would bring no benefit.
 
 ### Extension metadata
 
@@ -191,8 +208,9 @@ connector --Arrow stream--> adapter --> Query Engine Arrow ingestion --> Query E
 ~~~
 
 An adapter holds one mapping table keyed by Analytics type. For every Analytics
-type the adapter knows, it defines the target Query Engine type and the loss of
-that mapping:
+type the adapter knows, it defines the target Query Engine type, the loss of
+that mapping, and the comparisons the adapter offers with how the Query
+Engine's comparison differs from the type's ([Comparison](#comparison)):
 
 | Analytics type | DuckDB adapter | Spark adapter |
 | --- | --- | --- |

@@ -2,7 +2,7 @@
 
 The PostgreSQL connector reads PostgreSQL through the Apache Arrow ADBC
 PostgreSQL driver (ADBC access). It reads `pg_catalog` itself and maps types by
-[the PostgreSQL type mapping](../../../docs/type-mappings.md#postgresql). The
+its [type mapping](#type-mapping). The
 general conventions it follows are in
 [Initial PostgreSQL and MySQL conventions](../../../docs/connector-implementation.md#initial-postgresql-and-mysql-conventions).
 
@@ -210,9 +210,49 @@ metadata ([Comparing table metadata](../../../docs/connector-contract.md#compari
 A document whose type references do not resolve cannot be restored either,
 so comparing it is also an invalid request.
 
+## Type mapping
+
+The Data Source type is the result of `format_type(atttypid, atttypmod)` over
+`pg_catalog`, such as `character varying(10)` or `timestamp with time zone`,
+matched as [Type mappings and coverage](../../../docs/connector-contract.md#type-mappings-and-coverage)
+describes. The comparison column states how PostgreSQL compares the type
+differently from the
+[Analytics comparison](../../../docs/analytics-types.md#comparison), and the
+last column which comparisons between two operands of the type run at
+PostgreSQL ([Pushdown](#pushdown)):
+
+| Data Source type | Analytics type | PostgreSQL's comparison | Runs remotely |
+| --- | --- | --- | --- |
+| `boolean` | `Boolean` | The same | Equality and ordering |
+| `smallint`, `integer`, `bigint` | `SmallInt`, `Int`, `BigInt` | The same | Equality and ordering |
+| `real`, `double precision` | `Float`, `Double` | The same: NaN equals NaN and orders after every other value, and -0 equals +0 | None |
+| `numeric(p,s)` | `Decimal(p, s)` when p is at most 38; `numeric` without precision is unsupported | The same | Equality and ordering |
+| `text`, `character varying(n)` | `Text` | Equality is the same under a deterministic collation, where equal strings are byte-equal; ordering follows the collation | Equality and inequality on a column with a deterministic collation, with a constant without NUL or with a column of the same collation |
+| `character(n)` | `Text` | Ignores trailing spaces | None |
+| `bytea` | `Blob` | The same | None |
+| `date` | `Date` | The same | Equality and ordering, with a constant within `date`'s range, 4713 BC to 5874897 AD |
+| `time without time zone` | `Time` | The same | Equality and ordering |
+| `timestamp without time zone` | `Timestamp` | The same | Equality and ordering, with a constant from 4713 BC |
+| `timestamp with time zone` | `TimestampTz` | The same | Equality and ordering, with a constant from 4713 BC |
+| `interval` | `Interval` | Compares after normalizing 24 hours to a day and 30 days to a month, so 1 month equals 30 days, and orders intervals | None |
+| `uuid` | `Uuid` | Compares values, accepting spellings other than the canonical one | Every comparison, with a constant in canonical form |
+| `json`, `jsonb` | `Json` | `json` has no equality; `jsonb` compares parsed values | None |
+| User-defined enum | `Enum` | The same equality; also orders members by declaration | None |
+| `time with time zone` | `TimeWithTimeZone` | The same equality | None |
+| Domain over one of the types above | The same as its base type; the Data Source type keeps the domain's name | As its base type | As its base type |
+
+Arrays are not mapped. PostgreSQL's catalog does not enforce an array's number
+of dimensions, so the nesting depth of `Array(T)` cannot be determined from the
+schema.
+
+Remote evaluation is narrower than agreement allows: floating-point and
+`bytea` comparisons, and text ordering under the `C` collation when
+`server_encoding` is `UTF8`, agree with the Analytics comparison but stay in
+the local plan.
+
 ## Coverage
 
-Version 0.1.0 covers every mapping rule in the PostgreSQL type mapping. The
+Version 0.1.0 covers every mapping rule in its [type mapping](#type-mapping). The
 following values cannot be carried exactly and are `data` errors when a read
 returns them:
 
@@ -228,11 +268,8 @@ returns them:
 
 | Offered work | Runs remotely when |
 | --- | --- |
-| Filter | Every comparison in it is between operands of one type among Boolean, integers, decimals, dates, times, timestamps, and UUIDs, or is text equality on a `text` or `character varying` column with a deterministic collation. The whole filter moves, or none of it does. |
+| Filter | It combines comparisons and null tests with AND, OR, and NOT, and every comparison is between columns and constants of one type and runs remotely by the [type mapping](#type-mapping). The whole filter moves, or none of it does. |
 | Projection | It selects plain columns and no filter remains local below it |
-
-Floating-point comparisons, text ordering, `character(n)` comparisons, enum
-ordering, and interval comparisons stay in the local plan.
 
 ## Known limitations
 

@@ -12,7 +12,8 @@ It does not define how a connector is built; that belongs to
 
 This document is the semantic source of truth for the connector boundary.
 Analytics types are defined by the [Analytics type model](analytics-types.md),
-and per-source mappings by [Type mappings](type-mappings.md). Runtime formats
+and per-source mappings by each connector's
+[type mapping](#type-mappings-and-coverage). Runtime formats
 and generated bindings must preserve the behavior defined here.
 
 ## Capabilities
@@ -705,12 +706,28 @@ same type is spelled differently depending on how it is read (PostgreSQL
 `information_schema` reports `character varying` while `pg_type` reports
 `varchar`); without fixing them, rule matching and conformance comparisons
 would vary by implementation. There is one type mapping per Connector, not
-one per connector. The current mappings are in [Type mappings](type-mappings.md).
+one per connector. Each connector's README holds its type mapping, including
+the origin of its Data Source types.
+
+A Data Source type the type mapping does not list is not mapped, and its
+column is unsupported ([Unsupported columns](#unsupported-columns)). A rule
+names a type as the origin reports it, matched case-insensitively; parameters
+such as `(p, s)` follow the rule's conditions. A rule maps only to Analytics
+types, and among extension-encoded types only to registered ones
+([Registered extension-encoded types](analytics-types.md#registered-extension-encoded-types)).
+Values that cannot be carried exactly, such as PostgreSQL `numeric` NaN, are a
+`data` error in data read under any rule ([Values](#values)).
+
+A Data Source type whose values no admitted Analytics type holds is not
+mapped: unsigned 64-bit integers, decimals with precision above 38, and
+decimals without a declared precision. A rule may map an unsigned integer of
+32 bits or fewer to the next wider signed integer, which holds its range. Such
+rules rely on unsigned integers being outside the Analytics types, and change
+if those types are admitted.
 
 Type mappings have no version. The mapping is built into the connector, so the
 connector's name and version determine which mapping produced given table
-metadata or values. A connector raises its version and records the change in
-its changelog whenever its mapping or coverage changes. Conformance tests
+metadata or values. Conformance tests
 ([Metadata conformance tests](#metadata-conformance-tests)) check that a
 connector maps as its type mapping says.
 
@@ -1162,6 +1179,9 @@ local plan. SQL translation also reports `Unsupported` if such an expression is
 presented in a remote plan. Connector rewrite rules use the metadata loaded for
 the planning call to decide whether each concrete expression has the required
 meaning for the Data Source and session before it remains in the remote plan.
+The offered semantics of a comparison are the comparison its Analytics type
+defines ([Comparison](analytics-types.md#comparison)); a Data Source's own
+comparison does not change them.
 
 For example, `Text` comparisons can depend on Data Source type, collation, character
 set, and trailing-space behavior, while floating-point comparisons can depend

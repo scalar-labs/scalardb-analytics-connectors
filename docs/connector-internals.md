@@ -696,7 +696,7 @@ range, are returned as Rust values through the connector traits.
 Correspondence that is naturally a table, such as dialect translation tables
 and type correspondence, is written as constant tables or a `match` over the
 source's values, so it can be checked
-against [Type mappings](type-mappings.md) and conformance expectations.
+against the connector's type mapping and conformance expectations.
 
 ## Connector API implementation
 

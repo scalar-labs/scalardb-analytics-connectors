@@ -16,7 +16,7 @@ Use the remaining top-level documents by responsibility:
 - [connector-contract.md](connector-contract.md) defines what callers and
   connector implementations may rely on across the connector boundary.
 - [analytics-types.md](analytics-types.md) defines the shared type-system mental
-  model; [type-mappings.md](type-mappings.md) applies it to Connectors.
+  model; each connector's README applies it to its Connector.
 - [pushdown-planning.md](pushdown-planning.md)
   defines the pushdown glossary and lifecycle, query decomposition, remote
   query generation and shipping, plan ownership, and the planning and execution
