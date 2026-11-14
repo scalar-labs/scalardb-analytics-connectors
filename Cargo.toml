@@ -6,6 +6,7 @@ members = [
     "crates/connector-sql",
     "crates/connectors/postgresql",
     "crates/connectors/mysql",
+    "crates/connectors/salesforce/client",
     "crates/connector-api",
 ]
 resolver = "3"
@@ -31,9 +32,20 @@ connector-adbc = { path = "crates/connector-adbc", version = "0.1.0" }
 connector-sql = { path = "crates/connector-sql", version = "0.1.0" }
 connector-postgresql = { path = "crates/connectors/postgresql", version = "0.1.0" }
 connector-mysql = { path = "crates/connectors/mysql", version = "0.1.0" }
+connector-salesforce-client = { path = "crates/connectors/salesforce/client", version = "0.1.0" }
+base64 = "0.22"
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+ring = "0.17"
+rustls-pki-types = "1"
 serde = "1.0"
 serde_json = "1.0"
 futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false }
+tokio = { version = "1", default-features = false }
+url = "2"
+# 0.6.5 requires Rust 1.88 (let chains), above the workspace MSRV.
+wiremock = "=0.6.4"
 prost = "0.13.5"
 prost-types = "0.13.5"
 regress = "=0.10.4"
