@@ -14,7 +14,7 @@ use connector_sql::{
     literal::quote_string,
 };
 
-use crate::{BaseType, PostgresConnector};
+use crate::{PostgresConnector, catalog::BaseType};
 
 /// Facts about the read table, loaded from `pg_catalog` for one planning call.
 pub struct PlanningFacts {
@@ -84,7 +84,7 @@ pub(crate) fn planning_facts(
                 .iter()
                 .find(|column| column.name == field.name())?;
             Some(ColumnFacts {
-                base_type: column.base_type.clone(),
+                base_type: metadata.resolve_type(column).base,
                 collation: collations.get(&column.name).copied(),
             })
         })
@@ -224,8 +224,8 @@ fn comparison_runs_remotely(
 
 /// Whether equal values of this text column are exactly the byte-equal ones.
 fn byte_equal_text(column: &ColumnFacts) -> bool {
-    matches!(column.base_type.name.as_str(), "text" | "varchar")
-        && column.base_type.schema == "pg_catalog"
+    matches!(&column.base_type, BaseType::Base { schema, typname, .. }
+        if schema == "pg_catalog" && matches!(typname.as_str(), "text" | "varchar"))
         && column
             .collation
             .is_some_and(|collation| collation.deterministic)

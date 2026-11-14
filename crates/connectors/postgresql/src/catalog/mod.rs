@@ -16,9 +16,14 @@ mod table_metadata;
 mod type_mapping;
 
 pub(crate) use listing::{namespace_list, table_list};
-pub use source_metadata::{PostgresColumn, PostgresConstraint, PostgresTable, PostgresUniqueIndex};
+pub use source_metadata::{
+    PostgresCheck, PostgresColumn, PostgresDomainCheck, PostgresForeignKey,
+    PostgresGeneratedStorage, PostgresIdentity, PostgresKey, PostgresNotNull, PostgresPrimaryKey,
+    PostgresReferencedTable, PostgresTable, PostgresTableKind, PostgresType, PostgresTypeForm,
+    PostgresUniqueKey, PostgresUniqueKind, PostgresValueSource,
+};
 pub(crate) use table_metadata::table_metadata;
-pub use type_mapping::BaseType;
+pub(crate) use type_mapping::BaseType;
 
 use connector_sdk::ConnectorError;
 use connector_sql::catalog::{CatalogReads, int32, unexpected_catalog_result};

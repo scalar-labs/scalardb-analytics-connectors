@@ -2,47 +2,51 @@
 
 use analytics_types::{AnalyticsType, DecimalType, EnumType};
 use connector_sdk::UnsupportedReason;
-use serde::{Deserialize, Serialize};
 
 /// The type a column's mapping rule is looked up by: the column's own type, or
-/// for a domain the base type it resolves to through nested domains.
+/// for a domain the type it resolves to through nested domains.
 ///
 /// `format_type` alone cannot identify the rule for a domain or an enum, which
-/// it reports by name only, so the catalog query supplies these facts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BaseType {
-    /// The schema of the type, `pg_catalog` for built-in types.
-    pub schema: String,
-    /// `pg_type.typname`, such as `int4` or `timestamptz`.
-    pub name: String,
-    /// `pg_type.typtype`: `b` base, `e` enum, `c` composite, `r` range, and so on.
-    pub kind: String,
-    /// `pg_type.typcategory`; `A` marks array types.
-    pub category: String,
-    /// The type modifier in effect, from the column or the innermost domain
-    /// that declares one; `-1` when none is declared.
-    pub typmod: i32,
-    /// Member labels in sort order, for an enum.
-    pub enum_labels: Option<Vec<String>>,
+/// it reports by name only, so it is resolved from the source metadata's
+/// types ([`PostgresTable::resolve_type`](super::PostgresTable::resolve_type)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BaseType {
+    /// A base type, built in or from an extension.
+    Base {
+        /// The schema of the type, `pg_catalog` for built-in types.
+        schema: String,
+        /// `pg_type.typname`, such as `int4` or `timestamptz`.
+        typname: String,
+        /// The type modifier in effect, from the column or the innermost
+        /// domain that declares one; `-1` when none is declared.
+        typmod: i32,
+    },
+    /// An enum, with its labels in sort order.
+    Enum { labels: Vec<String> },
+    /// An array, composite, range, multirange, or pseudo-type, which the
+    /// mapping does not map.
+    Unmapped,
 }
 
 /// Applies the type mapping to one column's base type.
 pub(crate) fn map_type(base: &BaseType) -> Result<AnalyticsType, UnsupportedReason> {
-    if base.kind == "e" {
-        let labels = base.enum_labels.clone().unwrap_or_default();
-        return Ok(AnalyticsType::Enum(EnumType::new(labels)));
-    }
-    if base.schema != "pg_catalog" || base.kind != "b" || base.category == "A" {
-        return Err(UnsupportedReason::NotMapped);
-    }
-    let mapped = match base.name.as_str() {
+    let (typname, typmod) = match base {
+        BaseType::Enum { labels } => return Ok(AnalyticsType::Enum(EnumType::new(labels.clone()))),
+        BaseType::Base {
+            schema,
+            typname,
+            typmod,
+        } if schema == "pg_catalog" => (typname, *typmod),
+        BaseType::Base { .. } | BaseType::Unmapped => return Err(UnsupportedReason::NotMapped),
+    };
+    let mapped = match typname.as_str() {
         "bool" => AnalyticsType::Boolean,
         "int2" => AnalyticsType::SmallInt,
         "int4" => AnalyticsType::Int,
         "int8" => AnalyticsType::BigInt,
         "float4" => AnalyticsType::Float,
         "float8" => AnalyticsType::Double,
-        "numeric" => return numeric(base.typmod),
+        "numeric" => return numeric(typmod),
         "text" | "varchar" | "bpchar" => AnalyticsType::Text,
         "bytea" => AnalyticsType::Blob,
         "date" => AnalyticsType::Date,
@@ -83,14 +87,11 @@ fn numeric(typmod: i32) -> Result<AnalyticsType, UnsupportedReason> {
 mod tests {
     use super::*;
 
-    fn builtin(name: &str, typmod: i32) -> BaseType {
-        BaseType {
+    fn builtin(typname: &str, typmod: i32) -> BaseType {
+        BaseType::Base {
             schema: "pg_catalog".to_owned(),
-            name: name.to_owned(),
-            kind: "b".to_owned(),
-            category: "N".to_owned(),
+            typname: typname.to_owned(),
             typmod,
-            enum_labels: None,
         }
     }
 
@@ -131,27 +132,22 @@ mod tests {
             map_type(&builtin("money", -1)),
             Err(UnsupportedReason::NotMapped)
         );
-        let array = BaseType {
-            category: "A".to_owned(),
-            ..builtin("_int4", -1)
-        };
-        assert_eq!(map_type(&array), Err(UnsupportedReason::NotMapped));
-        let extension = BaseType {
+        assert_eq!(
+            map_type(&BaseType::Unmapped),
+            Err(UnsupportedReason::NotMapped)
+        );
+        let extension = BaseType::Base {
             schema: "public".to_owned(),
-            ..builtin("citext", -1)
+            typname: "citext".to_owned(),
+            typmod: -1,
         };
         assert_eq!(map_type(&extension), Err(UnsupportedReason::NotMapped));
     }
 
     #[test]
     fn enums_map_with_their_members_in_sort_order() {
-        let base = BaseType {
-            schema: "public".to_owned(),
-            name: "mood".to_owned(),
-            kind: "e".to_owned(),
-            category: "E".to_owned(),
-            typmod: -1,
-            enum_labels: Some(vec!["sad".to_owned(), "happy".to_owned()]),
+        let base = BaseType::Enum {
+            labels: vec!["sad".to_owned(), "happy".to_owned()],
         };
         assert_eq!(
             map_type(&base),

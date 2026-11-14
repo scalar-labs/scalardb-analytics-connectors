@@ -16,7 +16,10 @@ mod error_handler;
 mod pushdown;
 
 pub use catalog::{
-    BaseType, PostgresColumn, PostgresConstraint, PostgresTable, PostgresUniqueIndex, ServerVersion,
+    PostgresCheck, PostgresColumn, PostgresDomainCheck, PostgresForeignKey,
+    PostgresGeneratedStorage, PostgresIdentity, PostgresKey, PostgresNotNull, PostgresPrimaryKey,
+    PostgresReferencedTable, PostgresTable, PostgresTableKind, PostgresType, PostgresTypeForm,
+    PostgresUniqueKey, PostgresUniqueKind, PostgresValueSource, ServerVersion,
 };
 pub use error_handler::PostgresErrorHandler;
 pub use pushdown::PlanningFacts;
