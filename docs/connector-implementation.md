@@ -15,6 +15,34 @@ Connector internals.
 
 ## Building a connector
 
+### Before starting
+
+Steps 1 and 2 below are decisions rather than code. Writing the connector
+crate (step 3) starts once they are made:
+
+- The Connector has a type mapping in [Type mappings](type-mappings.md), and
+  every extension-encoded type it uses is registered in the
+  [Analytics type model](analytics-types.md#registered-extension-encoded-types).
+  Defining a mapping or registering a type is a decision about the product's
+  type system, made and reviewed on its own before the connector is written.
+- The form of Data Source access and, with ADBC access, the ADBC driver are
+  chosen ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers)).
+- Every item the connector must decide and the documents leave open, such as
+  the driver, the coverage, or a behavior the contract leaves to the
+  Connector, is recorded as an explicit decision in the issue tracker rather
+  than settled while writing the connector.
+
+These documents describe the connector SDK as it is meant to be: a connector
+needs no change to the connector SDK crates, the contract, or
+`analytics-types`. The SDK's design is validated by implementing connectors,
+so while the first connectors are written, a connector may find that the SDK
+lacks something these documents describe or that its design does not fit the
+source. That finding is fed back to the SDK as a change of its own, reviewed
+on its own, rather than worked around inside the connector; the connector
+then uses the SDK's public API like every other connector.
+
+### Steps
+
 A connector for a new Connector is built in this order:
 
 1. Confirm that the Connector has a type mapping in
@@ -47,15 +75,59 @@ A connector for a new Connector is built in this order:
    of Data Source access, and, with ADBC access, the ADBC driver.
 5. Write the connector's fixture for the conformance suite in
    `crates/connectors/<source>/tests` and pass the suite for this connector
-   alone ([Tests](#tests)).
-6. Register it as a `connector-api` feature and build it into the artifact.
-   Run the [dependency policy check](#dependency-policy-check) to confirm that
+   alone ([Tests](#tests)). Write the connector's README from the
+   [template](../crates/connectors/README.md), recording its Data Source
+   access, source metadata, coverage and unsupported types, pushdown, known
+   deviations, and the
+   [compatibility table](#compatibility-table) of what the suite passed with.
+6. Register it in `connector-api`: an optional dependency and a feature of the
+   same name in its `Cargo.toml`, and one entry behind that feature in
+   `registry::built_in_connectors`. With ADBC access, also make the driver
+   available to the development shell's `ADBC_DRIVER_DIRECTORY` in
+   `flake.nix`, where the tests load it. Build it into the artifact and run the
+   [dependency policy check](#dependency-policy-check) to confirm that
    the connector brings in no native code, no ADBC driver loading of its own,
    and no license that prevents distribution.
 
-These steps change neither the connector SDK, the contract, nor the callers of
-the connector API; `connector-api` only gains a feature, without code changes
+These steps change neither the connector SDK crates, the contract, nor the
+callers of the connector API. In `connector-api`, the feature and its registry
+entry are the only change
 ([Build cycle and versions](connector-internals.md#build-cycle-and-versions)).
+
+### What a connector writes
+
+Everything a connector decides is Rust in its crate
+([Connector behavior as code](connector-internals.md#connector-behavior-as-code)).
+Within that, a correspondence that the documents already state as a table is
+written as a constant table or a `match` over the source's values, so it can be
+checked against the document line by line. Behavior that has to interpret
+catalog rows, convert values, or judge the meaning of an offered plan is
+written as code. The PostgreSQL connector shows where each part lives:
+
+| Part | Written as | PostgreSQL connector |
+| --- | --- | --- |
+| Name, version, accepted options, and secrets | Rust values in `Connector::descriptor` | `lib.rs` |
+| ADBC driver and supported version range | A `DriverRequirement` constant | `lib.rs` |
+| Fixed session settings and driver options | Constants, applied when the connection is opened | `lib.rs`, which passes them through `AdbcConnector::database_options` in the libpq connection string and driver options |
+| Catalog queries and excluded namespaces | SQL constants and functions run through `CatalogReads` | `catalog/listing.rs`, `catalog/table_metadata.rs` |
+| Source metadata | A document type implementing `SourceTableMetadata`, shaped by the concepts its readers use rather than by the catalog's rows, and carrying what states a table's meaning, such as comments and view definitions; code assembles it from the catalog rows and derives table metadata from it, such as resolving domains to their base types | `catalog/table_metadata.rs` assembles it; `catalog/source_metadata.rs` defines it and derives table metadata; the README's "Source metadata" section describes it |
+| Type mapping | A `match` from the parsed Data Source type to the Analytics type, mirroring [Type mappings](type-mappings.md) | `catalog/type_mapping.rs` |
+| Conversion of the driver's output | A table of driver Arrow type and building block per rule, and code for the conversions the SDK does not provide | `driver_output.rs` |
+| SQL spelling of identifiers and literals | `SqlDialect` code | `dialect.rs` |
+| Planning facts and remote-execution guards | Code that loads the facts the offered plan needs and decides, per expression, whether the source evaluates it with the same meaning | `pushdown.rs` |
+| Source-specific error codes and redaction | A `match` over SQLSTATE or vendor codes in `ErrorHandler::classify`, and code in `redact` | `error_handler.rs` |
+| Conformance fixture | A `Fixture` implementation and the SQL that prepares the source | `tests/conformance/` |
+
+How much of this a connector writes depends on its structure. A SQL source
+through ADBC writes every row and takes the catalog, planner, and executor
+components from `connector-adbc` and `connector-sql`, as PostgreSQL does. An
+ADBC source that does not speak SQL writes its own catalog, planner, and
+executor instead of the catalog queries and the dialect. A direct-access
+connector also replaces the ADBC driver and its options with its reader crates
+and their fixed settings ([Direct access](#direct-access)). The PostgreSQL
+connector is a reference for where each part lives, not a template to copy:
+its catalog reading, guards, conversions, and error table come from
+PostgreSQL's behavior and are rewritten for each source.
 
 ## Retrieving metadata
 
@@ -460,9 +532,10 @@ Each connector's fixture implements the suite's `Fixture` trait in
 
 ### Compatibility table
 
-Each connector publishes, in its README, the combinations of Data Source
-version, ADBC driver version (ADBC access), and platform that passed its
-conformance tests as its compatibility table.
+Each connector publishes, in its README
+([template](../crates/connectors/README.md#readme-template)), the combinations
+of Data Source version, ADBC driver version (ADBC access), and platform that
+passed its conformance tests as its compatibility table.
 
 | Axis | Initial range |
 | --- | --- |

@@ -118,7 +118,8 @@ Connectors can be added on a life cycle independent of the rest. This means:
 - **Addition:** adding a Connector is completed by adding a connector crate,
   the Connector's type mapping, and, with ADBC access, its ADBC driver. The
   connector SDK, the C ABI, and its callers do not change; `connector-api`
-  gains one feature without code changes
+  gains one feature and the registry entry behind it, and nothing else in it
+  changes
   ([Compatibility and versions](connector-contract.md#compatibility-and-versions)).
 
 Both hold with a single artifact. The main effect of one library is that
@@ -693,7 +694,8 @@ them are secret, and, with ADBC access, the driver name and supported version
 range, are returned as Rust values through the connector traits.
 
 Correspondence that is naturally a table, such as dialect translation tables
-and type correspondence, is written as constant tables, so it can be checked
+and type correspondence, is written as constant tables or a `match` over the
+source's values, so it can be checked
 against [Type mappings](type-mappings.md) and conformance expectations.
 
 ## Connector API implementation
