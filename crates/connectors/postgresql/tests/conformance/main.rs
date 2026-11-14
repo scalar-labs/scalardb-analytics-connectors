@@ -154,16 +154,10 @@ impl Fixture for PostgresFixture {
     }
 
     fn known_interruption_deviations(&self) -> Vec<(Interruption, &'static str)> {
-        vec![
-            (
-                Interruption::ReleasedStream,
-                "releasing a stream drops the ADBC reader without cancelling its statement",
-            ),
-            (
-                Interruption::BrokenConnection,
-                "SQLSTATE 57P01 from a terminated backend is classified as `data-source`",
-            ),
-        ]
+        vec![(
+            Interruption::BrokenConnection,
+            "SQLSTATE 57P01 from a terminated backend is classified as `data-source`",
+        )]
     }
 
     fn break_connections(&self) {

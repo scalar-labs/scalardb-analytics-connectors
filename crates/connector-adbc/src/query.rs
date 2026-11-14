@@ -102,6 +102,18 @@ struct QueryExecution {
     statement: StatementResources,
 }
 
+impl QueryExecution {
+    /// Stops the query at the source before releasing an execution whose
+    /// result was not read to its end.
+    ///
+    /// Releasing the reader alone does not stop every driver's query: the
+    /// PostgreSQL driver keeps receiving the rest of a `COPY` result, so the
+    /// query would run on at the server after the caller released it.
+    fn cancel(&self) -> Result<(), Error> {
+        self.statement.cancel_handle.try_cancel()
+    }
+}
+
 /// Owns the resource transferred to the polling thread for one blocking read.
 enum ReadAction {
     CreateStatement(QueryRequest),
@@ -161,6 +173,12 @@ impl<C> AdbcQueryStream<C> {
         }
     }
 
+    /// Retires the query, stopping at the source an execution released before
+    /// its end.
+    ///
+    /// Release has no caller to report to, so a failed native cancellation
+    /// still releases the execution; the driver then ends the query as it
+    /// releases the reader, if it can.
     fn finish(&mut self) {
         let retired = {
             let mut state = match self.state.lock() {
@@ -169,6 +187,9 @@ impl<C> AdbcQueryStream<C> {
             };
             std::mem::replace(&mut *state, QueryState::Finished)
         };
+        if let QueryState::Ready(execution) = &retired {
+            let _ = execution.cancel();
+        }
         drop(retired);
     }
 }
@@ -176,15 +197,21 @@ impl<C> AdbcQueryStream<C> {
 impl<C> AdbcQueryCancelHandle<C> {
     /// Requests cancellation of the associated ADBC query execution.
     ///
-    /// Cancellation is recorded without a driver callback when no source call is
-    /// in progress. While a statement or reader call is in progress, this method
-    /// invokes the statement-scoped ADBC cancel handle.
+    /// Cancellation is recorded without a driver callback before the query
+    /// has a statement. While a statement or reader call is in progress, or
+    /// between reads while a result remains to be read, this method invokes
+    /// the statement-scoped ADBC cancel handle, so the source query stops.
     pub fn try_cancel(&self) -> Result<(), Error> {
         let mut state = lock_state(&self.state)?;
         match &*state {
-            QueryState::Pending(_)
-            | QueryState::Preparing(QueryPreparation::CreatingStatement)
-            | QueryState::Ready(_) => {
+            QueryState::Pending(_) | QueryState::Preparing(QueryPreparation::CreatingStatement) => {
+                let retired = std::mem::replace(&mut *state, QueryState::Cancelled);
+                drop(state);
+                drop(retired);
+                Ok(())
+            }
+            QueryState::Ready(execution) => {
+                execution.cancel()?;
                 let retired = std::mem::replace(&mut *state, QueryState::Cancelled);
                 drop(state);
                 drop(retired);

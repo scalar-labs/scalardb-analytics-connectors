@@ -57,10 +57,8 @@ These come from the driver and are not yet handled by the connector:
 - A failed authentication is reported without a SQLSTATE, so it is classified
   as `connection` rather than `authentication`.
 
-These come from the connector and its ADBC access:
+This comes from the connector:
 
-- Releasing a read stream partway drops the driver's reader without
-  cancelling its statement, so the query keeps running at the server.
 - A connection the server terminates, which PostgreSQL reports with SQLSTATE
   `57P01`, is classified as `data-source` rather than `connection`, so the
   session stays usable until its next request fails.

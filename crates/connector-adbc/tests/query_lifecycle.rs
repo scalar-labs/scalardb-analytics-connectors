@@ -62,7 +62,8 @@ type PullWorker = thread::JoinHandle<(QueryPull, AdbcQueryStream<Generic>)>;
 fn public_query_covers_the_managed_connection_lifecycle() {
     happy_path_is_lazy_and_ordered();
     execute_failure_is_not_retried();
-    abandonment_releases_the_reader_first();
+    abandonment_cancels_the_statement_and_releases_the_reader_first();
+    a_finished_stream_is_released_without_cancellation();
     stream_error_releases_the_reader_first();
     stream_errors_pass_through_the_connector_redaction();
     cancellation_before_first_read_avoids_source_io();
@@ -73,7 +74,7 @@ fn public_query_covers_the_managed_connection_lifecycle() {
     failed_native_cancellation_preserves_the_query();
     cancellation_is_scoped_to_one_execution();
     cancellation_after_completion_is_a_noop_for_the_next_query();
-    cancellation_between_reads_releases_resources_without_native_cancellation();
+    cancellation_between_reads_cancels_the_statement_before_releasing_it();
     cancellation_and_drop_are_linearized();
 }
 
@@ -126,7 +127,9 @@ fn execute_failure_is_not_retried() {
     assert_eq!(fixture.count(Event::StatementDrop), 1);
 }
 
-fn abandonment_releases_the_reader_first() {
+/// Releasing a stream partway stops the query at the source before its
+/// resources are released, then releases the reader before the statement.
+fn abandonment_cancels_the_statement_and_releases_the_reader_first() {
     let fixture = Fixture::batches(vec![batch(&[1]), batch(&[2])]);
     let mut stream = query(
         &AdbcConnection::<Generic>::new(managed_connection()),
@@ -136,6 +139,24 @@ fn abandonment_releases_the_reader_first() {
     assert!(matches!(pull(&mut stream), Poll::Ready(Some(Ok(_)))));
     drop(stream);
 
+    assert_eq!(fixture.count(Event::Cancel), 1);
+    assert_cancel_precedes_release(&fixture);
+    assert_release_order(&fixture);
+}
+
+/// Releasing a stream read to its end needs no cancellation.
+fn a_finished_stream_is_released_without_cancellation() {
+    let fixture = Fixture::batches(vec![batch(&[1])]);
+    let mut stream = query(
+        &AdbcConnection::<Generic>::new(managed_connection()),
+        "select value",
+    );
+
+    assert!(matches!(pull(&mut stream), Poll::Ready(Some(Ok(_)))));
+    assert_eq!(pull(&mut stream), Poll::Ready(None));
+    drop(stream);
+
+    assert_eq!(fixture.count(Event::Cancel), 0);
     assert_release_order(&fixture);
 }
 
@@ -368,7 +389,9 @@ fn cancellation_after_completion_is_a_noop_for_the_next_query() {
     assert_eq!(fixture.count(Event::Execute), 2);
 }
 
-fn cancellation_between_reads_releases_resources_without_native_cancellation() {
+/// A result left unread between reads may still be running at the source, so
+/// cancelling there stops the statement before releasing it.
+fn cancellation_between_reads_cancels_the_statement_before_releasing_it() {
     let fixture = Fixture::batches(vec![batch(&[1]), batch(&[2])]);
     let mut stream = query(
         &AdbcConnection::<Generic>::new(managed_connection()),
@@ -379,7 +402,8 @@ fn cancellation_between_reads_releases_resources_without_native_cancellation() {
     assert!(matches!(pull(&mut stream), Poll::Ready(Some(Ok(_)))));
     cancel.try_cancel().unwrap();
 
-    assert_eq!(fixture.count(Event::Cancel), 0);
+    assert_eq!(fixture.count(Event::Cancel), 1);
+    assert_cancel_precedes_release(&fixture);
     assert_release_order(&fixture);
 
     assert_cancelled(pull(&mut stream));
@@ -413,7 +437,9 @@ fn cancellation_and_drop_are_linearized() {
         cancel_worker.join().unwrap().unwrap();
         drop_worker.join().unwrap();
 
-        assert_eq!(fixture.count(Event::Cancel), 0);
+        // Whichever retires the unread execution cancels it once.
+        assert_eq!(fixture.count(Event::Cancel), 1);
+        assert_cancel_precedes_release(&fixture);
         assert_release_order(&fixture);
     }
 }
@@ -448,6 +474,19 @@ fn managed_connection() -> adbc_driver_manager::ManagedConnection {
     .unwrap();
     let database = driver.new_database().unwrap();
     database.new_connection().unwrap()
+}
+
+fn assert_cancel_precedes_release(fixture: &Fixture) {
+    let events = fixture.events();
+    let cancel = events
+        .iter()
+        .position(|event| *event == Event::Cancel)
+        .unwrap();
+    let reader_drop = events
+        .iter()
+        .position(|event| *event == Event::ReaderDrop)
+        .unwrap();
+    assert!(cancel < reader_drop);
 }
 
 fn assert_release_order(fixture: &Fixture) {
