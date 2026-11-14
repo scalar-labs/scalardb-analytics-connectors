@@ -6,9 +6,9 @@ This document defines the conventions for implementing one Connector's
 connector on the structure in [Connector SDK](connector-sdk.md):
 how a connector is built, how metadata is retrieved, types and values, reads
 and plan-aware pushdown decisions, errors and logs, tests,
-choosing the form of Data Source access and an ADBC driver, direct access, isolating
-native dependencies, the initial PostgreSQL and MySQL conventions, and how the
-conventions apply to other sources. What is promised to callers is defined by
+choosing the form of Data Source access and an ADBC driver, direct access,
+connector dependencies, isolating native dependencies, the initial PostgreSQL
+and MySQL conventions, and how the conventions apply to other sources. What is promised to callers is defined by
 the [connector contract](connector-contract.md); this document defines how to
 meet it. Terms follow the [vocabulary](connector-sdk.md#vocabulary) of the
 Connector SDK.
@@ -55,7 +55,9 @@ A connector for a new Connector is built in this order:
 2. Choose the form of Data Source access ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers)).
    For ADBC access, choose the ADBC driver, and if no existing driver is usable,
    write one under `adbc-drivers/<source>` ([Our own ADBC drivers](#our-own-adbc-drivers)).
-   For direct access, choose the reader crates.
+   For direct access, choose the reader crates. In either form, each
+   dependency this brings in is acceptable
+   ([Which dependencies a connector may use](#which-dependencies-a-connector-may-use)).
 3. Create `crates/connectors/<source>` and implement the
    [connector trait](connector-sdk.md#connector-trait) in Rust code and
    constant tables ([Connector behavior as code](connector-sdk.md#connector-behavior-as-code)).
@@ -78,7 +80,8 @@ A connector for a new Connector is built in this order:
    `crates/connectors/<source>/tests` and pass the suite for this connector
    alone ([Tests](#tests)). Write the connector's README from the
    [template](../crates/connectors/README.md), recording its Data Source
-   access, source metadata, type mapping, coverage and unsupported types,
+   access, [dependencies](#declaring-dependencies), source metadata, type
+   mapping, coverage and unsupported types,
    pushdown, known deviations, and the
    [compatibility table](#compatibility-table) of what the suite passed with.
    The README's type mapping records the decided mapping, how the source
@@ -539,16 +542,18 @@ Each connector's fixture implements the suite's `Fixture` trait in
 
 Each connector publishes, in its README
 ([template](../crates/connectors/README.md#readme-template)), the combinations
-of Data Source version, ADBC driver version (ADBC access), and platform that
-passed its conformance tests as its compatibility table. Raising the ADBC driver
-version or a reader crate version means rerunning that connector's
-conformance suite with the new version.
+of Data Source version, ADBC driver version (ADBC access), the versions of the
+other dependencies it declares ([Declaring dependencies](#declaring-dependencies)),
+and platform that passed its conformance tests as its compatibility table.
+Raising the ADBC driver version or a reader crate version means rerunning that
+connector's conformance suite with the new version.
 
 | Axis | Initial range |
 | --- | --- |
 | PostgreSQL | Major versions within community support at the time of testing |
 | MySQL | The LTS version and the latest version at the time of testing |
 | ADBC driver (ADBC access) | The supported version range in the connector's static information |
+| Other declared dependencies | The versions the connector's README declares |
 | Platform | The first distribution platforms of the product |
 
 ## Choosing Data Source access and ADBC drivers
@@ -612,11 +617,8 @@ An existing ADBC driver is used when all of these hold:
 - For each mapping rule, the values the driver returns can be turned into the
   Analytics type with value-preserving conversions. Rules for which this fails
   fall outside coverage, and the number of such rules is acceptable.
-- Its cancellation stops the query at the source.
-- It does not copy the literal-bearing SQL text into logs or errors.
-- Options that change how types and values are produced can be fixed.
-- Its license permits distribution, and its native dependencies can be included
-  in the distribution.
+- It and the native libraries it uses are acceptable dependencies
+  ([Which dependencies a connector may use](#which-dependencies-a-connector-may-use)).
 
 These are judged through the source's conformance tests and by reviewing the
 driver's documentation and implementation.
@@ -637,9 +639,8 @@ gets our own:
   the connector.
 - It implements `AdbcErrorFromArrayStream`
   ([ADBC driver handling](connector-sdk.md#adbc-driver-handling)).
-- Pure Rust source clients are preferred. Keeping secret values out of logs and
-  cancellation that stops the query at the source are client selection
-  criteria.
+- Pure Rust source clients are preferred. The client is an acceptable
+  dependency ([Which dependencies a connector may use](#which-dependencies-a-connector-may-use)).
 
 ### Direct access
 
@@ -661,9 +662,75 @@ gets our own:
   [Cancellation and timeouts](connector-sdk.md#cancellation-and-timeouts)
   and [Cleanup](connector-sdk.md#cleanup).
 
+## Connector dependencies
+
+What ships is the connector API library with its connectors, and the adapters.
+Everything a connector needs beyond the library is one of its dependencies: the
+ADBC driver, the native libraries the driver uses, such as Oracle Instant
+Client, an ODBC driver manager and ODBC driver, and, with direct access, the
+reader crates and source clients built into the library. Each connector decides
+its own dependencies; the rules below keep those decisions comparable across
+connectors. A connector first checks that each dependency is acceptable, then
+declares it, and then ships it or leaves it to the user to install.
+
+### Which dependencies a connector may use
+
+A dependency is acceptable when all of these hold:
+
+- **Placement.** Native dependencies stay outside the library, in the ADBC
+  driver or in a library the driver uses
+  ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers),
+  [Isolating native dependencies](#isolating-native-dependencies)). Crates
+  built into the library pass the [dependency policy check](#dependency-policy-check).
+- **License.** Its license permits distribution when it ships with the
+  connector ([Shipping and installing dependencies](#shipping-and-installing-dependencies)).
+  Crates built into the library also have a license in the allowed list of
+  `deny.toml`.
+- **Behavior.** The ADBC driver, and the source client or ODBC driver it uses,
+  or the reader crates and clients of a direct-access connector:
+  - let the connector fix the settings that change how types and values are
+    produced ([Fixed settings](#fixed-settings));
+  - stop the query at the source on cancellation; and
+  - keep secret values and the literal-bearing SQL text out of logs and errors
+    ([Data Source access rules](connector-contract.md#data-source-access-rules)).
+- **Versions.** The versions the connector was tested with can be identified:
+  the ADBC driver through the supported version range in the connector's
+  static information, reader crates through the versions pinned in the
+  connector crate, and every other dependency through the tested versions in
+  the connector's README ([Compatibility table](#compatibility-table)).
+
+A connector that intentionally accepts a dependency that fails one of these,
+such as a private in-house connector that uses a GPL library, records the
+exception: in `deny.toml` for a crate built into the library
+([Dependency policy check](#dependency-policy-check)), and in its README for
+any dependency.
+
+### Declaring dependencies
+
+Each connector's README has a Dependencies section
+([template](../crates/connectors/README.md#readme-template)) that lists every
+dependency with:
+
+- what it is and what the connector uses it for;
+- any exception to [Which dependencies a connector may use](#which-dependencies-a-connector-may-use);
+- whether it ships with the connector or the user installs it; and
+- the versions the conformance suite passed with, which the
+  [compatibility table](#compatibility-table) records.
+
+### Shipping and installing dependencies
+
+- A connector built into the product's distribution ships its dependencies with
+  it as far as their licenses permit.
+- A dependency whose license or vendor does not permit that, as with some
+  vendor client libraries and ODBC drivers, is installed by the user. The
+  connector's README states its requirements and installation.
+- Where shipped dependencies are placed and how they are bundled is owned by
+  the product application's distribution, not by this repository.
+
 ## Isolating native dependencies
 
-The rule that native dependencies stay inside ADBC drivers
+The rule that native dependencies stay outside the library, in ADBC drivers
+or the libraries they use,
 ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers))
 is implemented as follows:
 
@@ -679,10 +746,11 @@ is implemented as follows:
 - TLS in our own ADBC drivers and direct-access implementations uses rustls and
   does not depend on OpenSSL. Its cryptography provider is a crate of the kind
   above, such as `ring`.
-- The licenses and origins of ADBC drivers and their native dependencies are
-  managed in distribution metadata. Where drivers are placed and how they are
-  bundled is owned by the product application's distribution, not by this
-  repository.
+- The licenses and origins of the dependencies that ship are managed in
+  distribution metadata. Which dependencies ship is declared by each connector
+  ([Shipping and installing dependencies](#shipping-and-installing-dependencies));
+  where they are placed and how they are bundled is owned by the product
+  application's distribution, not by this repository.
 
 ### Dependency policy check
 
@@ -755,7 +823,9 @@ every case the contract, connector traits, and connector SDK stay the same.
   without a separately proven semantic rule.
 - **Data Source access:** ADBC access through an ADBC driver for Oracle; without an
   existing one, our own driver using an Oracle client. Native dependencies such
-  as Oracle Instant Client stay inside the driver.
+  as Oracle Instant Client stay outside the library as dependencies of the
+  driver, shipped or installed by the user as in
+  [Connector dependencies](#connector-dependencies).
 - **Connection settings and credentials:** a connect descriptor, and user name
   and password as separate options.
 - **Cancellation and timeouts:** the driver's cancellation, which must stop the
@@ -803,7 +873,9 @@ every case the contract, connector traits, and connector SDK stay the same.
 - **Structure:** `connector-sql`, with dialect and catalog queries written per
   Connector as constant tables.
 - **Data Source access:** ADBC access through an ADBC driver that uses ODBC. The ODBC
-  driver manager and the source's ODBC driver stay inside that driver.
+  driver manager and the source's ODBC driver are dependencies of that driver,
+  shipped or installed by the user as in
+  [Connector dependencies](#connector-dependencies).
 - **Connection settings and credentials:** the ODBC connection string without
   secrets, and secrets as separate options.
 - **Cancellation and timeouts:** the driver's cancellation (ODBC `SQLCancel`).

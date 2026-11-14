@@ -35,6 +35,20 @@ the connector reads, and a link to the Type mapping section below.>
 
 <Anything about the options or the driver a caller needs to predict results.>
 
+## Dependencies
+
+<Every dependency the connector needs beyond the library
+(docs/connector-implementation.md#connector-dependencies): the ADBC driver and
+the native libraries or ODBC driver it uses, or the reader crates and clients
+of direct access.>
+
+| Dependency | Used for | Ships with the connector | Tested versions |
+| --- | --- | --- | --- |
+| <Name and license> | <What the connector uses it for> | <"Yes", or "No: installed by the user" and why> | <Versions the conformance suite passed with> |
+
+<Any exception to the acceptance rules and why it is accepted, or "None". For
+each dependency the user installs, its requirements and installation.>
+
 ## Source metadata
 
 <What the source metadata document holds and the type whose rustdoc defines
@@ -83,9 +97,9 @@ the driver. "None" when the fixture states none.>
 
 Only combinations that passed this crate's tests are listed.
 
-| <Source> | ADBC driver | Platform |
-| --- | --- | --- |
-| <Version> | <Version> | <Platform> |
+| <Source> | ADBC driver | <Other declared dependency> | Platform |
+| --- | --- | --- | --- |
+| <Version> | <Version> | <Version> | <Platform> |
 
 ## Tests
 

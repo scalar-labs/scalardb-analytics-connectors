@@ -24,6 +24,14 @@ qualifies a user-defined type, such as an enum or a domain, with its schema
 unless the type is on the path. Without the option, the server's setting for
 the role and database applies.
 
+## Dependencies
+
+| Dependency | Used for | Ships with the connector | Tested versions |
+| --- | --- | --- | --- |
+| Apache Arrow ADBC PostgreSQL driver (Apache-2.0) | Data Source access | Yes | 1.13.0 |
+
+Exceptions: none. No dependency is installed by the user.
+
 ## Source metadata
 
 The source metadata of a table is the JSON document of `PostgresTable`. It
