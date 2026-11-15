@@ -127,7 +127,21 @@
 
           _module.args.pkgs = import nixpkgs {
             inherit system;
-            overlays = [ devshell.overlays.default ];
+            overlays = [
+              devshell.overlays.default
+              # The DuckDB version the adapter targets, which nixpkgs does not
+              # provide yet.
+              (final: prev: {
+                duckdb = prev.duckdb.overrideAttrs (finalAttrs: previousAttrs: {
+                  version = "1.5.6";
+                  rev = "069cc9f9b5be802405797faecc284961b07c70ef";
+                  src = previousAttrs.src.override {
+                    tag = "v${finalAttrs.version}";
+                    hash = "sha256-xHcucJA+2nTD9oeoZxDQzGS6QNnzjHQ7t9sz0OHA+zo=";
+                  };
+                });
+              })
+            ];
           };
 
           devShells.default = pkgs.devshell.mkShell {

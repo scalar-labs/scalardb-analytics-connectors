@@ -11,7 +11,7 @@
 #    (adapters/duckdb/test/e2e.sh: in Docker, or the local server that
 #    POSTGRESQL_TEST_PORT names).
 #
-# Usage: check-package.sh <package .tgz> <DuckDB v1.5.2 CLI>
+# Usage: check-package.sh <package .tgz> <DuckDB v1.5.6 CLI>
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)

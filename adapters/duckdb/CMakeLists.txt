@@ -43,8 +43,8 @@ if(SCALARDB_ANALYTICS_DISTRIBUTION)
   # source without building it.
   # DuckDB's headers only: the host process provides DuckDB itself.
   FetchContent_Declare(duckdb
-    URL https://github.com/duckdb/duckdb/archive/refs/tags/v1.5.2.tar.gz
-    URL_HASH SHA256=6d8612fc87115cf4d3512a934ada5d1669db29378b4cc8e226fdfa8f5c537385
+    URL https://github.com/duckdb/duckdb/archive/refs/tags/v1.5.6.tar.gz
+    URL_HASH SHA256=1fadcbe9e69e1470f9093b6bcde08daf477d729c449e59a807f45c346622099b
     SOURCE_SUBDIR headers-only)
   # The Substrait specification version flake.nix pins for development.
   FetchContent_Declare(substrait
@@ -69,7 +69,7 @@ if(SCALARDB_ANALYTICS_DISTRIBUTION)
     URL_HASH SHA256=e4e6ff10760cf747a2decd1867741f561b216bd60cc4038c87564713a6da1848)
   FetchContent_MakeAvailable(duckdb substrait absl protobuf)
   include("${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake")
-  set(DuckDB_VERSION v1.5.2)
+  set(DuckDB_VERSION v1.5.6)
   set(DuckDB_INCLUDE_DIRS "${duckdb_SOURCE_DIR}/src/include")
   set(SUBSTRAIT_PROTO_DIR "${substrait_SOURCE_DIR}/proto")
   # An installed protoc finds the well-known types by itself; one built here
@@ -79,10 +79,10 @@ else()
   set(SUBSTRAIT_PROTO_DIR "$ENV{SUBSTRAIT_PROTO_DIR}" CACHE PATH
       "The proto directory of the Substrait specification the connector API pins")
   # The adapter's C++ API use is tied to one DuckDB version; DuckDB's package
-  # reports it as "v1.5.2", which find_package cannot compare.
+  # reports it as "v1.5.6", which find_package cannot compare.
   find_package(DuckDB REQUIRED CONFIG)
-  if(NOT DuckDB_VERSION STREQUAL "v1.5.2")
-    message(FATAL_ERROR "the DuckDB adapter requires DuckDB v1.5.2, found ${DuckDB_VERSION}")
+  if(NOT DuckDB_VERSION STREQUAL "v1.5.6")
+    message(FATAL_ERROR "the DuckDB adapter requires DuckDB v1.5.6, found ${DuckDB_VERSION}")
   endif()
   find_package(Protobuf CONFIG REQUIRED)
   if(NOT SUBSTRAIT_PROTO_DIR)

@@ -20,8 +20,8 @@ password=connector-test-secret
 failures=0
 
 case "$("$duckdb" --version)" in
-v1.5.2*) ;;
-*) echo "the DuckDB CLI is not v1.5.2: $("$duckdb" --version)" >&2; exit 1 ;;
+v1.5.6*) ;;
+*) echo "the DuckDB CLI is not v1.5.6: $("$duckdb" --version)" >&2; exit 1 ;;
 esac
 
 if [ -n "${POSTGRESQL_TEST_PORT:-}" ]; then

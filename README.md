@@ -98,7 +98,7 @@ or later.
 ```text
 lib/           The connector API library, with the connectors whose dependencies ship,
                and the native libraries it links that ship
-duckdb/        The DuckDB v1.5.2 loadable extension, which finds ../lib
+duckdb/        The DuckDB v1.5.6 loadable extension, which finds ../lib
 adbc-drivers/  The ADBC drivers that ship, with their manifests
 include/       The C header of the connector API library
 LICENSES/      The license texts of everything in the package
@@ -124,7 +124,7 @@ Docker, for the Docker engine's architecture. Each is checked unpacked with
 nix develop --command packaging/package.sh
 # Linux, on a host whose Docker engine runs Linux containers
 packaging/linux/package.sh
-packaging/check-package.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz <DuckDB v1.5.2 CLI>
+packaging/check-package.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz <DuckDB v1.5.6 CLI>
 ```
 
 ### Versioning

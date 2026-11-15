@@ -3,7 +3,7 @@
 The DuckDB Query Engine adapter attaches each Data Source to DuckDB as one
 read-only catalog and plans every scan of its tables through the connector
 API's pushdown planning. It is a C++ DuckDB extension built with CMake against
-DuckDB v1.5.2, the version the Nix development shell provides; the adapter
+DuckDB v1.5.6, the version the Nix development shell provides; the adapter
 uses DuckDB's C++ API, so a binary works only with that DuckDB version.
 
 The adapter follows the
