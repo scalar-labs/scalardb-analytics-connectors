@@ -1514,7 +1514,7 @@ and [Unsupported columns](#unsupported-columns) they satisfy.
 | Tier | What it is | Rules not met | Recurring problem |
 | --- | --- | --- | --- |
 | Data Source-specific | Reads the source's own catalog (for table formats and files, their own metadata) through an ADBC driver dedicated to the source or through direct access | None | None |
-| Generic ODBC | Reaches the source through an ADBC driver that uses ODBC, with a dialect and type mapping per source | For sources whose own catalog cannot be read through ODBC, Data Source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
+| Generic ODBC | Reaches the source through ODBC, with a dialect and type mapping per source | For sources whose own catalog cannot be read through ODBC, Data Source types and metadata follow the ODBC driver's report | Dependence on a driver's report, confined to one connector rather than varying by Query Engine |
 
 When Data Source types come from an ODBC driver's report, their origin differs
 from the origin in the existing source kind's type mapping. Because there is

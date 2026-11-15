@@ -872,15 +872,18 @@ every case the contract, connector traits, and connector SDK stay the same.
 
 - **Structure:** `connector-sql`, with dialect and catalog queries written per
   Connector as constant tables.
-- **Data Source access:** ADBC access through an ADBC driver that uses ODBC. The ODBC
-  driver manager and the source's ODBC driver are dependencies of that driver,
-  shipped or installed by the user as in
+- **Data Source access:** direct access through `odbc-api` and `arrow-odbc`
+  ([Reach ODBC sources through direct access](design/reach-odbc-sources-through-direct-access.md)).
+  The ODBC driver manager it links is a native dependency the connector
+  records as an exception
+  ([Which dependencies a connector may use](#which-dependencies-a-connector-may-use));
+  the source's ODBC driver is shipped or installed by the user as in
   [Connector dependencies](#connector-dependencies).
 - **Connection settings and credentials:** the ODBC connection string without
   secrets, and secrets as separate options.
-- **Cancellation and timeouts:** the driver's cancellation (ODBC `SQLCancel`).
-- **Metadata:** ODBC catalog functions, or catalog queries written in the
-  dialect table. Data Source types and mapping follow
+- **Cancellation and timeouts:** ODBC `SQLCancel`.
+- **Metadata:** ODBC catalog functions and column descriptions, or catalog
+  queries written in the dialect table. Data Source types and mapping follow
   [Support tiers](connector-contract.md#support-tiers).
 - **Constraints:** primary keys, foreign keys, and unique indexes available
   through ODBC catalog functions; CHECK constraints not offered.
