@@ -5,8 +5,8 @@
 //! [`super::metadata`].
 
 use connector_sdk::{
-    Change, ColumnAttribute, ConstraintAttribute, JsonDifference, SourceMetadataDifferences,
-    TableAttribute, TableMetadataDifferences,
+    Change, ColumnAttribute, ConstraintAttribute, JsonDifference, TableAttribute,
+    TableMetadataDifferences,
 };
 
 use super::{
@@ -121,15 +121,12 @@ pub struct ScalardbAnalyticsConnectorJsonDifference {
     pub after: ScalardbAnalyticsConnectorJson,
 }
 
-/// The differences between two observations of one table's source metadata:
-/// those of the table metadata derived from both, and those of the
-/// documents. Freed with
-/// `source_metadata_differences_free`.
+/// The differences between two observations of one table's source metadata
+/// documents. Freed with `source_metadata_differences_free`.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorSourceMetadataDifferences {
-    pub table_metadata: ScalardbAnalyticsConnectorTableMetadataDifferences,
-    pub source_metadata: *const ScalardbAnalyticsConnectorJsonDifference,
-    pub source_metadata_count: usize,
+    pub differences: *const ScalardbAnalyticsConnectorJsonDifference,
+    pub difference_count: usize,
 }
 
 impl Arena {
@@ -190,19 +187,16 @@ impl Arena {
 
     pub(super) fn source_metadata_differences(
         &mut self,
-        differences: &SourceMetadataDifferences,
+        differences: &[JsonDifference],
     ) -> ScalardbAnalyticsConnectorSourceMetadataDifferences {
-        let table_metadata = self.table_metadata_differences(&differences.table_metadata);
-        let documents = differences
-            .source_metadata
+        let differences = differences
             .iter()
             .map(|difference| self.json_difference(difference))
             .collect();
-        let (source_metadata, source_metadata_count) = self.array(documents);
+        let (differences, difference_count) = self.array(differences);
         ScalardbAnalyticsConnectorSourceMetadataDifferences {
-            table_metadata,
-            source_metadata,
-            source_metadata_count,
+            differences,
+            difference_count,
         }
     }
 

@@ -40,16 +40,6 @@ impl TableMetadataDifferences {
     }
 }
 
-/// The differences between two observations of one table's source metadata.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceMetadataDifferences {
-    /// The differences of the table metadata derived from both sides.
-    pub table_metadata: TableMetadataDifferences,
-    /// The differences of the source metadata documents, which also cover
-    /// what table metadata does not hold.
-    pub source_metadata: Vec<JsonDifference>,
-}
-
 /// One difference between two JSON documents.
 ///
 /// `path` is a JSON Pointer. A value only the older document holds, or one
@@ -131,23 +121,18 @@ impl TableMetadata {
     }
 }
 
-/// Compares two observations of one table's source metadata; `None` when
-/// neither the documents nor the table metadata derived from them differ.
+/// Compares two observations of one table's source metadata as the JSON
+/// documents the connector defines; `None` when they do not differ.
+///
+/// No table metadata is derived here: each observation's table metadata is
+/// the one its read returned, compared on its own by
+/// [`TableMetadata::compare`].
 pub(crate) fn compare_source_metadata<T: SourceTableMetadata>(
     before: &T,
     after: &T,
-) -> Result<Option<SourceMetadataDifferences>, ConnectorError> {
-    let source_metadata = json_differences(&document(before)?, &document(after)?);
-    let table_metadata = before
-        .to_table_metadata()
-        .compare(&after.to_table_metadata());
-    if source_metadata.is_empty() && table_metadata.is_none() {
-        return Ok(None);
-    }
-    Ok(Some(SourceMetadataDifferences {
-        table_metadata: table_metadata.unwrap_or_default(),
-        source_metadata,
-    }))
+) -> Result<Option<Vec<JsonDifference>>, ConnectorError> {
+    let differences = json_differences(&document(before)?, &document(after)?);
+    Ok((!differences.is_empty()).then_some(differences))
 }
 
 /// The source metadata as the JSON document the connector defines.

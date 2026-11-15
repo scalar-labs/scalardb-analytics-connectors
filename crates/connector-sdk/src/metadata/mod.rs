@@ -12,8 +12,8 @@ mod table;
 
 pub(crate) use comparison::compare_source_metadata;
 pub use comparison::{
-    Change, ColumnAttribute, ConstraintAttribute, JsonDifference, SourceMetadataDifferences,
-    TableAttribute, TableMetadataDifferences,
+    Change, ColumnAttribute, ConstraintAttribute, JsonDifference, TableAttribute,
+    TableMetadataDifferences,
 };
 pub use listing::{Listed, NameFilter, NamespacePath, TableEntry};
 pub use schema_check::check_schema;

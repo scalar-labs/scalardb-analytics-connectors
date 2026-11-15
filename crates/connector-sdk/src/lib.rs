@@ -35,10 +35,9 @@ pub use lifecycle::{
 };
 pub use metadata::{
     Change, Column, ColumnAttribute, ColumnType, Constraint, ConstraintAttribute, ConstraintKind,
-    JsonDifference, Listed, NameFilter, NamespacePath, Reported, SourceMetadataDifferences,
-    SourceTableMetadata, TableAttribute, TableEntry, TableKind, TableMetadata,
-    TableMetadataDifferences, TableRecord, TableReference, UniqueKind, UnsupportedReason,
-    check_schema,
+    JsonDifference, Listed, NameFilter, NamespacePath, Reported, SourceTableMetadata,
+    TableAttribute, TableEntry, TableKind, TableMetadata, TableMetadataDifferences, TableRecord,
+    TableReference, UniqueKind, UnsupportedReason, check_schema,
 };
 pub use planning::{
     BOOLEAN_FUNCTIONS_URI, BinaryOperator, COMPARISON_FUNCTIONS_URI, ConnectorPlanner,

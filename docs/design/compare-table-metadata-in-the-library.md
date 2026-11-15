@@ -27,14 +27,14 @@ only facts. The rules are in
   compares it without any connector (`TableMetadata::compare`). Only tables
   that were read on both sides are compared; that a table does not exist or
   could not be read is already known to the caller that paired the records.
-- **Source metadata** has its connector's shape, so its comparison belongs to
-  the connector component that defines that shape:
-  `Catalog::compare_source_metadata`, provided by the SDK for every catalog. It
-  compares the two values as JSON documents, which covers what table metadata
-  does not hold, and compares the table metadata derived from both. Source
-  metadata carries its connector's name; the library restores both documents
-  through the built-in connector of that name, and documents of different or
-  unknown connectors, or an unrestorable document, are an invalid request.
+- **Source metadata** has its connector's shape, so only its connector can
+  restore it. Source metadata carries its connector's name; the library
+  restores both documents to the `Catalog::Table` of the built-in connector of
+  that name and compares them as JSON documents, which covers what table
+  metadata does not hold. Documents of different or unknown connectors, or an
+  unrestorable document, are an invalid request. No table metadata is derived
+  for this comparison: each observation's table metadata is the one its
+  retrieval returned, and the table metadata comparison compares those.
 - **Matching.** Columns are matched by source identifier only when both tables
   have the same source identifier and both columns have one, and by name
   otherwise; constraints by kind and name. The table's kind and source
@@ -86,12 +86,19 @@ column as a rename, so they are used only when the table identifiers agree.
 Whether a comparison depends on a connector follows from who knows the shape
 of what is compared. Table metadata is the SDK's model, so its rules live once
 in the SDK. Source metadata is the type a connector's `Catalog` declares, so
-its comparison is a function of that component, while its body is shared by
-every catalog. The comparison takes restored values rather than text: a caller
-that already holds a value, such as a fresh retrieval, passes it directly, and
-the text representation stays at the boundary that receives it. Comparing
-re-serialized values also keeps a stored document's formatting, such as key
-order after a database reformats JSON, out of the result.
+only that connector can restore it, while the document comparison is shared
+by every connector. Comparing restored and re-serialized values keeps a
+stored document's formatting, such as key order after a database reformats
+JSON, out of the result.
+
+Table metadata is what the connector derived from what it observed and how
+the Data Source is configured to read it, such as an option that chooses how
+a Data Source type maps. A stored source metadata document holds only the
+observation, so deriving table metadata again from two documents would apply
+one configuration to both: a configuration change would vanish, or be
+reported as a change of the source. Comparing the table metadata each
+retrieval returned keeps a source change in the source metadata differences
+and a change of how it is read in the table metadata differences.
 
 The comparison's inputs are the structures a retrieval returns. An earlier
 form took table metadata as Arrow rows, so a caller had to slice a retrieved
@@ -122,9 +129,10 @@ own pair, and matches what callers hold: records stored per table.
   not see where it changed.
 - **Connector-defined differences of source metadata.** Each connector would
   need a difference format; a generic document difference needs none.
-- **The comparison on `Connector` or on `SourceTableMetadata`.** `Connector`
-  holds flows across components, which this is not, and the type that holds
-  source metadata is declared by the `Catalog` component.
+- **Comparing the table metadata derived from both source metadata
+  documents.** A document does not hold the Data Source configuration its
+  table metadata was derived with, so the derived comparison would hide or
+  misattribute a configuration change.
 - **Arrays of pairs per call.** One bad pair would fail every other pair, and
   callers would have to assemble arrays from per-table records.
 - **Table metadata as Arrow rows and a generic Arrow input structure.** It
@@ -140,7 +148,11 @@ own pair, and matches what callers hold: records stored per table.
 - `SourceTableMetadata` requires serialization and deserialization, so every
   connector's source metadata type can be restored from its document and
   compared as a document.
-- The connector API has two comparison functions with one result shape.
+- The connector API has two comparison functions: table metadata differences
+  item by item, and source metadata document differences.
+- A receiver that needs Analytics type differences compares table metadata,
+  so it stores the table metadata it retrieved; the source metadata
+  differences show the Data Source types and attributes that changed.
 - A library or connector update that changes the table metadata structures
   or the source metadata shape makes previously stored metadata uncomparable
   until cross-version rules are added.

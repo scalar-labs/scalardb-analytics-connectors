@@ -453,14 +453,15 @@ pub struct ScalardbAnalyticsConnectorApi {
     /// `differences` is null or a live result, not used after this call.
     pub table_metadata_differences_free:
         unsafe extern "C" fn(differences: *mut ScalardbAnalyticsConnectorTableMetadataDifferences),
-    /// Compares two observations of one table's source metadata through the
-    /// connector that produced them, which restores both documents.
+    /// Compares two observations of one table's source metadata as JSON
+    /// documents, through the connector that produced them, which restores
+    /// both. Their table metadata is compared with `table_metadata_compare`.
     ///
-    /// `out_differences` receives null when neither the documents nor the table
-    /// metadata derived from them differ. Documents of different connectors, of
-    /// a connector not built into the library, or that the connector cannot
-    /// restore, such as one stored before a connector update changed its shape,
-    /// are `invalid request`. It needs an initialized library and no handle.
+    /// `out_differences` receives null when the documents do not differ.
+    /// Documents of different connectors, of a connector not built into the
+    /// library, or that the connector cannot restore, such as one stored
+    /// before a connector update changed its shape, are `invalid request`. It
+    /// needs an initialized library and no handle.
     ///
     /// # Safety
     ///

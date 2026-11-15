@@ -326,9 +326,6 @@ Catalog<C>:
     namespace_list(session, filter) -> ExecutionOutput<Listed<NamespacePath>>
     table_list(session, namespaces, tables) -> ExecutionOutput<Listed<TableEntry>>
     table_metadata(session, tables) -> ExecutionOutput<TableRecord<Table>>
-    provided:
-    compare_source_metadata(before Table, after Table)
-        -> no difference | SourceMetadataDifferences
 
 Planner<C>:
     type Facts                            Connector-private planning metadata
@@ -606,10 +603,6 @@ pub trait Catalog<C: Connector>: 'static {
     /// One record per requested table.
     fn table_metadata(session: &Session<C>, tables: &[TableReference])
         -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
-
-    /// Provided: compares two observations of one table's source metadata.
-    fn compare_source_metadata(before: &Self::Table, after: &Self::Table)
-        -> Result<Option<SourceMetadataDifferences>, ConnectorError>;
 }
 
 /// Serialized as the source metadata JSON document; the connector decides its
@@ -677,16 +670,16 @@ values observed on both sides that differ. Table metadata has one shape for
 every connector, so the SDK compares it without any connector:
 `TableMetadata::compare` returns `TableMetadataDifferences`, whose columns
 and constraints are each a `Change` (added, removed, or matched with the
-attributes that differ). Source metadata has the connector's shape, so its
-comparison belongs to the component that defines that shape:
-`Catalog::compare_source_metadata` takes two values of `Catalog::Table`,
-compares them as JSON documents, and compares the table metadata derived from
-both. Every catalog shares this provided function. A table metadata result
-carries each table's source metadata as `SourceMetadata`, its connector's name
-and its JSON document. The runtime's `Library::compare_source_metadata` finds
-the built-in connector of that name and restores both documents to its
-`Catalog::Table`; documents of different connectors, an unknown connector, or
-a document that cannot be restored is `invalid request`.
+attributes that differ). Source metadata has the connector's shape, so only
+its connector can restore it: a table metadata result carries each table's
+source metadata as `SourceMetadata`, its connector's name and its JSON
+document. The runtime's `Library::compare_source_metadata` finds the built-in
+connector of that name, restores both documents to its `Catalog::Table`, and
+compares them as JSON documents, returning their `JsonDifference`s; documents
+of different connectors, an unknown connector, or a document that cannot be
+restored is `invalid request`. It derives no table metadata: each
+observation's table metadata is the one its read returned, compared on its own
+by `TableMetadata::compare`.
 
 Retrieval info is assembled from each table's `read_at`, the connector's name
 and version in its `ConnectorDescriptor`, and the driver component the
@@ -756,8 +749,7 @@ The runtime owns the contract's semantics:
 - **Source metadata comparison:** `Library::compare_source_metadata`
   dispatches by the connector name the source metadata carries, restores both
   documents to that connector's `Catalog::Table`, the only place that type is
-  known behind the object-safe view, and calls
-  `Catalog::compare_source_metadata`.
+  known behind the object-safe view, and compares them as JSON documents.
 - **Planning errors:** a Connector's planning failure carries a
   `ConnectorError`, so `plan_pushdown` returns its kind, retryability, and
   Data Source details unchanged.

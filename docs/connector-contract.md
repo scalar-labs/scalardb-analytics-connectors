@@ -587,8 +587,9 @@ The two comparisons differ in what they depend on:
   depends on that connector. Source metadata names its connector, and that
   connector, which must be built into the library, restores both documents to
   its source metadata type; no data source is needed. The two are compared as
-  JSON documents, which covers what table metadata does not hold, and the
-  table metadata the connector derives from both is compared as below.
+  JSON documents, which covers what table metadata does not hold. No table
+  metadata is derived for this comparison: the table metadata of each
+  observation is the one its retrieval returned, compared on its own.
   Documents of different connectors, or a document the connector cannot
   restore, for example one stored before an update that changed its shape,
   make the comparison an `invalid request`.
@@ -627,13 +628,12 @@ Table metadata comparison returns, per pair, either no result or:
 | Constraints | Each added, removed, or matched constraint with differing attributes, carrying both versions of a matched one and naming each attribute that differs: enforcement, columns, unique kind, condition, referenced table, referenced columns, and expression |
 
 Unchanged items are not listed, and a part without differences is empty.
-Source metadata comparison returns, per pair, either no result or the parts
-above for the derived table metadata together with the differences of the
-documents. Each document difference names its location as a JSON Pointer and
-carries the older value, the newer value, or both. Object members are compared
-by name. Array elements are matched by equality along their longest common
-subsequence, so an inserted or removed element does not make the elements after
-it differ. Between two matched elements, unmatched elements are paired in order
+Source metadata comparison returns, per pair, either no result or the
+differences of the documents. Each document difference names its location as
+a JSON Pointer and carries the older value, the newer value, or both. Object
+members are compared by name. Array elements are matched by equality along
+their longest common subsequence, so an inserted or removed element does not
+make the elements after it differ. Between two matched elements, unmatched elements are paired in order
 as changed elements located in the older document, and the remaining ones are
 removed elements located in the older document or added elements located in
 the newer one.

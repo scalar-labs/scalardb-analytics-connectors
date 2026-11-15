@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     Component, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ErrorKind,
-    LibrarySettings, SecretString, SourceMetadataDifferences,
+    JsonDifference, LibrarySettings, SecretString,
 };
 
 /// One connector built into a library, registered before initialization.
@@ -122,17 +122,19 @@ impl Library {
         )))
     }
 
-    /// Compares two observations of one table's source metadata; `None` when
-    /// neither the documents nor the table metadata derived from them differ.
+    /// Compares two observations of one table's source metadata as JSON
+    /// documents; `None` when they do not differ.
     ///
     /// The connector that produced both documents restores them. Documents of
     /// different connectors, of a connector not built into this library, or
-    /// that the connector cannot restore are invalid requests.
+    /// that the connector cannot restore are invalid requests. The table
+    /// metadata of the two observations is compared on its own
+    /// ([`crate::TableMetadata::compare`]).
     pub fn compare_source_metadata(
         &self,
         before: &SourceMetadata,
         after: &SourceMetadata,
-    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError> {
+    ) -> Result<Option<Vec<JsonDifference>>, ConnectorError> {
         self.ensure_open()?;
         if before.connector != after.connector {
             return Err(ConnectorError::new(

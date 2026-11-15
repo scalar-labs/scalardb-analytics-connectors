@@ -13,11 +13,11 @@ use std::{
 
 use crate::{
     Access, Catalog, Component, ConnectionOptions, Connector, ConnectorError, DataSource,
-    ErrorKind, ExecutionOutput, ExecutionStream, LibrarySettings, Listed, NameFilter,
-    NamespacePath, PlannedRead, PlanningError, PortableQuery, PushdownRequest, PushdownResult,
-    RemoteExecution, RequestError, Session, SourceMetadataDifferences, SourceStream,
-    SourceTableMetadata, TableEntry, TableRecord, TableReference, connector::ConnectorState,
-    execute_planned, start_source_read,
+    ErrorKind, ExecutionOutput, ExecutionStream, JsonDifference, LibrarySettings, Listed,
+    NameFilter, NamespacePath, PlannedRead, PlanningError, PortableQuery, PushdownRequest,
+    PushdownResult, RemoteExecution, RequestError, Session, SourceStream, SourceTableMetadata,
+    TableEntry, TableRecord, TableReference, connector::ConnectorState, execute_planned,
+    start_source_read,
 };
 use arrow_schema::SchemaRef;
 
@@ -42,7 +42,7 @@ pub(crate) trait DynConnectorLibrary: Send + Sync {
         &self,
         before: &str,
         after: &str,
-    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError>;
+    ) -> Result<Option<Vec<JsonDifference>>, ConnectorError>;
 }
 
 impl<C: Connector> DynConnectorLibrary for ConnectorState<C> {
@@ -61,7 +61,7 @@ impl<C: Connector> DynConnectorLibrary for ConnectorState<C> {
         &self,
         before: &str,
         after: &str,
-    ) -> Result<Option<SourceMetadataDifferences>, ConnectorError> {
+    ) -> Result<Option<Vec<JsonDifference>>, ConnectorError> {
         let restore = |document: &str| {
             serde_json::from_str::<<C::Catalog as Catalog<C>>::Table>(document).map_err(|error| {
                 ConnectorError::new(
@@ -71,7 +71,7 @@ impl<C: Connector> DynConnectorLibrary for ConnectorState<C> {
                 )
             })
         };
-        C::Catalog::compare_source_metadata(&restore(before)?, &restore(after)?)
+        crate::metadata::compare_source_metadata(&restore(before)?, &restore(after)?)
     }
 }
 

@@ -177,10 +177,6 @@ fn retrieved_source_metadata_is_compared_through_its_connector() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        column_changes(&differences.table_metadata),
-        [change("matched", Some("amount"), Some("total"), &[1])]
-    );
-    assert_eq!(
         json_differences(&differences),
         [
             (
@@ -198,7 +194,7 @@ fn retrieved_source_metadata_is_compared_through_its_connector() {
 }
 
 #[test]
-fn a_source_only_change_appears_only_in_the_source_metadata_differences() {
+fn a_change_table_metadata_does_not_hold_is_a_source_metadata_difference() {
     initialize();
     let orders = json!({"table": ["test", "public", "orders"], "fixture": "orders", "note": null});
     let mut noted = orders.clone();
@@ -212,15 +208,6 @@ fn a_source_only_change_appears_only_in_the_source_metadata_differences() {
     .unwrap()
     .unwrap();
 
-    let table_metadata = &differences.table_metadata;
-    assert_eq!(
-        (
-            table_metadata.table_attribute_count,
-            table_metadata.column_count,
-            table_metadata.constraint_count
-        ),
-        (0, 0, 0)
-    );
     assert_eq!(
         json_differences(&differences),
         [("/note".to_owned(), Some(Value::Null), Some(json!("税込")))]
@@ -334,22 +321,17 @@ fn json_differences(
     let json = |json: ScalardbAnalyticsConnectorJson| {
         read_string(json.text).map(|text| serde_json::from_str(&text).unwrap())
     };
-    // SAFETY: the library returns `source_metadata_count` differences.
-    unsafe {
-        items(
-            differences.source_metadata,
-            differences.source_metadata_count,
-        )
-    }
-    .iter()
-    .map(|difference| {
-        (
-            read_string(difference.path).unwrap(),
-            json(difference.before),
-            json(difference.after),
-        )
-    })
-    .collect()
+    // SAFETY: the library returns `difference_count` differences.
+    unsafe { items(differences.differences, differences.difference_count) }
+        .iter()
+        .map(|difference| {
+            (
+                read_string(difference.path).unwrap(),
+                json(difference.before),
+                json(difference.after),
+            )
+        })
+        .collect()
 }
 
 /// Table metadata copied into caller-owned memory, as a caller that stores

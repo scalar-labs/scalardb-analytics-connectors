@@ -587,14 +587,11 @@ typedef struct ScalardbAnalyticsConnectorJsonDifference {
   struct ScalardbAnalyticsConnectorJson after;
 } ScalardbAnalyticsConnectorJsonDifference;
 
-// The differences between two observations of one table's source metadata:
-// those of the table metadata derived from both, and those of the
-// documents. Freed with
-// `source_metadata_differences_free`.
+// The differences between two observations of one table's source metadata
+// documents. Freed with `source_metadata_differences_free`.
 typedef struct ScalardbAnalyticsConnectorSourceMetadataDifferences {
-  struct ScalardbAnalyticsConnectorTableMetadataDifferences table_metadata;
-  const struct ScalardbAnalyticsConnectorJsonDifference *source_metadata;
-  size_t source_metadata_count;
+  const struct ScalardbAnalyticsConnectorJsonDifference *differences;
+  size_t difference_count;
 } ScalardbAnalyticsConnectorSourceMetadataDifferences;
 
 // The library's functions, returned by `scalardb_analytics_connector_api`.
@@ -852,14 +849,15 @@ typedef struct ScalardbAnalyticsConnectorApi {
   //
   // `differences` is null or a live result, not used after this call.
   void (*table_metadata_differences_free)(struct ScalardbAnalyticsConnectorTableMetadataDifferences *differences);
-  // Compares two observations of one table's source metadata through the
-  // connector that produced them, which restores both documents.
+  // Compares two observations of one table's source metadata as JSON
+  // documents, through the connector that produced them, which restores
+  // both. Their table metadata is compared with `table_metadata_compare`.
   //
-  // `out_differences` receives null when neither the documents nor the table
-  // metadata derived from them differ. Documents of different connectors, of
-  // a connector not built into the library, or that the connector cannot
-  // restore, such as one stored before a connector update changed its shape,
-  // are `invalid request`. It needs an initialized library and no handle.
+  // `out_differences` receives null when the documents do not differ.
+  // Documents of different connectors, of a connector not built into the
+  // library, or that the connector cannot restore, such as one stored
+  // before a connector update changed its shape, are `invalid request`. It
+  // needs an initialized library and no handle.
   //
   // # Safety
   //
