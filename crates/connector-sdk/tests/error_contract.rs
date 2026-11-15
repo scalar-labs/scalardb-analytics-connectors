@@ -3,7 +3,7 @@ use connector_sdk::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind}
 #[test]
 fn preserves_an_adbc_like_error_without_exposing_data_source_details_in_formatting() {
     let error = ConnectorError::new(
-        ErrorKind::Permission,
+        ErrorKind::PermissionDenied,
         false,
         "the source denied access to the requested target",
     )
@@ -22,7 +22,7 @@ fn preserves_an_adbc_like_error_without_exposing_data_source_details_in_formatti
         DiagnosticEntry::new("adbc.detail", DiagnosticValue::Bytes(vec![0x20, 0x30])),
     ]);
 
-    assert_eq!(error.kind(), ErrorKind::Permission);
+    assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     assert!(!error.retryable());
     assert_eq!(error.data_source_code(), Some("42501"));
     assert_eq!(
@@ -62,7 +62,7 @@ fn preserves_an_adbc_like_error_without_exposing_data_source_details_in_formatti
 #[test]
 fn preserves_a_direct_s3_like_service_error() {
     let error = ConnectorError::new(
-        ErrorKind::Permission,
+        ErrorKind::PermissionDenied,
         false,
         "the object store denied access to the requested object",
     )

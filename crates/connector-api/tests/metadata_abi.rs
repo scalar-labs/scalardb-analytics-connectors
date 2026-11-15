@@ -67,7 +67,11 @@ fn table_records_reach_a_c_caller_with_their_table_metadata_and_source_metadata(
     let session = DataSource::open_probed().0.session().unwrap();
 
     let result = session
-        .table_metadata(&["orders", "events", "missing", "secret"], 0, None)
+        .table_metadata(
+            &["orders", "events", "missing", "secret", "hidden"],
+            0,
+            None,
+        )
         .unwrap();
 
     let records = result.records();
@@ -78,7 +82,8 @@ fn table_records_reach_a_c_caller_with_their_table_metadata_and_source_metadata(
             ScalardbAnalyticsConnectorTableRecordState::COMPLETE,
             ScalardbAnalyticsConnectorTableRecordState::INCOMPLETE,
             ScalardbAnalyticsConnectorTableRecordState::DOES_NOT_EXIST,
-            ScalardbAnalyticsConnectorTableRecordState::COULD_NOT_BE_READ,
+            ScalardbAnalyticsConnectorTableRecordState::PERMISSION_DENIED,
+            ScalardbAnalyticsConnectorTableRecordState::NOT_FOUND,
         ]
     );
     for record in &records[2..] {
@@ -87,6 +92,10 @@ fn table_records_reach_a_c_caller_with_their_table_metadata_and_source_metadata(
     assert_eq!(
         read_string(records[3].reason).as_deref(),
         Some("permission denied for the table")
+    );
+    assert_eq!(
+        read_string(records[4].reason).as_deref(),
+        Some("the catalog may hide the table")
     );
 
     let orders = result.table_metadata();

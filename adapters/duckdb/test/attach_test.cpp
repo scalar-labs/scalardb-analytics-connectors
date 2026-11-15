@@ -83,9 +83,13 @@ TEST_CASE("a name not listed is described by its own request") {
 	// it; describing it reports why instead of saying it does not exist.
 	CHECK_THAT(database.Error("SELECT * FROM t.\"test.restricted\".x"),
 	           ContainsSubstring("could not read the namespace: permission denied for the namespace"));
-	// The table `secret` is not listed; its metadata cannot be read.
+	// The table `secret` is not listed; its metadata may not be read.
 	CHECK_THAT(database.Error("SELECT * FROM t.\"test.public\".secret"),
-	           ContainsSubstring("could not read the table metadata: permission denied for the table"));
+	           ContainsSubstring("may not read the table metadata: permission denied for the table"));
+	// The table `hidden` is not found, and whether it exists is unknown, so
+	// it is not reported missing.
+	CHECK_THAT(database.Error("SELECT * FROM t.\"test.public\".hidden"),
+	           ContainsSubstring("could not find the table: the catalog may hide the table"));
 	// A name whose description says it does not exist is missing.
 	CHECK_THAT(database.Error("SELECT * FROM t.\"test.nowhere\".x"), ContainsSubstring("does not exist"));
 	CHECK_THAT(database.Error("SELECT * FROM t.\"test.public\".nowhere"), ContainsSubstring("does not exist"));

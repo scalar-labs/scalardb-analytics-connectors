@@ -97,13 +97,13 @@ fn remote_executions_run_in_another_session() {
 }
 
 /// Planning loads the table's attributes from the catalog, so a table dropped
-/// since registration fails planning as `stale registration`.
+/// since registration fails planning as `does not exist`, a stale registration.
 fn planning_a_dropped_table_is_a_stale_registration() {
     let session = session();
     server().psql(&format!("DROP TABLE {SCHEMA}.removed"));
     let offered = ReadPlan::new([SCHEMA, "removed"], vec![("id", i32(false))]).build();
     assert!(matches!(
         plan(&session, offered),
-        Err(PlanningError::Connector(error)) if error.kind() == ErrorKind::StaleRegistration
+        Err(PlanningError::Connector(error)) if error.kind() == ErrorKind::DoesNotExist
     ));
 }

@@ -38,10 +38,20 @@ pub enum ErrorKind {
     InvalidSettings,
     Connection,
     Authentication,
-    Permission,
+    /// The connector confirmed that the credential lacks the privilege to
+    /// read a target.
+    PermissionDenied,
     InvalidRequest,
     InvalidState,
-    StaleRegistration,
+    /// A stale registration: the connector confirmed that a table or column
+    /// the request references no longer exists.
+    DoesNotExist,
+    /// A stale registration: a referenced column's current type or
+    /// nullability no longer matches its registration.
+    SchemaMismatch,
+    /// A referenced table or column cannot be found, and the connector cannot
+    /// tell whether it was removed or is hidden for lack of privilege.
+    NotFound,
     Data,
     Cancellation,
     Timeout,
@@ -56,10 +66,12 @@ impl fmt::Display for ErrorKind {
             Self::InvalidSettings => "invalid settings",
             Self::Connection => "connection",
             Self::Authentication => "authentication",
-            Self::Permission => "permission",
+            Self::PermissionDenied => "permission denied",
             Self::InvalidRequest => "invalid request",
             Self::InvalidState => "invalid state",
-            Self::StaleRegistration => "stale registration",
+            Self::DoesNotExist => "does not exist",
+            Self::SchemaMismatch => "schema mismatch",
+            Self::NotFound => "not found",
             Self::Data => "data",
             Self::Cancellation => "cancellation",
             Self::Timeout => "timeout",

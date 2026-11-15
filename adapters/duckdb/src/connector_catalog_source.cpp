@@ -125,10 +125,17 @@ public:
 		case ScalardbAnalyticsConnectorTableRecordState_DOES_NOT_EXIST:
 			release();
 			return nullptr;
-		default: {
+		case ScalardbAnalyticsConnectorTableRecordState_PERMISSION_DENIED: {
 			auto reason = Text(record.reason);
 			release();
-			throw duckdb::IOException("ScalarDB Analytics could not read the table metadata: %s", reason);
+			throw duckdb::IOException("ScalarDB Analytics may not read the table metadata: %s", reason);
+		}
+		default: {
+			// Not found: whether the table exists is unknown, so it is not
+			// reported missing.
+			auto reason = Text(record.reason);
+			release();
+			throw duckdb::IOException("ScalarDB Analytics could not find the table: %s", reason);
 		}
 		}
 	}

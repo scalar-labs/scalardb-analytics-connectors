@@ -153,13 +153,13 @@ fn table_records_stream_through_a_source_read() {
     );
     assert_eq!(
         pull(&mut stream),
-        Poll::Ready(Some(Ok(TableRecord::NotFound {
+        Poll::Ready(Some(Ok(TableRecord::DoesNotExist {
             table: table_reference("missing"),
         })))
     );
     assert_eq!(
         pull(&mut stream),
-        Poll::Ready(Some(Ok(TableRecord::Unavailable {
+        Poll::Ready(Some(Ok(TableRecord::PermissionDenied {
             table: table_reference("secret"),
             reason: "permission denied".to_owned(),
         })))
@@ -411,10 +411,10 @@ impl FakeReader {
                 metadata: source_table(),
                 read_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             },
-            TableRecord::NotFound {
+            TableRecord::DoesNotExist {
                 table: table_reference("missing"),
             },
-            TableRecord::Unavailable {
+            TableRecord::PermissionDenied {
                 table: table_reference("secret"),
                 reason: "permission denied".to_owned(),
             },

@@ -323,9 +323,11 @@ pub enum ExpectedRecord {
     /// information.
     Read(TableMetadata),
     /// The connector confirmed that the table does not exist.
+    DoesNotExist,
+    /// The table exists, but the credential may not read it.
+    PermissionDenied,
+    /// The table was not found, and whether it exists is unknown.
     NotFound,
-    /// The table could not be read; nothing is known about its existence.
-    Unavailable,
 }
 
 /// One offered region and what planning and reading it return.
@@ -387,8 +389,10 @@ pub struct DriftCase<'a> {
 
 /// What reading after a [`DriftCase`]'s change returns.
 pub enum DriftOutcome {
-    /// The schema check rejects the read as `stale registration`.
-    StaleRegistration,
+    /// The read fails with this kind, such as `does not exist` or `schema
+    /// mismatch` for a stale registration, or `not found` where the source
+    /// hides what the credential may not read.
+    Fails(ErrorKind),
     /// The read succeeds with the schema it was planned with.
     Reads,
 }

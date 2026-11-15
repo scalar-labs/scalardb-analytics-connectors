@@ -179,10 +179,10 @@ fn table_metadata_returns_one_record_per_table_in_request_order() {
     assert_eq!(
         result.records[2..],
         [
-            TableRecord::NotFound {
+            TableRecord::DoesNotExist {
                 table: table("missing"),
             },
-            TableRecord::Unavailable {
+            TableRecord::PermissionDenied {
                 table: table("secret"),
                 reason: "permission denied for the table".to_owned(),
             },

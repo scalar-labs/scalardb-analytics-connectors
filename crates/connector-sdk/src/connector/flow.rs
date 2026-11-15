@@ -300,14 +300,20 @@ impl<C: Connector> Stream for PlannedReadStream<C> {
                         Poll::Ready(Some(Ok(TableRecord::Read { metadata, .. }))) => {
                             Some(C::Catalog::derive_table_metadata(&metadata, settings))
                         }
-                        Poll::Ready(Some(Ok(TableRecord::NotFound { .. }))) | Poll::Ready(None) => {
-                            None
-                        }
-                        Poll::Ready(Some(Ok(TableRecord::Unavailable { .. }))) => {
+                        Poll::Ready(Some(Ok(TableRecord::DoesNotExist { .. })))
+                        | Poll::Ready(None) => None,
+                        Poll::Ready(Some(Ok(TableRecord::PermissionDenied { .. }))) => {
                             return this.fail(ConnectorError::new(
-                                ErrorKind::Permission,
+                                ErrorKind::PermissionDenied,
                                 false,
-                                "the registered table's metadata could not be read",
+                                "the credential may not read the registered table",
+                            ));
+                        }
+                        Poll::Ready(Some(Ok(TableRecord::NotFound { .. }))) => {
+                            return this.fail(ConnectorError::new(
+                                ErrorKind::NotFound,
+                                false,
+                                "the registered table is not found, and whether it still exists cannot be told",
                             ));
                         }
                         Poll::Ready(Some(Err(error))) => return this.fail(error),

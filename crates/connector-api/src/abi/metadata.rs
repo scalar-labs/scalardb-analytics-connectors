@@ -356,16 +356,20 @@ impl ScalardbAnalyticsConnectorTableRecordState {
     pub const INCOMPLETE: Self = Self(2);
     /// The connector confirmed that the table does not exist.
     pub const DOES_NOT_EXIST: Self = Self(3);
-    /// The table could not be read; this says nothing about whether it exists.
-    pub const COULD_NOT_BE_READ: Self = Self(4);
+    /// The table exists, but the credential lacks the privilege to read it.
+    pub const PERMISSION_DENIED: Self = Self(4);
+    /// The table is not found, and whether it exists is unknown: the catalog
+    /// silently omits tables without privilege.
+    pub const NOT_FOUND: Self = Self(5);
 }
 
 /// The result for one requested table.
 ///
 /// A table that was read has `table_metadata`, `source_metadata`, and
 /// `read_at_microseconds`, the time the connector read its catalog in
-/// microseconds since the Unix epoch. A table that could not be read has a
-/// `reason`. Pointers that the state does not use are null.
+/// microseconds since the Unix epoch. A table whose state is
+/// `PERMISSION_DENIED` or `NOT_FOUND` has a `reason`. Pointers that the state
+/// does not use are null.
 #[repr(C)]
 pub struct ScalardbAnalyticsConnectorTableRecord {
     pub state: ScalardbAnalyticsConnectorTableRecordState,
@@ -537,7 +541,7 @@ impl Arena {
                     reason: ABSENT,
                 }
             }
-            TableRecord::NotFound { table } => ScalardbAnalyticsConnectorTableRecord {
+            TableRecord::DoesNotExist { table } => ScalardbAnalyticsConnectorTableRecord {
                 state: ScalardbAnalyticsConnectorTableRecordState::DOES_NOT_EXIST,
                 table: self.names(table.names()),
                 table_metadata: std::ptr::null(),
@@ -545,14 +549,33 @@ impl Arena {
                 read_at_microseconds: 0,
                 reason: ABSENT,
             },
-            TableRecord::Unavailable { table, reason } => ScalardbAnalyticsConnectorTableRecord {
-                state: ScalardbAnalyticsConnectorTableRecordState::COULD_NOT_BE_READ,
-                table: self.names(table.names()),
-                table_metadata: std::ptr::null(),
-                source_metadata: std::ptr::null(),
-                read_at_microseconds: 0,
-                reason: self.text(reason),
-            },
+            TableRecord::PermissionDenied { table, reason } => self.unread(
+                ScalardbAnalyticsConnectorTableRecordState::PERMISSION_DENIED,
+                table,
+                reason,
+            ),
+            TableRecord::NotFound { table, reason } => self.unread(
+                ScalardbAnalyticsConnectorTableRecordState::NOT_FOUND,
+                table,
+                reason,
+            ),
+        }
+    }
+
+    /// The record of a table that could not be read, with its reason.
+    fn unread(
+        &mut self,
+        state: ScalardbAnalyticsConnectorTableRecordState,
+        table: &TableReference,
+        reason: &str,
+    ) -> ScalardbAnalyticsConnectorTableRecord {
+        ScalardbAnalyticsConnectorTableRecord {
+            state,
+            table: self.names(table.names()),
+            table_metadata: std::ptr::null(),
+            source_metadata: std::ptr::null(),
+            read_at_microseconds: 0,
+            reason: self.text(reason),
         }
     }
 

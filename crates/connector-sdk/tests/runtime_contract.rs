@@ -146,9 +146,32 @@ fn a_read_whose_registered_schema_changed_is_stale_and_sends_no_query() {
     };
     let operation = session.start_read(remote, None).unwrap();
 
-    assert_eq!(kind(operation.pull()), ErrorKind::StaleRegistration);
+    assert_eq!(kind(operation.pull()), ErrorKind::DoesNotExist);
     assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
     assert_eq!(probe.released.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_read_of_a_table_that_cannot_be_read_says_why_and_sends_no_query() {
+    let library = library();
+    for (table, expected) in [
+        ("secret", ErrorKind::PermissionDenied),
+        ("hidden", ErrorKind::NotFound),
+    ] {
+        let (data_source, probe) = open_probed(&library, table);
+        let session = data_source.open_session().unwrap();
+        let PlanningOutcome::Planned { remote, .. } = session
+            .plan_pushdown(&column_read_plan(&["checks", table], "id"))
+            .unwrap()
+        else {
+            panic!("the read plans");
+        };
+        let operation = session.start_read(remote, None).unwrap();
+
+        assert_eq!(kind(operation.pull()), expected, "{table}");
+        // Only the schema check's catalog read was sent.
+        assert_eq!(probe.sent.load(Ordering::SeqCst), 1, "{table}");
+    }
 }
 
 #[test]

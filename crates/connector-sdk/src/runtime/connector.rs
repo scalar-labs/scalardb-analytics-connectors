@@ -267,8 +267,11 @@ fn erase<C: Connector>(
                 read_at,
             }
         }
-        TableRecord::NotFound { table } => TableRecord::NotFound { table },
-        TableRecord::Unavailable { table, reason } => TableRecord::Unavailable { table, reason },
+        TableRecord::DoesNotExist { table } => TableRecord::DoesNotExist { table },
+        TableRecord::PermissionDenied { table, reason } => {
+            TableRecord::PermissionDenied { table, reason }
+        }
+        TableRecord::NotFound { table, reason } => TableRecord::NotFound { table, reason },
     })
 }
 

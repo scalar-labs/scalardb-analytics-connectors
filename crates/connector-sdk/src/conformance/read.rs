@@ -14,7 +14,7 @@ use super::{
     assert_case, errors::filter_literals,
 };
 use crate::{
-    ConnectorError, ErrorKind,
+    ConnectorError,
     runtime::{PlanningOutcome, SessionState, SharedRemoteExecution},
 };
 
@@ -72,10 +72,10 @@ pub(super) fn check_drift<F: Fixture>(probe: &Probe<'_, F>) {
         change();
         let result = execute(probe, &session, &remote, &offered, None);
         match (expected, result) {
-            (DriftOutcome::StaleRegistration, Err(error)) => {
-                assert_eq!(error.kind(), ErrorKind::StaleRegistration, "{name}");
+            (DriftOutcome::Fails(kind), Err(error)) => {
+                assert_eq!(error.kind(), kind, "{name}");
             }
-            (DriftOutcome::StaleRegistration, Ok(_)) => {
+            (DriftOutcome::Fails(_), Ok(_)) => {
                 panic!("{name}: the read succeeds after the change")
             }
             (DriftOutcome::Reads, Ok(_)) => {}

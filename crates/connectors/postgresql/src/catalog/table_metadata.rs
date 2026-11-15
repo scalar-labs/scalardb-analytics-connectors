@@ -66,7 +66,7 @@ pub(crate) fn table_metadata(
             };
             match found {
                 Some(metadata) => TableRecord::Read { metadata, read_at },
-                None => TableRecord::NotFound {
+                None => TableRecord::DoesNotExist {
                     table: table.clone(),
                 },
             }

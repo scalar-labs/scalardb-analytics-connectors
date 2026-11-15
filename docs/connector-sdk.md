@@ -376,8 +376,9 @@ Connector::plan(session, request):
 Connector::read(session, remote):      nothing is sent before the first pull
     Catalog::table_metadata(session, [remote.query.table])
         check_schema(registered base schema, current table metadata)
-        a mismatch or a missing table is stale registration; the query is
-            never sent
+        a change is does not exist or schema mismatch (a stale
+            registration), a target the metadata may hide is not found;
+            the query is never sent
     then Executor::run(session, remote.query.query)
         each batch is converted with Connector::convert_column into the
             planned output schema
@@ -620,8 +621,9 @@ pub trait Catalog<C: Connector>: 'static {
 
 pub enum TableRecord<T> {
     Read { metadata: T, read_at: SystemTime },
-    NotFound { table: TableReference },
-    Unavailable { table: TableReference, reason: String },
+    DoesNotExist { table: TableReference },
+    PermissionDenied { table: TableReference, reason: String },
+    NotFound { table: TableReference, reason: String },
 }
 
 /// Built with TableMetadata::new, which orders columns by ordinal and
@@ -661,9 +663,9 @@ table metadata request returns a read table and when a planned read checks the
 registered schema; nothing derives table metadata again from a stored
 document.
 
-The three `TableRecord` states correspond one to one to the contract's record
-states: `Read` is complete or incomplete, `NotFound` is "does not exist", and
-`Unavailable` is "could not be read"
+The four `TableRecord` states correspond one to one to the contract's record
+states: `Read` is complete or incomplete, `DoesNotExist` is "does not exist",
+`PermissionDenied` is "permission denied", and `NotFound` is "not found"
 ([Missing information](connector-contract.md#missing-information)). Whether
 read table metadata is complete is derived from its values
 (`TableMetadata::is_complete`): any `Missing` item, any `Unread` column type, or

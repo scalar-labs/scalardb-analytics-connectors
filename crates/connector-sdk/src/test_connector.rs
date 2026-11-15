@@ -293,6 +293,20 @@ impl Planner<TestConnector> for TestPlanner {
                 },
             ));
         }
+        // A read checked against a table that is no longer readable, by
+        // permission (`secret`) or because it is hidden (`hidden`).
+        if let [check, name] = table_binding.components()
+            && check == "checks"
+            && matches!(name.as_str(), "secret" | "hidden")
+        {
+            return Ok((
+                TableReference::new(names(&["test", name])).expect("fixture names are non-empty"),
+                TestFacts {
+                    behavior: Some(Behavior::Batches(1)),
+                    unlowerable: false,
+                },
+            ));
+        }
         if matches!(table_binding.components(), [.., name] if name == "unlowerable") {
             return Ok((
                 reads,
@@ -1201,11 +1215,15 @@ impl Catalog<TestConnector> for TestCatalog {
                         "events" => read(TestFixture::Events),
                         "reads" => read(TestFixture::Reads),
                         "values" => read(TestFixture::Values),
-                        "secret" => TableRecord::Unavailable {
+                        "secret" => TableRecord::PermissionDenied {
                             table: table.clone(),
                             reason: "permission denied for the table".to_owned(),
                         },
-                        _ => TableRecord::NotFound {
+                        "hidden" => TableRecord::NotFound {
+                            table: table.clone(),
+                            reason: "the catalog may hide the table".to_owned(),
+                        },
+                        _ => TableRecord::DoesNotExist {
                             table: table.clone(),
                         },
                     })

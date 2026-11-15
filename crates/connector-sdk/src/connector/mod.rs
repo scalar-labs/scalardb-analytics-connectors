@@ -108,8 +108,8 @@ pub trait Connector: Sized + Send + Sync + 'static {
     ///
     /// Nothing is sent before the first pull. The first pull reads the
     /// table's current metadata through the catalog and checks the registered
-    /// schema; a mismatch is `stale registration` and the query is never
-    /// sent. Each batch the executor returns is converted with
+    /// schema; a mismatch fails the read as [`crate::check_schema`] decides,
+    /// and the query is never sent. Each batch the executor returns is converted with
     /// [`Connector::convert_column`] into the planned output schema. The
     /// returned cancel stops whichever step is running.
     fn read(

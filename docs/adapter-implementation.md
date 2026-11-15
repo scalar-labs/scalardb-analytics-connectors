@@ -106,7 +106,8 @@ before closing the operation; the stream itself carries only an error number
 and text
 ([Errors in the API](connector-contract.md#errors-in-the-api)). Releasing the
 stream early stops the source query and frees the session for the next call. A
-`stale registration` error does not replan the running execution; only a retry
+stale registration (`does not exist` or `schema mismatch`) does not replan the
+running execution; only a retry
 of the query by its caller does
 ([Functions](connector-contract.md#functions)).
 

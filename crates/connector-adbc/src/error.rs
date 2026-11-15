@@ -279,7 +279,7 @@ fn classify_status(status: AdbcStatus) -> ErrorClass {
             "the data source rejected authentication",
         ),
         AdbcStatus::Known(Status::Unauthorized) => ErrorClass::new(
-            ErrorKind::Permission,
+            ErrorKind::PermissionDenied,
             false,
             "the data source denied access to the requested target",
         ),

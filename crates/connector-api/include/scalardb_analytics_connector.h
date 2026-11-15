@@ -90,16 +90,24 @@ typedef enum ScalardbAnalyticsConnectorErrorKind {
   SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_INVALID_SETTINGS = 1,
   SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_CONNECTION = 2,
   SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_AUTHENTICATION = 3,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_PERMISSION = 4,
+  // The credential lacks the privilege to read a target.
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_PERMISSION_DENIED = 4,
   SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_INVALID_REQUEST = 5,
   SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_INVALID_STATE = 6,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_STALE_REGISTRATION = 7,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_DATA = 8,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_CANCELLATION = 9,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_TIMEOUT = 10,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_RESOURCE = 11,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_DATA_SOURCE = 12,
-  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_INTERNAL = 13,
+  // A stale registration: a referenced table or column no longer exists.
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_DOES_NOT_EXIST = 7,
+  // A stale registration: a referenced column's type or nullability
+  // changed.
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_SCHEMA_MISMATCH = 8,
+  // A referenced table or column is not found, and whether it exists is
+  // unknown.
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_NOT_FOUND = 9,
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_DATA = 10,
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_CANCELLATION = 11,
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_TIMEOUT = 12,
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_RESOURCE = 13,
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_DATA_SOURCE = 14,
+  SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_INTERNAL = 15,
 } ScalardbAnalyticsConnectorErrorKind;
 
 // Which member of a diagnostic value's payload is set.
@@ -289,8 +297,11 @@ typedef uint32_t ScalardbAnalyticsConnectorTableRecordState;
 #define ScalardbAnalyticsConnectorTableRecordState_INCOMPLETE 2
 // The connector confirmed that the table does not exist.
 #define ScalardbAnalyticsConnectorTableRecordState_DOES_NOT_EXIST 3
-// The table could not be read; this says nothing about whether it exists.
-#define ScalardbAnalyticsConnectorTableRecordState_COULD_NOT_BE_READ 4
+// The table exists, but the credential lacks the privilege to read it.
+#define ScalardbAnalyticsConnectorTableRecordState_PERMISSION_DENIED 4
+// The table is not found, and whether it exists is unknown: the catalog
+// silently omits tables without privilege.
+#define ScalardbAnalyticsConnectorTableRecordState_NOT_FOUND 5
 
 // Whether the connector read an item, could not read it, or never offers it.
 typedef uint32_t ScalardbAnalyticsConnectorReportedState;
@@ -472,8 +483,9 @@ typedef struct ScalardbAnalyticsConnectorSourceMetadata {
 //
 // A table that was read has `table_metadata`, `source_metadata`, and
 // `read_at_microseconds`, the time the connector read its catalog in
-// microseconds since the Unix epoch. A table that could not be read has a
-// `reason`. Pointers that the state does not use are null.
+// microseconds since the Unix epoch. A table whose state is
+// `PERMISSION_DENIED` or `NOT_FOUND` has a `reason`. Pointers that the state
+// does not use are null.
 typedef struct ScalardbAnalyticsConnectorTableRecord {
   ScalardbAnalyticsConnectorTableRecordState state;
   struct ScalardbAnalyticsConnectorNames table;

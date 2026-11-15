@@ -10,28 +10,33 @@ use crate::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorKind};
 ///
 /// A column matches when the connector now maps it to the registered Analytics
 /// type and it is not nullable where the registration says NOT NULL; a column
-/// that became NOT NULL still matches. A table that no longer exists, a
-/// missing column, or any mismatch is `stale registration`. Its diagnostics
-/// hold, per mismatched column, `column`, `expected_type`, and
+/// that became NOT NULL still matches.
+///
+/// A confirmed change is a stale registration: a table that no longer exists,
+/// or a column absent from metadata that hides no columns, is `does not
+/// exist`; a column whose type or nullability changed is `schema mismatch`.
+/// When a column is both absent and another changed, the absence is reported.
+/// The diagnostics hold, per changed column, `column`, `expected_type`, and
 /// `expected_nullable`, then `data_source_type` and `nullable` when the column
 /// still exists.
 ///
-/// Stale registration is reserved for confirmed changes. When no column is
-/// confirmed changed but a referenced column cannot be verified, because its
-/// type could not be read or because the metadata may hide columns and it is
-/// absent, the check fails with `data-source` or `permission` instead.
+/// When no change is confirmed but a referenced column cannot be verified,
+/// the check fails with `not found` for a column absent from metadata that
+/// may hide columns, and with `data-source` for a column whose type could not
+/// be read.
 pub fn check_schema(
     expected: &AnalyticsSchema,
     current: Option<&TableMetadata>,
 ) -> Result<(), ConnectorError> {
     let Some(current) = current else {
         return Err(ConnectorError::new(
-            ErrorKind::StaleRegistration,
+            ErrorKind::DoesNotExist,
             false,
             "the registered table no longer exists at the data source",
         ));
     };
     let mut details = Vec::new();
+    let mut removed = false;
     let mut unverified = None;
     for field in expected.fields() {
         let column = current
@@ -41,11 +46,14 @@ pub fn check_schema(
         match column {
             None if current.columns_may_be_hidden() => {
                 unverified.get_or_insert(ConnectorError::new(
-                    ErrorKind::Permission,
+                    ErrorKind::NotFound,
                     false,
-                    "a registered column is not visible in the table's current metadata",
+                    "a registered column is not in the table's current metadata, which may hide columns",
                 ));
-                continue;
+            }
+            None => {
+                removed = true;
+                details.extend(mismatch(field, None));
             }
             Some(column) if matches!(column.ty, ColumnType::Unread { .. }) => {
                 unverified.get_or_insert(ConnectorError::new(
@@ -53,29 +61,35 @@ pub fn check_schema(
                     false,
                     "the current type of a registered column could not be read",
                 ));
-                continue;
             }
-            _ => {}
-        }
-        let matches = column.is_some_and(|column| {
-            matches!(
-                &column.ty,
-                ColumnType::Mapped { analytics_type, .. } if analytics_type == field.data_type()
-            ) && (field.is_nullable() || !column.nullable)
-        });
-        if !matches {
-            details.extend(mismatch(field, column));
+            Some(column) => {
+                let matches = matches!(
+                    &column.ty,
+                    ColumnType::Mapped { analytics_type, .. } if analytics_type == field.data_type()
+                ) && (field.is_nullable() || !column.nullable);
+                if !matches {
+                    details.extend(mismatch(field, Some(column)));
+                }
+            }
         }
     }
     if details.is_empty() {
         return unverified.map_or(Ok(()), Err);
     }
-    Err(ConnectorError::new(
-        ErrorKind::StaleRegistration,
-        false,
-        "the table's current schema differs from its registration",
-    )
-    .with_diagnostics(details))
+    let error = if removed {
+        ConnectorError::new(
+            ErrorKind::DoesNotExist,
+            false,
+            "a registered column no longer exists at the data source",
+        )
+    } else {
+        ConnectorError::new(
+            ErrorKind::SchemaMismatch,
+            false,
+            "the table's current schema differs from its registration",
+        )
+    };
+    Err(error.with_diagnostics(details))
 }
 
 fn mismatch(expected: &AnalyticsField, current: Option<&Column>) -> Vec<DiagnosticEntry> {
@@ -193,7 +207,8 @@ mod tests {
             ("dropped", AnalyticsType::Text, true),
         ]);
         let error = check_schema(&registered, Some(&current)).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::StaleRegistration);
+        // The dropped column decides the kind; every change is listed.
+        assert_eq!(error.kind(), ErrorKind::DoesNotExist);
         let columns: Vec<_> = error
             .diagnostics()
             .iter()
@@ -212,8 +227,17 @@ mod tests {
                     && entry.value() == &DiagnosticValue::Utf8("integer".to_owned()))
         );
 
+        let changed = expected(vec![
+            ("id", AnalyticsType::BigInt, false),
+            ("name", AnalyticsType::Text, false),
+        ]);
+        assert_eq!(
+            check_schema(&changed, Some(&current)).unwrap_err().kind(),
+            ErrorKind::SchemaMismatch
+        );
+
         let error = check_schema(&registered, None).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::StaleRegistration);
+        assert_eq!(error.kind(), ErrorKind::DoesNotExist);
     }
 
     #[test]
@@ -240,7 +264,7 @@ mod tests {
         );
         assert_eq!(
             check_schema(&registered, Some(&hiding)).unwrap_err().kind(),
-            ErrorKind::Permission
+            ErrorKind::NotFound
         );
 
         // A confirmed change still wins over a column that cannot be verified.
@@ -256,7 +280,7 @@ mod tests {
             check_schema(&registered, Some(&current))
                 .unwrap_err()
                 .kind(),
-            ErrorKind::StaleRegistration
+            ErrorKind::SchemaMismatch
         );
     }
 }

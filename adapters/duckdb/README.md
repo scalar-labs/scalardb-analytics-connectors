@@ -44,9 +44,9 @@ names described as missing are read when DuckDB first looks them up and are
 kept for the life of the attached catalog, because DuckDB's
 catalog entries must outlive the lookups that return them; to see changes in
 the source, DETACH and ATTACH again. One exception is a table the Connector
-reports as a stale registration, when planning or reading finds that its
-shape no longer matches the source: the failing query reports it with that
-kind, and the next query that uses the table describes it again. The
+reports as a stale registration (`does not exist` or `schema mismatch`), when
+planning or reading finds that its shape no longer matches the source: the
+failing query reports it with that kind, and the next query that uses the table describes it again. The
 replaced entry is kept, since a bound query may still use it. Every Connector
 error names its kind, as the contract does. Writes and DDL fail. ANALYZE and
 VACUUM fail because DuckDB keeps statistics only for its own tables, but only

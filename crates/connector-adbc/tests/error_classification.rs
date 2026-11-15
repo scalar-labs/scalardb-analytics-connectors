@@ -284,7 +284,7 @@ impl ErrorHandler for VendorErrorHandler {
 
     fn classify(diagnostic: &AdbcDiagnostic) -> Option<ErrorClass> {
         (diagnostic.sqlstate_bytes() == b"42501").then_some(ErrorClass {
-            kind: ErrorKind::Permission,
+            kind: ErrorKind::PermissionDenied,
             retryable: false,
             safe_message: "permission denied",
         })
@@ -318,7 +318,7 @@ fn a_connector_error_table_precedes_sqlstate_classes_after_redaction() {
         0,
         AdbcDetails::Missing,
     ));
-    assert_eq!(error.kind(), ErrorKind::Permission);
+    assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     assert_eq!(error.safe_message(), "permission denied");
     assert_eq!(
         error.data_source_message(),

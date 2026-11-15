@@ -25,8 +25,9 @@ only facts. The rules are in
   is one check.
 - **Table metadata** has one shape for every connector, so the connector SDK
   compares it without any connector (`TableMetadata::compare`). Only tables
-  that were read on both sides are compared; that a table does not exist or
-  could not be read is already known to the caller that paired the records.
+  that were read on both sides are compared; that a table does not exist, may
+  not be read, or was not found is already known to the caller that paired
+  the records.
 - **Source metadata** has its connector's shape, so only its connector can
   restore it. Source metadata carries its connector's name; the library
   restores both documents to the `Catalog::Table` of the built-in connector of

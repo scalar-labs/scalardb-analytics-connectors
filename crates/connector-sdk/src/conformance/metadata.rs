@@ -83,8 +83,9 @@ fn records(result: TableMetadataResult) -> Vec<(ExpectedRecord, Option<String>)>
                 ExpectedRecord::Read(table_metadata),
                 Some(source_metadata.document),
             ),
+            TableRecord::DoesNotExist { .. } => (ExpectedRecord::DoesNotExist, None),
+            TableRecord::PermissionDenied { .. } => (ExpectedRecord::PermissionDenied, None),
             TableRecord::NotFound { .. } => (ExpectedRecord::NotFound, None),
-            TableRecord::Unavailable { .. } => (ExpectedRecord::Unavailable, None),
         })
         .collect()
 }

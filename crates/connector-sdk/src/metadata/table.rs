@@ -18,10 +18,16 @@ pub enum TableRecord<T> {
         read_at: SystemTime,
     },
     /// The connector confirmed that the table does not exist.
-    NotFound { table: TableReference },
-    /// The table could not be read, for example for lack of privilege; this
-    /// says nothing about whether it exists.
-    Unavailable {
+    DoesNotExist { table: TableReference },
+    /// The table exists, but the credential lacks the privilege to read it.
+    PermissionDenied {
+        table: TableReference,
+        reason: String,
+    },
+    /// The table cannot be found, and the connector cannot tell whether it
+    /// does not exist or is hidden: the catalog silently omits tables without
+    /// privilege.
+    NotFound {
         table: TableReference,
         reason: String,
     },

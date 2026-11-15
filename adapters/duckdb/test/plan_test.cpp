@@ -237,7 +237,7 @@ TEST_CASE("a stale registration has the table described again for the next query
 	                             {{"batches", "2"}, test_support::ValueColumn()}});
 	auto query = "SELECT value FROM p.batches.\"2\" ORDER BY value";
 	auto error = database.Error(query);
-	CHECK_THAT(error, ContainsSubstring("stale registration: "));
+	CHECK_THAT(error, ContainsSubstring("schema mismatch: "));
 	CHECK_THAT(error, ContainsSubstring("the table is described again when a query next uses it"));
 	CHECK(database.Rows(query) == std::vector<std::vector<std::string>> {{"0"}, {"1"}});
 }

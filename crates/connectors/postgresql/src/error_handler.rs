@@ -36,12 +36,12 @@ impl ErrorHandler for PostgresErrorHandler {
         let sqlstate = diagnostic.sqlstate_bytes();
         let class = match sqlstate {
             b"42501" => ErrorClass {
-                kind: ErrorKind::Permission,
+                kind: ErrorKind::PermissionDenied,
                 retryable: false,
                 safe_message: "the data source denied access to the requested target",
             },
             b"42P01" | b"42703" => ErrorClass {
-                kind: ErrorKind::StaleRegistration,
+                kind: ErrorKind::DoesNotExist,
                 retryable: false,
                 safe_message: "a registered table or column no longer exists at the data source",
             },
@@ -165,9 +165,9 @@ mod tests {
     #[test]
     fn the_postgresql_error_table_precedes_the_sqlstate_classes() {
         for (sqlstate, kind) in [
-            (b"42501", ErrorKind::Permission),
-            (b"42P01", ErrorKind::StaleRegistration),
-            (b"42703", ErrorKind::StaleRegistration),
+            (b"42501", ErrorKind::PermissionDenied),
+            (b"42P01", ErrorKind::DoesNotExist),
+            (b"42703", ErrorKind::DoesNotExist),
             (b"53200", ErrorKind::Resource),
             (b"57014", ErrorKind::DataSource),
             (b"42601", ErrorKind::Internal),

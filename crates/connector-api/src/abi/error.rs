@@ -15,16 +15,24 @@ pub enum ScalardbAnalyticsConnectorErrorKind {
     InvalidSettings = 1,
     Connection = 2,
     Authentication = 3,
-    Permission = 4,
+    /// The credential lacks the privilege to read a target.
+    PermissionDenied = 4,
     InvalidRequest = 5,
     InvalidState = 6,
-    StaleRegistration = 7,
-    Data = 8,
-    Cancellation = 9,
-    Timeout = 10,
-    Resource = 11,
-    DataSource = 12,
-    Internal = 13,
+    /// A stale registration: a referenced table or column no longer exists.
+    DoesNotExist = 7,
+    /// A stale registration: a referenced column's type or nullability
+    /// changed.
+    SchemaMismatch = 8,
+    /// A referenced table or column is not found, and whether it exists is
+    /// unknown.
+    NotFound = 9,
+    Data = 10,
+    Cancellation = 11,
+    Timeout = 12,
+    Resource = 13,
+    DataSource = 14,
+    Internal = 15,
 }
 
 impl From<ErrorKind> for ScalardbAnalyticsConnectorErrorKind {
@@ -33,10 +41,12 @@ impl From<ErrorKind> for ScalardbAnalyticsConnectorErrorKind {
             ErrorKind::InvalidSettings => Self::InvalidSettings,
             ErrorKind::Connection => Self::Connection,
             ErrorKind::Authentication => Self::Authentication,
-            ErrorKind::Permission => Self::Permission,
+            ErrorKind::PermissionDenied => Self::PermissionDenied,
             ErrorKind::InvalidRequest => Self::InvalidRequest,
             ErrorKind::InvalidState => Self::InvalidState,
-            ErrorKind::StaleRegistration => Self::StaleRegistration,
+            ErrorKind::DoesNotExist => Self::DoesNotExist,
+            ErrorKind::SchemaMismatch => Self::SchemaMismatch,
+            ErrorKind::NotFound => Self::NotFound,
             ErrorKind::Data => Self::Data,
             ErrorKind::Cancellation => Self::Cancellation,
             ErrorKind::Timeout => Self::Timeout,

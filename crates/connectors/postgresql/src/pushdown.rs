@@ -44,8 +44,8 @@ struct Collation {
 ///
 /// The binding is the table's namespace and name. The column types come from
 /// the table's metadata; collations, which only planning needs, are read for
-/// this call. A table or base column that no longer exists is
-/// `stale registration`.
+/// this call. A table or base column that no longer exists is `does not
+/// exist`, a stale registration.
 pub(crate) fn planning_facts(
     session: &Session<PostgresConnector>,
     offered_plan: &LogicalPlan,
@@ -70,7 +70,7 @@ pub(crate) fn planning_facts(
     .and_then(ExecutionOutput::read_to_end)
     .map_err(PlanningError::Connector)?;
     let Some(TableRecord::Read { metadata, .. }) = records.into_iter().next() else {
-        return Err(PlanningError::Connector(stale(
+        return Err(PlanningError::Connector(does_not_exist(
             "the registered table no longer exists at the data source",
         )));
     };
@@ -90,7 +90,7 @@ pub(crate) fn planning_facts(
         })
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| {
-            PlanningError::Connector(stale(
+            PlanningError::Connector(does_not_exist(
                 "a registered column no longer exists at the data source",
             ))
         })?;
@@ -134,8 +134,8 @@ fn collations(
     .map_err(PlanningError::Connector)
 }
 
-fn stale(message: &'static str) -> ConnectorError {
-    ConnectorError::new(ErrorKind::StaleRegistration, false, message)
+fn does_not_exist(message: &'static str) -> ConnectorError {
+    ConnectorError::new(ErrorKind::DoesNotExist, false, message)
 }
 
 /// Whether PostgreSQL evaluates `expression` with its offered meaning.

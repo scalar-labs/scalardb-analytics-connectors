@@ -222,25 +222,25 @@ pub fn drift_cases<'a>() -> Vec<DriftCase<'a>> {
             name: "a changed column type",
             offered: two_columns("retyped"),
             change: change("ALTER TABLE conformance.retyped ALTER COLUMN value TYPE bigint"),
-            expected: DriftOutcome::StaleRegistration,
+            expected: DriftOutcome::Fails(ErrorKind::SchemaMismatch),
         },
         DriftCase {
             name: "a dropped column",
             offered: two_columns("narrowed"),
             change: change("ALTER TABLE conformance.narrowed DROP COLUMN value"),
-            expected: DriftOutcome::StaleRegistration,
+            expected: DriftOutcome::Fails(ErrorKind::DoesNotExist),
         },
         DriftCase {
             name: "a dropped table",
             offered: ReadPlan::new([SCHEMA, "removed"], vec![("id", i32(false))]).build(),
             change: change("DROP TABLE conformance.removed"),
-            expected: DriftOutcome::StaleRegistration,
+            expected: DriftOutcome::Fails(ErrorKind::DoesNotExist),
         },
         DriftCase {
             name: "a NOT NULL column made nullable",
             offered: two_columns("relaxed"),
             change: change("ALTER TABLE conformance.relaxed ALTER COLUMN value DROP NOT NULL"),
-            expected: DriftOutcome::StaleRegistration,
+            expected: DriftOutcome::Fails(ErrorKind::SchemaMismatch),
         },
         DriftCase {
             name: "a nullable column made NOT NULL",
@@ -278,7 +278,7 @@ pub fn error_cases() -> Vec<ErrorCase> {
                 .build(),
             )),
             expected: Expected::Contract(ExpectedError {
-                kind: ErrorKind::Permission,
+                kind: ErrorKind::PermissionDenied,
                 retryable: false,
             }),
         },

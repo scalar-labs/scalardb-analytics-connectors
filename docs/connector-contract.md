@@ -30,7 +30,7 @@ requests:
 | --- | --- | --- |
 | Namespace list | A namespace name filter | Namespace names, and ranges whose list could not be read |
 | Table list | A namespace filter and a table name filter; no namespace filter means all namespaces | Each table's namespace, name, and kind, and ranges whose list could not be read |
-| Table metadata | A set of tables | One table metadata record per requested table, including tables that do not exist or could not be read ([Missing information](#missing-information)) |
+| Table metadata | A set of tables | One table metadata record per requested table, including tables that do not exist, may not be read, or were not found ([Missing information](#missing-information)) |
 
 **Data read** returns the rows of one table as Arrow typed by Analytics types
 ([Data read](#data-read)). It consists of one request:
@@ -280,16 +280,27 @@ unresolvable host name is not retryable.
 | `invalid settings` | Connection or library settings are invalid (not retryable). |
 | `connection` | The data source cannot be reached, or the connection broke (retryable). |
 | `authentication` | Authentication failed (not retryable). |
-| `permission` | There is no privilege to read a particular target (not retryable). |
+| `permission denied` | The connector confirmed that the credential lacks the privilege to read a particular target (not retryable). |
 | `invalid request` | The request's shape or range is invalid (not retryable). |
 | `invalid state` | The call order or session state prevents accepting the request ([Units and concurrency](#units-and-concurrency), [Cancellation and timeouts](#cancellation-and-timeouts)). Finish the running stream or reopen an unusable session. |
-| `stale registration` | The table shape used for planning, registered in the Physical Catalog or read earlier from the Connector, no longer matches the source: the schema check found a type or nullability mismatch ([Schema check](#schema-check)), or a table or column the request references no longer exists. The table metadata must be read again, by re-registration or by the caller's own reread (not retryable). |
+| `does not exist` | A stale registration: the connector confirmed that a table or column the request references no longer exists at the source (not retryable). |
+| `schema mismatch` | A stale registration: the schema check found that the current type or nullability of a column the request references no longer matches the table shape used for planning ([Schema check](#schema-check)) (not retryable). |
+| `not found` | A table or column the request references is not found at the source, and the connector cannot tell whether it was removed or is hidden for lack of privilege, because the source silently omits what the credential may not read ([Missing information](#missing-information)). Read the table metadata again; while the target is still not found, check the privileges and whether it was removed at the source (not retryable). |
 | `data` | A value that cannot be carried exactly was encountered ([Values](#values)) (not retryable). |
 | `cancellation` | The caller cancelled (not retryable). The caller cancelled, so the caller decides whether to resend. |
 | `timeout` | The specified time was exceeded (retryable). |
 | `resource` | The source or the connector ran out of a resource such as connections or memory (retryable). |
 | `data-source` | The Data Source could not run the request for a reason not covered above, such as a serialization failure. The Connector decides retryability from the Data Source error. |
 | `internal` | A defect in the connector, including its ADBC driver or the code that reads the source (not retryable). |
+
+A **stale registration** is the condition `does not exist` and `schema
+mismatch` report: the table shape used for planning, registered in the
+Physical Catalog or read earlier from the Connector, no longer matches the
+source, and the table metadata must be read again, by re-registration or by
+the caller's own reread. A caller that recovers by reading the table metadata
+again treats both kinds alike. `not found` is not a stale registration: the
+change is not confirmed, and rereading the table metadata reports the table as
+"not found" again until its privileges or its existence change at the source.
 
 Whether an error fails the whole operation or is recorded per target is
 defined for
@@ -529,14 +540,23 @@ contracts.
 ### Missing information
 
 Metadata retrieval distinguishes information it could not obtain from
-information that does not exist. If the Physical Catalog read "could not be
-read" as "does not exist", missing privileges and transient failures would be
-recorded as dropped columns or tables.
+information that does not exist. If the Physical Catalog read "permission
+denied" or "not found" as "does not exist", missing privileges would be
+recorded as dropped columns or tables. A table that could not be read has one
+of two states, by what the connector knows of the cause:
+
+- **permission denied**: the table is known to exist, and the credential lacks
+  the privilege to read its content.
+- **not found**: the table is not found, and whether it exists is unknown,
+  because the catalog silently omits tables without privilege.
+
+A transient failure is not recorded per table; it fails the request
+([Cancellation and errors for metadata](#cancellation-and-errors-for-metadata)).
 
 | Situation | Result |
 | --- | --- |
-| The table is known to exist but its content cannot be read for lack of privilege | The table is returned as "could not be read", with its name and reason and no columns |
-| A table named in a table metadata request does not exist | The table is returned as "does not exist", with its name and no columns, only when the connector can confirm it does not exist; otherwise as "could not be read". For example, when a catalog omits tables without privilege (such as PostgreSQL `information_schema.tables`), absence cannot distinguish nonexistence from missing privilege. |
+| The table is known to exist but its content cannot be read for lack of privilege | The table is returned as "permission denied", with its name and reason and no columns |
+| A table named in a table metadata request does not exist | The table is returned as "does not exist", with its name and no columns, only when the connector can confirm it does not exist; otherwise as "not found", with its name and reason and no columns. For example, when a catalog omits tables without privilege (such as PostgreSQL `information_schema.tables`), absence cannot distinguish nonexistence from missing privilege. |
 | Columns were read but constraints, source identifiers, or some Data Source types could not be | The table metadata is returned as incomplete, naming the missing items |
 | The catalog silently omits columns without privilege (such as PostgreSQL `information_schema.columns`) and the connector read it in a way that cannot detect missing columns | The table metadata is returned as incomplete |
 | A namespace or table list cannot be read | The unreadable range is returned and no targets in it |
@@ -550,7 +570,8 @@ reports a missing item as a difference
 ([Comparing table metadata](#comparing-table-metadata)). A comparison does
 report a column absent from a read that may hide columns as removed: that is
 an observation, not a drop, and the receiver decides what it means. A dropped
-table is indicated only by "does not exist", never by "could not be read".
+table is indicated only by "does not exist", never by "permission denied" or
+"not found".
 
 ### Comparing table metadata
 
@@ -579,8 +600,8 @@ is the caller's; this contract defines no storage format, digest, or schema
 version. Choosing which stored table pairs with which new one belongs to the
 caller, who pairs them by table name. Only a table that was read has table
 metadata and source metadata, so only tables read on both sides are compared;
-that a table does not exist or could not be read is already known to the
-caller from its records.
+that a table does not exist, may not be read, or was not found is already
+known to the caller from its records.
 
 The two comparisons differ in what they depend on:
 
@@ -741,10 +762,12 @@ rules and the [error kinds](#errors). Errors reach as follows:
 
 | Error kinds | Reach |
 | --- | --- |
-| `permission` | Recorded per target as "could not be read" ([Missing information](#missing-information)); the request does not fail |
+| `permission denied` | Recorded per target as "permission denied" ([Missing information](#missing-information)); the request does not fail |
 | `authentication`, `invalid request`, `invalid state`, `connection`, `cancellation`, `timeout`, `resource`, `data-source`, `internal` | The whole request fails and returns only its error, never the targets read before it ([Requests and results](#requests-and-results)) |
 
-`stale registration` and `data` do not occur in metadata retrieval.
+A target the catalog may hide without privilege is recorded as "not found"
+rather than failing the request. `does not exist`, `schema mismatch`, `not
+found`, and `data` do not occur as errors of metadata retrieval.
 
 ### Metadata conformance tests
 
@@ -764,7 +787,9 @@ this section:
 - Retrieving the same fixture twice returns the same table metadata, apart from
   retrieval info, in the same order.
 - A nonexistent table is returned as "does not exist" for sources where the
-  connector can confirm nonexistence, and as "could not be read" otherwise.
+  connector can confirm nonexistence, and as "not found" otherwise. A table
+  without privilege is returned as "permission denied" where the connector
+  can confirm that it exists, and as "not found" otherwise.
 - Name filters return only exact matches, without case folding.
 - Every extension-encoded type the connector returns is registered in the
   [Analytics type model](analytics-types.md#registered-extension-encoded-types).
@@ -900,10 +925,15 @@ compared too: a column that is NOT NULL in the expected schema but now nullable
 at the source is a mismatch; a column that is nullable in the expected schema
 but now NOT NULL at the source is not, and the output column stays nullable.
 This is the schema check. On mismatch the connector returns
-`stale registration` instead of casting. A table or column referenced by the
-request that no longer exists at the source also returns
-`stale registration`. The error details list, per mismatched column, its name,
-the expected Analytics type and nullability, and the current Data Source type and
+`schema mismatch` instead of casting. A table or column referenced by the
+request that the connector confirms no longer exists at the source returns
+`does not exist`; both are stale registrations ([Errors](#errors)). A
+referenced table or column the source may hide for lack of privilege, and that
+the connector does not find, returns `not found`, and a table that is known to
+exist but may not be read returns `permission denied`. When the check finds
+both a confirmed change and a target it cannot verify, it returns the
+confirmed change. The error details list, per mismatched column, its name, the
+expected Analytics type and nullability, and the current Data Source type and
 nullability.
 
 Output nullability follows the expected schema, and nullability is compared,
@@ -920,8 +950,8 @@ for the reasons in
 [Make one connector interpret each data source](design/make-one-connector-interpret-each-source.md).
 An adapter that later receives a type different from the planned Analytics
 type fails the query as a conversion failure. That failure happens after the
-connector's check passed, so it is treated as a connector defect, not as
-`stale registration`.
+connector's check passed, so it is treated as a connector defect, not as a
+stale registration.
 
 ### Values
 
@@ -945,8 +975,8 @@ condition results agree.
 When a read ends with an error or a cancellation partway through the stream,
 each row returned so far has correct values. Those rows are only part of the
 result, and the caller never treats them as complete. `authentication`,
-`permission`, `invalid request`, `invalid state`, and
-`stale registration` are returned before the first row. Other kinds can occur
+`permission denied`, `invalid request`, `invalid state`, `does not exist`,
+`schema mismatch`, and `not found` are returned before the first row. Other kinds can occur
 before the first row or partway.
 
 ### Consistency
@@ -975,9 +1005,11 @@ retrieval:
   meaning varies by column, such as trailing spaces, letter case, accents, and
   columns with different character sets.
 - Reading after changing a source column to a type that differs from the
-  expected schema is `stale registration`. So is reading after dropping a
-  referenced column or table, and after making a column that is NOT NULL in the
-  expected schema nullable at the source. Making a column that is nullable in
+  expected schema is `schema mismatch`, and so is reading after making a column
+  that is NOT NULL in the expected schema nullable at the source. Reading after
+  dropping a referenced column or table is `does not exist` where the
+  connector can confirm the drop, and `not found` where the source hides what
+  the credential may not read. Making a column that is nullable in
   the expected schema NOT NULL at the source is not a mismatch, and the output
   column stays nullable.
 - Each error returns with its defined kind and retry flag.
@@ -1378,7 +1410,7 @@ start_read(session, remote_execution, timeout)
 the outcome and performs that rewrite. `start_read` accepts only an adopted
 planning result. Source attributes used in planning are treated as unchanged
 ([Read request](#read-request)), and a schema or object mismatch found by the
-[schema check](#schema-check) is `stale registration`. The current execution does not invoke
+[schema check](#schema-check) is a stale registration. The current execution does not invoke
 the optimizer again, but its caller may retry the query and cause replanning.
 
 A metadata request returns its whole result, and both comparisons return
@@ -1395,7 +1427,7 @@ Namespaces are returned as sequences of names with no fixed depth. For sources
 with catalogs, the first element is the catalog.
 
 Each table metadata record states whether its table is complete, incomplete,
-"could not be read", or "does not exist" ([Missing information](#missing-information)).
+"does not exist", "permission denied", or "not found" ([Missing information](#missing-information)).
 
 Table metadata is one record per table. Fetching names, columns, types, and
 constraints through separate functions would let names and types of one table
@@ -1416,7 +1448,7 @@ header. Each mirrors one item of [Metadata retrieval](#metadata-retrieval) or
 | Names | A sequence of names: a namespace, a table, or column names. For sources with catalogs, the first name of a namespace or table is the catalog. |
 | Namespace list, table list | Their entries, each an item or a range that could not be read, with its reason |
 | Table metadata result | The records, and the retrieval info: the connector's name and version, the ADBC driver's name and version with ADBC access, and the library version |
-| Table record | The state (complete, incomplete, "could not be read", or "does not exist"), the table, and, when read, the table metadata, the source metadata, and the read time in microseconds since the Unix epoch, UTC; the reason when "could not be read" |
+| Table record | The state (complete, incomplete, "does not exist", "permission denied", or "not found"), the table, and, when read, the table metadata, the source metadata, and the read time in microseconds since the Unix epoch, UTC; the reason when "permission denied" or "not found" |
 | Table metadata | The items of [Table metadata](#table-metadata): kind, source identifier, columns in ordinal order, whether columns may be hidden, and constraints in kind, name, and columns order. Reported items carry a value, missing with a reason, or not offered. |
 | Column | Name, ordinal, nullability, source identifier, and type: mapped with its Data Source type and Analytics type, unsupported with its Data Source type and reason, or unread with a reason |
 | Analytics type | Its kind and the parameters of that kind: precision and scale, an element type and its nullability, a key and value type, fields, or enum members. Nested types are structures of the same kind, so no second type notation is needed at the boundary. |

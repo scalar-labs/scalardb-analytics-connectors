@@ -38,10 +38,12 @@ struct Adopted {
 // What a stale-registration message adds: how the adapter recovers.
 const char *const STALE_RECOVERY = "; the table is described again when a query next uses it";
 
-// Marks the table's shape stale when the Connector reported it so, and
-// returns what the message adds.
+// Marks the table's shape stale when the Connector reported a stale
+// registration, `does not exist` or `schema mismatch`, and returns what the
+// message adds.
 std::string Stale(const TableShape &shape, ScalardbAnalyticsConnectorErrorKind kind) {
-	if (kind != SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_STALE_REGISTRATION) {
+	if (kind != SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_DOES_NOT_EXIST &&
+	    kind != SCALARDB_ANALYTICS_CONNECTOR_ERROR_KIND_SCHEMA_MISMATCH) {
 		return "";
 	}
 	shape.stale = true;
