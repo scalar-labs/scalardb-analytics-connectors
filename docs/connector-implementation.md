@@ -378,6 +378,7 @@ returns SQLSTATE `42000` but is classified as `permission`.
 | MySQL `1146` (no such table, SQLSTATE `42S02`), `1054` (unknown column, SQLSTATE `42S22`) | `stale registration` | MySQL connector error table |
 | PostgreSQL class `53` (insufficient resources) | `resource` | PostgreSQL connector error table |
 | PostgreSQL `57014` (query canceled) | `cancellation` if a cancellation was received, `timeout` if the deadline has passed, otherwise `data-source` | PostgreSQL connector error table |
+| PostgreSQL `ADBC_STATUS_IO` without SQLSTATE | `connection`, not retryable: libpq reports a rejected credential this way | PostgreSQL connector error table |
 
 An error with ADBC status `ADBC_STATUS_IO` and no SQLSTATE (connection broken or
 impossible) is `connection`. Errors detected by the connector SDK itself are

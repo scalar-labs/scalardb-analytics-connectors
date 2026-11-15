@@ -293,9 +293,9 @@ pub fn error_cases() -> Vec<ErrorCase> {
                 },
                 observed: ExpectedError {
                     kind: ErrorKind::Connection,
-                    retryable: true,
+                    retryable: false,
                 },
-                reason: "the ADBC driver reports a failed authentication without a SQLSTATE",
+                reason: "libpq does not expose the SQLSTATE of a failed connection, so a rejected credential cannot be told apart from an unreachable server",
             },
         },
     ]

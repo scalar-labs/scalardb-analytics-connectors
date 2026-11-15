@@ -1,6 +1,7 @@
 //! The PostgreSQL error table and the redaction of the ADBC driver's diagnostics.
 
-use connector_adbc::{AdbcDetail, AdbcDetails, AdbcDiagnostic};
+use adbc_core::error::Status;
+use connector_adbc::{AdbcDetail, AdbcDetails, AdbcDiagnostic, AdbcStatus};
 use connector_sdk::{ErrorClass, ErrorHandler, ErrorKind};
 
 /// The PostgreSQL connector's handling of the ADBC driver's errors.
@@ -49,6 +50,17 @@ impl ErrorHandler for PostgresErrorHandler {
                 retryable: true,
                 safe_message: "the data source ran out of resources",
             },
+            // libpq does not expose the SQLSTATE of a failed connection, so
+            // the driver reports a rejected credential like an unreachable
+            // server or a broken connection. Retrying a rejected credential
+            // cannot succeed, so none of them is retryable.
+            [0, 0, 0, 0, 0] | b"00000" if diagnostic.status() == AdbcStatus::Known(Status::IO) => {
+                ErrorClass {
+                    kind: ErrorKind::Connection,
+                    retryable: false,
+                    safe_message: "the data source connection failed, or the data source rejected the credential",
+                }
+            }
             _ => return None,
         };
         Some(class)
@@ -128,8 +140,6 @@ fn mentions_statement(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use adbc_core::error::Status;
-    use connector_adbc::AdbcStatus;
     use connector_sdk::DiagnosticValue;
 
     use super::*;
@@ -210,6 +220,19 @@ mod tests {
                 .unwrap()
                 .contains("secret")
         );
+    }
+
+    #[test]
+    fn an_io_error_without_sqlstate_is_a_connection_error_that_is_not_retried() {
+        let error = PostgresConnector::classify(AdbcDiagnostic::new(
+            AdbcStatus::Known(Status::IO),
+            "[libpq] Failed to connect: password authentication failed",
+            [0; 5],
+            0,
+            AdbcDetails::Missing,
+        ));
+        assert_eq!(error.kind(), ErrorKind::Connection);
+        assert!(!error.retryable());
     }
 
     #[test]

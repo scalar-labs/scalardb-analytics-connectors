@@ -285,8 +285,12 @@ These come from the driver and are not yet handled by the connector:
 
 - An interval whose time part does not fit in nanoseconds fails the read as a
   `data-source` error rather than a `data` error.
-- A failed authentication is reported without a SQLSTATE, so it is classified
-  as `connection` rather than `authentication`.
+- A failed authentication is classified as `connection` rather than
+  `authentication`. libpq does not expose the SQLSTATE of a failed
+  connection, so the driver reports a rejected credential, an unreachable
+  server, and a connection that breaks during a request alike: an `IO` status
+  without SQLSTATE. Because a rejected credential cannot succeed on retry,
+  none of them is retryable, including a transient network failure.
 
 This comes from the Rust ADBC driver manager, which does not yet import an
 error's status, SQLSTATE, and details from a result stream
