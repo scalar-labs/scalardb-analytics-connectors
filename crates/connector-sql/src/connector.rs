@@ -2,11 +2,10 @@
 
 use std::marker::PhantomData;
 
-use connector_adbc::{AdbcConnector, AdbcSession};
 use connector_sdk::{
-    Catalog, Connector, ConnectorError, ExecutionOutput, Listed, LogicalExpression, LogicalPlan,
-    NameFilter, NamespacePath, PlanningError, Session, SourceTableMetadata, TableEntry,
-    TableRecord, TableReference,
+    AccessSession, Catalog, Connector, ConnectorError, ExecutionOutput, Listed, LogicalExpression,
+    LogicalPlan, NameFilter, NamespacePath, PlanningError, Session, SourceTableMetadata,
+    TableEntry, TableRecord, TableReference,
 };
 
 use crate::{
@@ -14,18 +13,18 @@ use crate::{
     catalog::{CatalogReads, catalog_read, read_catalog},
 };
 
-/// A Connector whose Data Source speaks SQL through an ADBC driver.
+/// A Connector whose Data Source speaks SQL.
 ///
 /// Its catalog, planner, and executor are this crate's [`SqlCatalog`],
 /// [`SqlPlanner`], and [`SqlExecutor`], and its query is a [`SqlRead`]. The
-/// Connector declares only its Data Source knowledge: how it reads its catalog,
-/// written as functions that run statements on [`CatalogReads`] and use each
-/// result where it is fetched, the facts planning needs, which offered
-/// expressions its Data Source evaluates with the same meaning, and how it
-/// spells SQL ([`SqlDialect`]).
+/// Connector declares how its access runs one statement ([`Self::query`]) and
+/// its Data Source knowledge: how it reads its catalog, written as functions
+/// that run statements on [`CatalogReads`] and use each result where it is
+/// fetched, the facts planning needs, which offered expressions its Data
+/// Source evaluates with the same meaning, and how it spells SQL
+/// ([`SqlDialect`]).
 pub trait SqlConnector:
-    AdbcConnector
-    + SqlDialect
+    SqlDialect
     + Connector<
         Catalog = SqlCatalog<Self>,
         Planner = SqlPlanner<Self>,
@@ -33,6 +32,12 @@ pub trait SqlConnector:
         Query = SqlRead,
     >
 {
+    /// The connection statements run on.
+    ///
+    /// A catalog read runs its statements when its stream is first pulled,
+    /// after the request that created it returned, so it holds its own
+    /// handle.
+    type Connection: Clone + Send + 'static;
     /// The Connector's source metadata for one table.
     type Table: SourceTableMetadata;
     /// Session-level facts read once when a session opens, such as the
@@ -40,6 +45,16 @@ pub trait SqlConnector:
     type Context: Clone + Send + Sync + 'static;
     /// Facts about the read table that one planning call needs.
     type PlanningFacts;
+
+    /// The connection of a session.
+    fn connection(session: &AccessSession<Self>) -> Self::Connection;
+
+    /// Starts one statement on `connection`.
+    ///
+    /// Nothing is sent before the first pull. The returned cancel stops the
+    /// statement at the source, and the Connector classifies the errors its
+    /// access reports.
+    fn query(connection: &Self::Connection, sql: String) -> ExecutionOutput;
 
     /// Reads a new session's context.
     fn session_context(
@@ -89,8 +104,8 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
     type Table = C::Table;
     type Context = C::Context;
 
-    fn open_context(session: &AdbcSession<C>) -> Result<C::Context, ConnectorError> {
-        read_catalog(session.connection(), C::session_context)
+    fn open_context(session: &AccessSession<C>) -> Result<C::Context, ConnectorError> {
+        read_catalog(&C::connection(session), C::session_context)
     }
 
     fn namespace_list(
@@ -99,7 +114,7 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
     ) -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError> {
         let filter = filter.clone();
         Ok(catalog_read(
-            session.access().connection(),
+            &C::connection(session.access()),
             Box::new(move |catalog| C::namespace_list(catalog, &filter)),
         ))
     }
@@ -111,7 +126,7 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
     ) -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError> {
         let (namespaces, tables) = (namespaces.clone(), tables.clone());
         Ok(catalog_read(
-            session.access().connection(),
+            &C::connection(session.access()),
             Box::new(move |catalog| C::table_list(catalog, &namespaces, &tables)),
         ))
     }
@@ -122,7 +137,7 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
     ) -> Result<ExecutionOutput<TableRecord<C::Table>>, ConnectorError> {
         let (tables, context) = (tables.to_vec(), session.context().clone());
         Ok(catalog_read(
-            session.access().connection(),
+            &C::connection(session.access()),
             Box::new(move |catalog| C::table_metadata(catalog, &tables, &context)),
         ))
     }

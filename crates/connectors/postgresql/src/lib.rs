@@ -24,16 +24,19 @@ pub use catalog::{
 pub use error_handler::PostgresErrorHandler;
 pub use pushdown::PlanningFacts;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use adbc_core::options::{OptionDatabase, OptionValue as AdbcOptionValue};
 use analytics_types::AnalyticsType;
 use arrow_array::ArrayRef;
-use connector_adbc::{Adbc, AdbcConnector, DriverRequirement, DriverVersion};
+use connector_adbc::{
+    Adbc, AdbcConnection, AdbcConnector, AdbcSession, DriverRequirement, DriverVersion, query,
+};
 use connector_sdk::{
-    Access, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, Listed,
-    LogicalExpression, LogicalPlan, NameFilter, NamespacePath, OptionDescriptor, OptionValue,
-    OptionValueType, PlanningError, SecretString, Session, TableEntry, TableRecord, TableReference,
+    Access, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ExecutionOutput,
+    Listed, LogicalExpression, LogicalPlan, NameFilter, NamespacePath, OptionDescriptor,
+    OptionValue, OptionValueType, PlanningError, SecretString, Session, TableEntry, TableRecord,
+    TableReference,
 };
 use connector_sql::{
     SqlCatalog, SqlConnector, SqlExecutor, SqlPlanner, SqlRead, catalog::CatalogReads,
@@ -195,9 +198,21 @@ impl AdbcConnector for PostgresConnector {
 }
 
 impl SqlConnector for PostgresConnector {
+    type Connection = AdbcConnection<Self>;
     type Table = PostgresTable;
     type Context = ServerVersion;
     type PlanningFacts = PlanningFacts;
+
+    fn connection(session: &AdbcSession<Self>) -> AdbcConnection<Self> {
+        session.connection().clone()
+    }
+
+    /// Runs the statement through the ADBC driver.
+    fn query(connection: &AdbcConnection<Self>, sql: String) -> ExecutionOutput {
+        let statement = query(connection, sql);
+        let cancel = Arc::new(statement.cancel_handle());
+        ExecutionOutput::new(Box::pin(statement), cancel)
+    }
 
     fn session_context(
         catalog: &mut CatalogReads<'_, Self>,

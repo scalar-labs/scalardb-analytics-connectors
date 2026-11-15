@@ -1,8 +1,9 @@
 //! Processing shared by SQL-speaking Connectors.
 //!
-//! A Connector whose Data Source speaks SQL through an ADBC driver implements
-//! [`SqlConnector`] and names this crate's components: [`SqlCatalog`] runs its
-//! catalog reads (see [`catalog`]), [`SqlPlanner`] moves work into the remote SQL by the
+//! A Connector whose Data Source speaks SQL, through either form of Data
+//! Source access, implements [`SqlConnector`] and names this crate's
+//! components: [`SqlCatalog`] runs its catalog reads (see [`catalog`]),
+//! [`SqlPlanner`] moves work into the remote SQL by the
 //! Connector's semantic decision and renders one non-parameterized statement
 //! from dialect-rendered identifiers and typed literals, and [`SqlExecutor`]
 //! sends that statement. This crate does not define a SQL grammar.

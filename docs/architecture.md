@@ -84,13 +84,15 @@ The Rust workspace has the following dependency direction:
 ~~~text
 connector-api
     |
-    +--> connector-postgresql --> connector-sql --> connector-adbc
-    |                                      |              |
-    +--> connector-mysql ------------------+              v
-    |                                               connector-sdk
-    +---------------------------------------------->      |
-                                                          v
-                                                   analytics-types
+    +--> connector-postgresql --+--> connector-sql ----+
+    |                           |                      |
+    |                           +--> connector-adbc ---+
+    |                                                  v
+    +--> connector-mysql ------> connector-sql    connector-sdk
+    |                                                  |
+    +------------------------------------------------->|
+                                                       v
+                                                analytics-types
 ~~~
 
 Query Engine adapters sit outside the Rust workspace, in their Query Engine's

@@ -114,7 +114,7 @@ fn collations(
         quote_string(namespace),
         quote_string(name)
     );
-    read_catalog(session.access().connection(), |catalog| {
+    read_catalog::<PostgresConnector, _>(session.access().connection(), |catalog| {
         let mut collations = HashMap::new();
         for batch in &catalog.query(sql)? {
             let (names, oids, deterministic) =

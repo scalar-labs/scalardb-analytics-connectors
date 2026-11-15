@@ -1,29 +1,28 @@
 //! Cancellation of a catalog read that runs several statements in turn.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use connector_adbc::{AdbcConnector, AdbcQueryCancelHandle};
 use connector_sdk::{ConnectorError, ErrorKind, ExecutionCancel};
 
 /// Cancels whichever statement of a catalog read is running.
 ///
 /// The read's stream starts each step, and the caller cancels from another
 /// thread, so both share this state.
-pub(crate) struct StepCancel<C> {
-    current: Mutex<Step<C>>,
+pub(crate) struct StepCancel {
+    current: Mutex<Step>,
 }
 
 /// The step a cancellation stops.
-pub(crate) enum Step<C> {
+pub(crate) enum Step {
     /// No step is running.
     Idle,
-    /// One statement on the connection.
-    Query(AdbcQueryCancelHandle<C>),
+    /// One statement on the connection, stopped through its cancel.
+    Query(Arc<dyn ExecutionCancel>),
     /// Cancellation was requested; no further step may start.
     Cancelled,
 }
 
-impl<C> StepCancel<C> {
+impl StepCancel {
     pub(crate) fn new() -> Self {
         Self {
             current: Mutex::new(Step::Idle),
@@ -34,7 +33,7 @@ impl<C> StepCancel<C> {
     ///
     /// Returns the `cancellation` error instead when the read was already
     /// cancelled, so that the step is never started.
-    pub(crate) fn start(&self, step: Step<C>) -> Result<(), ConnectorError> {
+    pub(crate) fn start(&self, step: Step) -> Result<(), ConnectorError> {
         let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
         if matches!(*current, Step::Cancelled) {
             return Err(ConnectorError::new(
@@ -48,7 +47,7 @@ impl<C> StepCancel<C> {
     }
 }
 
-impl<C: AdbcConnector> ExecutionCancel for StepCancel<C> {
+impl ExecutionCancel for StepCancel {
     fn cancel(&self) -> Result<(), ConnectorError> {
         let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
         match std::mem::replace(&mut *current, Step::Cancelled) {

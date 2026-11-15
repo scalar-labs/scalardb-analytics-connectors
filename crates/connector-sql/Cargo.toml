@@ -12,7 +12,6 @@ analytics-types.workspace = true
 arrow-array.workspace = true
 # Planned reads carry their schemas as Arrow JSON across processes.
 arrow-schema = { workspace = true, features = ["serde"] }
-connector-adbc.workspace = true
 connector-sdk.workspace = true
 futures-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -24,6 +23,8 @@ thiserror.workspace = true
 adbc_core.workspace = true
 adbc_driver_manager.workspace = true
 adbc_ffi.workspace = true
+# The tests' Connectors reach a test ADBC driver.
+connector-adbc.workspace = true
 connector-sdk = { workspace = true, features = ["test-connector"] }
 
 [lib]

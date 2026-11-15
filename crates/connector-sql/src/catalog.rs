@@ -15,34 +15,36 @@ use std::{
 use arrow_array::{
     Array, BooleanArray, Int16Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
 };
-use connector_adbc::{AdbcConnection, AdbcConnector, query};
 use connector_sdk::{ConnectorError, ErrorKind, ExecutionOutput};
 use futures_core::Stream;
 
-use crate::step::{Step, StepCancel};
+use crate::{
+    SqlConnector,
+    step::{Step, StepCancel},
+};
 
 /// Runs catalog statements for one catalog read, one at a time.
 ///
 /// Each statement runs to its end before [`CatalogReads::query`] returns. A
 /// cancel from another thread stops the running statement, and a cancelled
 /// read starts no further statement.
-pub struct CatalogReads<'a, C> {
-    connection: &'a AdbcConnection<C>,
-    cancel: &'a StepCancel<C>,
+pub struct CatalogReads<'a, C: SqlConnector> {
+    connection: &'a C::Connection,
+    cancel: &'a StepCancel,
 }
 
-impl<C: AdbcConnector> CatalogReads<'_, C> {
+impl<C: SqlConnector> CatalogReads<'_, C> {
     /// Runs one statement and returns its result batches.
     ///
     /// Catalog statements read no rows of user tables, so one catalog read
     /// may run several of them.
     pub fn query(&mut self, sql: impl Into<String>) -> Result<Vec<RecordBatch>, ConnectorError> {
-        let mut statement = query(self.connection, sql);
-        self.cancel.start(Step::Query(statement.cancel_handle()))?;
+        let (mut statement, cancel) = C::query(self.connection, sql.into()).into_parts();
+        self.cancel.start(Step::Query(cancel))?;
         let mut context = Context::from_waker(Waker::noop());
         let mut batches = Vec::new();
         loop {
-            match Pin::new(&mut statement).poll_next(&mut context) {
+            match statement.as_mut().poll_next(&mut context) {
                 Poll::Ready(Some(batch)) => batches.push(batch?),
                 Poll::Ready(None) => return Ok(batches),
                 Poll::Pending => {
@@ -67,8 +69,8 @@ pub type CatalogFunction<C, T> =
 /// Nothing is sent before the first pull, which runs `read` to its end and
 /// then returns its items one per pull. The returned cancel stops the
 /// statement in progress and keeps later statements from starting.
-pub fn catalog_read<C: AdbcConnector, T: Send + 'static>(
-    connection: &AdbcConnection<C>,
+pub fn catalog_read<C: SqlConnector, T: Send + 'static>(
+    connection: &C::Connection,
     read: CatalogFunction<C, T>,
 ) -> ExecutionOutput<T> {
     let cancel = Arc::new(StepCancel::new());
@@ -83,8 +85,8 @@ pub fn catalog_read<C: AdbcConnector, T: Send + 'static>(
 
 /// Runs a catalog read on the calling thread, for reads no caller cancels,
 /// such as a session's context or planning facts.
-pub fn read_catalog<C: AdbcConnector, T>(
-    connection: &AdbcConnection<C>,
+pub fn read_catalog<C: SqlConnector, T>(
+    connection: &C::Connection,
     read: impl FnOnce(&mut CatalogReads<'_, C>) -> Result<T, ConnectorError>,
 ) -> Result<T, ConnectorError> {
     let cancel = StepCancel::new();
@@ -94,16 +96,16 @@ pub fn read_catalog<C: AdbcConnector, T>(
     })
 }
 
-struct CatalogRead<C, T> {
-    connection: AdbcConnection<C>,
+struct CatalogRead<C: SqlConnector, T> {
+    connection: C::Connection,
     read: Option<CatalogFunction<C, T>>,
     items: VecDeque<T>,
-    cancel: Arc<StepCancel<C>>,
+    cancel: Arc<StepCancel>,
 }
 
-impl<C, T> Unpin for CatalogRead<C, T> {}
+impl<C: SqlConnector, T> Unpin for CatalogRead<C, T> {}
 
-impl<C: AdbcConnector, T> Stream for CatalogRead<C, T> {
+impl<C: SqlConnector, T> Stream for CatalogRead<C, T> {
     type Item = Result<T, ConnectorError>;
 
     fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {

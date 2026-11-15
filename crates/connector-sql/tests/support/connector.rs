@@ -74,9 +74,25 @@ macro_rules! sql_test_connector {
         }
 
         impl connector_sql::SqlConnector for $name {
+            type Connection = connector_adbc::AdbcConnection<Self>;
             type Table = connector_sdk::test_connector::TestTable;
             type Context = ();
             type PlanningFacts = ();
+
+            fn connection(
+                session: &connector_adbc::AdbcSession<Self>,
+            ) -> connector_adbc::AdbcConnection<Self> {
+                session.connection().clone()
+            }
+
+            fn query(
+                connection: &connector_adbc::AdbcConnection<Self>,
+                sql: String,
+            ) -> connector_sdk::ExecutionOutput {
+                let statement = connector_adbc::query(connection, sql);
+                let cancel = std::sync::Arc::new(statement.cancel_handle());
+                connector_sdk::ExecutionOutput::new(Box::pin(statement), cancel)
+            }
 
             fn session_context(
                 _catalog: &mut connector_sql::catalog::CatalogReads<'_, Self>,

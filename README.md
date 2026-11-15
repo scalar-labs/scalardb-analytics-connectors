@@ -26,9 +26,10 @@ adapters/duckdb/           DuckDB Query Engine adapter (C++, CMake), outside the
 Dependencies point inward in this order:
 
 ```text
-connector-api -> connector-postgresql -> connector-sql -> connector-adbc -> connector-sdk -> analytics-types
+connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> analytics-types
+             |                       +-> connector-adbc -> connector-sdk
              +-> connector-mysql ------> connector-sql
-             +-> connector-sdk -------------------------------------------> analytics-types
+             +-> connector-sdk -----------------------------------> analytics-types
 ```
 
 Connector crates do not depend on one another. Native dependencies belong in

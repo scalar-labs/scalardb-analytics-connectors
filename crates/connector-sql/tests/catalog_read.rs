@@ -31,7 +31,7 @@ fn batch(values: &[i64]) -> RecordBatch {
 fn statements_run_in_order_and_their_rows_are_assembled_once() {
     let (fixture, connection): (_, AdbcConnection<FixtureSql>) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[1, 2])]));
-    let output = catalog_read(
+    let output = catalog_read::<FixtureSql, _>(
         &connection,
         Box::new(|catalog| {
             let sum = |batches: Vec<RecordBatch>| -> Result<i64, ConnectorError> {
@@ -66,7 +66,7 @@ fn a_cancelled_read_sends_no_statement() {
     let (fixture, connection): (_, AdbcConnection<FixtureSql>) =
         Fixture::install(FixtureExecution::Batches(vec![batch(&[1])]));
     let read = start_source_read(None, || {
-        Ok(catalog_read(
+        Ok(catalog_read::<FixtureSql, _>(
             &connection,
             Box::new(|catalog| {
                 catalog.query("select first")?;
@@ -92,7 +92,7 @@ fn a_cancelled_read_sends_no_statement() {
 fn cancelling_a_blocked_statement_stops_it_and_sends_no_later_statement() {
     let (fixture, connection): (_, AdbcConnection<FixtureSql>) =
         Fixture::install(FixtureExecution::BlockUntilCancelled);
-    let (mut stream, cancel) = catalog_read(
+    let (mut stream, cancel) = catalog_read::<FixtureSql, _>(
         &connection,
         Box::new(|catalog| {
             catalog.query("select first")?;

@@ -75,7 +75,7 @@ and `connector-sql`.
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
 | `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, the comparison of two observations of one table, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads, synchronous metadata requests and the cancellations callers pass to them, cancellation, the timeout watcher, and panic containment. Its `conformance` module, behind the feature of that name, is the conformance suite that connector crates run through `runtime` with their fixtures ([Tests](connector-implementation.md#tests)) | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: the `AdbcConnector` trait and the `Adbc<C>` access component built from it (loading drivers through the ADBC driver manager and checking their versions, passing options, opening Data Sources and connecting sessions), running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by ADBC status and SQL-standard SQLSTATE class where the Connector's error table does not match ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
-| `connector-sql` | Processing common to SQL-speaking Data Sources, using `connector-adbc` for Data Source access: the `SqlConnector` trait and the catalog, planner, and executor components built from it, running catalog queries, the filter and projection rewrite rules over the Connector's semantic decisions, generating SQL from remote `LogicalPlan` values with the Connector's dialect, and sending the planned statement | Knowledge of any particular Data Source or native Query Engine plan |
+| `connector-sql` | Processing common to SQL-speaking Data Sources, with either form of Data Source access: the `SqlConnector` trait and the catalog, planner, and executor components built from it, running catalog queries, the filter and projection rewrite rules over the Connector's semantic decisions, generating SQL from remote `LogicalPlan` values with the Connector's dialect, and sending the planned statement | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its `Connector` implementation and its declarations to the layer traits, written as Rust code and constant tables. An ADBC-access Connector also implements `AdbcConnector`, and a SQL-speaking one also `SqlConnector`; a direct-access Connector supplies its own components and reads the Data Source itself. | Knowledge of other Connectors |
 | `connector-api` | The connector API's C ABI and its header, the C structures of metadata and comparisons and their conversion to and from the SDK's types, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
 | `adbc-drivers/<connector>` | Our own ADBC drivers, built with `adbc_core` and `adbc_ffi` | Deciding types and interpreting catalogs |
@@ -87,8 +87,9 @@ such as adapters and the Physical Catalog, use the typed connector API.
 ### Dependency rules
 
 ~~~text
-connector-api --> connectors/<connector> (SQL family) --> connector-sql --> connector-adbc --> connector-sdk --> analytics-types
-connector-api --> connectors/<connector> (direct access) ----------------------------------> connector-sdk
+connector-api --> connectors/<connector> (SQL family) --> connector-sql --> connector-sdk --> analytics-types
+connector-api --> connectors/<connector> (ADBC access) --> connector-adbc --> connector-sdk
+connector-api --> connectors/<connector> (direct access) --------------------> connector-sdk
 connector-api --> connector-sdk
 connector-api --> analytics-types   (Analytics types in metadata structures)
 connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
@@ -102,8 +103,10 @@ connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
 - Connector crates do not depend on native libraries. Native dependencies stay
   inside ADBC drivers
   ([Isolating native dependencies](connector-implementation.md#isolating-native-dependencies)).
-- A direct-access connector depends only on `connector-sdk`, not on
-  `connector-adbc` or `connector-sql`.
+- `connector-sql` does not depend on `connector-adbc`. A SQL-speaking
+  connector depends on `connector-sql` with either form of access and declares
+  how its access runs one statement.
+- A direct-access connector does not depend on `connector-adbc`.
 - A connector that uses ADBC access for a source that does not speak SQL, as
   ScalarDB would with ADBC access, does not depend on `connector-sql` and uses
   `connector-adbc` directly.
@@ -406,11 +409,14 @@ connector-adbc   AdbcConnector: Connector<Access = Adbc<Self>>
                      DRIVER: the ADBC driver and the versions it was tested with
                      database_options(connection_options, connection_timeout)
                  Adbc<C> implements Access<C>
-connector-sql    SqlConnector: AdbcConnector + SqlDialect
+connector-sql    SqlConnector: SqlDialect
                      + Connector<Catalog = SqlCatalog<Self>,
                                  Planner = SqlPlanner<Self>,
                                  Executor = SqlExecutor<Self>, Query = SqlRead>
-                     Table, Context, PlanningFacts
+                     Connection, Table, Context, PlanningFacts
+                     connection(session), query(connection, sql): the
+                         connection statements run on, and one statement
+                         started on it
                      session_context, namespace_list, table_list, table_metadata:
                          each a function that runs its statements on
                          CatalogReads and uses each result where it is fetched
@@ -422,7 +428,8 @@ connector-sql    SqlConnector: AdbcConnector + SqlDialect
 A SQL-speaking Connector such as PostgreSQL therefore implements three traits:
 `Connector`, where it names `Adbc<Self>`, the three SQL components, `SqlRead`,
 and its own error handler, and declares its descriptor and value conversion;
-`AdbcConnector`; and `SqlConnector`. The component choices in its `Connector`
+`AdbcConnector`; and `SqlConnector`, whose `query` runs the statement through
+`connector-adbc`. The component choices in its `Connector`
 implementation are the ones the layer traits require, and the compiler rejects
 any other. A direct-access Connector implements `Connector` with components of
 its own, including an `Access` that reads the Data Source itself. A Connector
