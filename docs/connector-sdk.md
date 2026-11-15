@@ -1016,7 +1016,9 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
   ([Calling-convention conformance tests](connector-contract.md#calling-convention-conformance-tests),
   [Data Source access rules](connector-contract.md#data-source-access-rules)).
   A driver that reports its version as `unknown`, as the Apache Arrow ADBC
-  PostgreSQL driver does, is identified by the manifest's version instead.
+  PostgreSQL driver does, is identified by the manifest's version instead. A
+  version prefixed with `v`, as Go drivers report their module version, such
+  as `v0.8.0`, is read without the prefix.
 - **Options:** the connector maps product connection options to driver
   options, and the fixed driver options are passed at the same time.
 - **Errors:** driver errors carry an ADBC status code, a SQLSTATE, and a

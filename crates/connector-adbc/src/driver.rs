@@ -18,9 +18,11 @@ pub struct DriverVersion {
 impl FromStr for DriverVersion {
     type Err = ();
 
-    /// Parses `major.minor.patch`, ignoring a pre-release or build suffix after
-    /// the patch number.
+    /// Parses `major.minor.patch`, optionally prefixed with `v` as Go drivers
+    /// report their module version, ignoring a pre-release or build suffix
+    /// after the patch number.
     fn from_str(text: &str) -> Result<Self, ()> {
+        let text = text.strip_prefix('v').unwrap_or(text);
         let mut parts = text.splitn(3, '.');
         let number = |part: Option<&str>| part.and_then(|part| part.parse::<u64>().ok());
         let major = number(parts.next()).ok_or(())?;
@@ -168,8 +170,10 @@ mod tests {
         };
         assert_eq!(version("1.13.0"), Some(expected));
         assert_eq!(version("1.13.0-SNAPSHOT"), Some(expected));
+        assert_eq!(version("v1.13.0"), Some(expected));
         assert_eq!(version("1.13"), None);
-        assert_eq!(version("v1.13.0"), None);
+        assert_eq!(version("V1.13.0"), None);
+        assert_eq!(version("vv1.13.0"), None);
     }
 
     #[test]
