@@ -32,7 +32,8 @@
 //!    and reading.
 //! 4. Errors: every [`ErrorCase`], its error kind and retry flag.
 //! 5. Interruptions: every [`Interruption`], through the fixture's
-//!    source-side operations.
+//!    source-side operations; the metadata request interruptions only where
+//!    the source can make metadata requests wait ([`Fixture::block_metadata`]).
 //! 6. Secrets and literals: no error received in parts 1 to 5 reveals a value
 //!    of an option the connector's descriptor marks secret, or a string
 //!    literal of its request's filters.
@@ -186,7 +187,15 @@ pub trait Fixture: Sync {
     /// [`STOP_DELAY`] and lets another expire after [`REQUEST_TIMEOUT`],
     /// checking [`Fixture::source_is_idle`] before dropping the block, so the
     /// block itself must not count as a running request.
-    fn block_metadata(&self) -> (TableReference, Self::MetadataBlock);
+    ///
+    /// `None` when nothing at the source can make the connector's metadata
+    /// reads wait, such as catalogs read without locks. A metadata request
+    /// there never waits at the source, so there is no waiting request to
+    /// interrupt, and the suite skips
+    /// [`Interruption::CancelledMetadataRequest`] and
+    /// [`Interruption::ExpiredMetadataRequest`]. The connector's README
+    /// records why.
+    fn block_metadata(&self) -> Option<(TableReference, Self::MetadataBlock)>;
 
     /// Whether no request of the fixture's credentials is running at the
     /// source.

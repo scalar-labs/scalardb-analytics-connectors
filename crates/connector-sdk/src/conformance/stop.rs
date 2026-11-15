@@ -78,7 +78,9 @@ fn releasing_a_stream_partway_stops_the_source_query<F: Fixture>(probe: &Probe<'
 
 fn cancelling_a_waiting_metadata_request_stops_its_source_query<F: Fixture>(probe: &Probe<'_, F>) {
     let session = probe.session();
-    let (table, block) = probe.fixture.block_metadata();
+    let Some((table, block)) = probe.fixture.block_metadata() else {
+        return;
+    };
     let cancellation = Cancellation::new();
     let result = thread::scope(|scope| {
         scope.spawn(|| {
@@ -105,7 +107,9 @@ fn cancelling_a_waiting_metadata_request_stops_its_source_query<F: Fixture>(prob
 
 fn a_metadata_timeout_stops_its_source_query<F: Fixture>(probe: &Probe<'_, F>) {
     let session = probe.session();
-    let (table, block) = probe.fixture.block_metadata();
+    let Some((table, block)) = probe.fixture.block_metadata() else {
+        return;
+    };
     let result = session.table_metadata(&[table], Some(REQUEST_TIMEOUT), None);
     let error = probe
         .observed

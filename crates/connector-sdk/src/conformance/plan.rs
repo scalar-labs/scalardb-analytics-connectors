@@ -279,15 +279,22 @@ pub fn logical_text(name: &str, parameters: &str, value: &str) -> Expression {
     }))
 }
 
+/// The parameters of a logical type: its name, its JSON parameters, and its
+/// carrier, which is 16-bit for `year` and a string for every other type.
 fn logical_parameters(name: &str, parameters: &str) -> Vec<r#type::Parameter> {
     let string = |value: &str| r#type::Parameter {
         parameter: Some(r#type::parameter::Parameter::String(value.to_owned())),
+    };
+    let carrier = if name == "year" {
+        i16(false)
+    } else {
+        text(false)
     };
     vec![
         string(name),
         string(parameters),
         r#type::Parameter {
-            parameter: Some(r#type::parameter::Parameter::DataType(text(false))),
+            parameter: Some(r#type::parameter::Parameter::DataType(carrier)),
         },
     ]
 }
@@ -315,6 +322,7 @@ macro_rules! simple_type {
 }
 
 simple_type!(boolean, Bool, Boolean);
+simple_type!(i8, I8, I8);
 simple_type!(i16, I16, I16);
 simple_type!(i32, I32, I32);
 simple_type!(i64, I64, I64);

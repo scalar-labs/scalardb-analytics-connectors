@@ -498,7 +498,10 @@ The suite checks the following against the fixture's source:
 - **Stopping at the source.** Cancellation, timeout, and releasing a stream
   partway stop the query at the source, for metadata requests and reads. A
   broken source connection makes the session reject the next request as
-  `invalid state`.
+  `invalid state`. Metadata requests are checked only at a source that can
+  make them wait; where nothing can, such as MySQL, whose `information_schema`
+  is read without locks, no metadata request waits to be stopped, and the
+  connector's README records it.
 - **Errors.** Each failing request the fixture states returns its kind and
   retry flag. No error the suite receives reveals, in its message, Data
   Source message, or diagnostics, a value of an option the connector's
@@ -535,8 +538,8 @@ Each connector's fixture implements the suite's `Fixture` trait in
   credential each uses; and
 - the source-side operations the suite cannot perform through the contract:
   a read that waits at the source, a read that outlasts its first batch,
-  making metadata requests wait, observing whether the fixture's queries run,
-  and breaking the fixture's connections.
+  making metadata requests wait where the source can, observing whether the
+  fixture's queries run, and breaking the fixture's connections.
 
 ### Compatibility table
 

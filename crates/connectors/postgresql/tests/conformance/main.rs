@@ -121,7 +121,7 @@ impl Fixture for PostgresFixture {
 
     /// Holds an exclusive lock on `pg_enum`, which reading the enum column of
     /// `Mixed Case` waits for.
-    fn block_metadata(&self) -> (TableReference, MetadataBlock) {
+    fn block_metadata(&self) -> Option<(TableReference, MetadataBlock)> {
         let session = server().spawn_psql(
             BLOCKER,
             "BEGIN; LOCK TABLE pg_catalog.pg_enum IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120);",
@@ -140,7 +140,7 @@ impl Fixture for PostgresFixture {
             assert!(Instant::now() < deadline, "the metadata block holds");
             thread::sleep(Duration::from_millis(100));
         }
-        (reference(SCHEMA, "Mixed Case"), MetadataBlock(session))
+        Some((reference(SCHEMA, "Mixed Case"), MetadataBlock(session)))
     }
 
     fn source_is_idle(&self) -> bool {
