@@ -17,7 +17,12 @@ mod connector;
 mod error;
 mod query;
 
+/// The SQL type of a result column as the ODBC driver describes it, which
+/// [`OdbcConnector::read_type`] receives.
+pub use arrow_odbc::odbc_api::DataType as OdbcDataType;
 pub use connection::OdbcConnection;
-pub use connector::{ConnectionString, Odbc, OdbcConnector, OdbcDataSource, OdbcLibrary};
+pub use connector::{
+    ConnectionString, Odbc, OdbcConnector, OdbcDataSource, OdbcLibrary, attribute_value,
+};
 pub use error::OdbcDiagnostic;
 pub use query::query;

@@ -4,7 +4,7 @@ use std::fmt;
 
 use arrow_odbc::{
     ColumnFailure,
-    odbc_api::{self, handles::Record},
+    odbc_api::{self, Connection, handles::Record},
 };
 use arrow_schema::ArrowError;
 use connector_sdk::{ConnectorError, DiagnosticEntry, DiagnosticValue, ErrorClass, ErrorKind};
@@ -25,6 +25,10 @@ pub struct OdbcDiagnostic {
     pub native_error: i32,
     /// The message the ODBC driver reported.
     pub message: String,
+    /// Whether the ODBC driver reports the connection dead after the failure
+    /// (`SQL_ATTR_CONNECTION_DEAD`), such as after the server ended the
+    /// session. Drivers report many such failures with a generic SQLSTATE.
+    pub connection_lost: bool,
 }
 
 impl fmt::Debug for OdbcDiagnostic {
@@ -33,23 +37,32 @@ impl fmt::Debug for OdbcDiagnostic {
             .debug_struct("OdbcDiagnostic")
             .field("sqlstate", &self.sqlstate)
             .field("native_error", &self.native_error)
+            .field("connection_lost", &self.connection_lost)
             .finish_non_exhaustive()
     }
 }
 
 impl OdbcDiagnostic {
-    /// The diagnostic of an ODBC call's failure.
-    pub(crate) fn from_odbc(error: &odbc_api::Error) -> Self {
+    /// The diagnostic of an ODBC call's failure on `connection`, or while
+    /// connecting when there is none yet.
+    ///
+    /// A connection whose state the driver cannot report is not taken as
+    /// lost.
+    pub(crate) fn from_odbc(error: &odbc_api::Error, connection: Option<&Connection<'_>>) -> Self {
+        let connection_lost =
+            connection.is_some_and(|connection| connection.is_dead().unwrap_or(false));
         match diagnostic_record(error) {
             Some(record) => Self {
                 sqlstate: Some(String::from_utf8_lossy(&record.state.0).into_owned()),
                 native_error: record.native_error,
                 message: error.to_string(),
+                connection_lost,
             },
             None => Self {
                 sqlstate: None,
                 native_error: 0,
                 message: error.to_string(),
+                connection_lost,
             },
         }
     }
@@ -67,22 +80,29 @@ fn diagnostic_record(error: &odbc_api::Error) -> Option<&Record> {
     }
 }
 
-/// Classifies an ODBC call's failure with Connector `C`'s error handling.
+/// Classifies an ODBC call's failure on `connection`, or while connecting
+/// when there is none, with Connector `C`'s error handling.
 ///
 /// A value that would be truncated is reported by ODBC without a diagnostic
 /// record; it cannot be carried exactly, so it is a `data` error.
-pub(crate) fn odbc_error<C: OdbcConnector>(error: &odbc_api::Error) -> ConnectorError {
+pub(crate) fn odbc_error<C: OdbcConnector>(
+    error: &odbc_api::Error,
+    connection: Option<&Connection<'_>>,
+) -> ConnectorError {
     if matches!(error, odbc_api::Error::TooLargeValueForBuffer { .. }) {
         return value_error();
     }
-    C::classify(OdbcDiagnostic::from_odbc(error))
+    C::classify(OdbcDiagnostic::from_odbc(error, connection))
 }
 
 /// Classifies a failure to set up the Arrow conversion of a result set.
 ///
 /// A failed ODBC call while describing the columns, such as a lost
 /// connection, is classified as the ODBC error it wraps.
-pub(crate) fn reader_error<C: OdbcConnector>(error: arrow_odbc::Error) -> ConnectorError {
+pub(crate) fn reader_error<C: OdbcConnector>(
+    error: arrow_odbc::Error,
+    connection: &Connection<'_>,
+) -> ConnectorError {
     match error {
         arrow_odbc::Error::UnableToRetrieveNumCols(error)
         | arrow_odbc::Error::ColumnFailure {
@@ -90,7 +110,7 @@ pub(crate) fn reader_error<C: OdbcConnector>(error: arrow_odbc::Error) -> Connec
                 ColumnFailure::FailedToDescribeColumn(error)
                 | ColumnFailure::UnknownStringLength { source: error, .. },
             ..
-        } => odbc_error::<C>(&error),
+        } => odbc_error::<C>(&error, Some(connection)),
         // An unsupported column type or a row too large for the transfer
         // buffer: the result cannot be represented.
         _ => ConnectorError::new(
@@ -105,10 +125,13 @@ pub(crate) fn reader_error<C: OdbcConnector>(error: arrow_odbc::Error) -> Connec
 ///
 /// The reader reports a fetch failure as the ODBC error it wraps, and a value
 /// that cannot be converted exactly as a conversion error.
-pub(crate) fn batch_error<C: OdbcConnector>(error: ArrowError) -> ConnectorError {
+pub(crate) fn batch_error<C: OdbcConnector>(
+    error: ArrowError,
+    connection: &Connection<'_>,
+) -> ConnectorError {
     match error {
         ArrowError::ExternalError(source) => match source.downcast::<odbc_api::Error>() {
-            Ok(error) => odbc_error::<C>(&error),
+            Ok(error) => odbc_error::<C>(&error, Some(connection)),
             Err(_) => value_error(),
         },
         _ => value_error(),
@@ -134,13 +157,23 @@ pub(crate) fn cancelled_error() -> ConnectorError {
 
 /// Builds the connector error for one diagnostic.
 ///
-/// `class` is the Connector's classification, when its error table matched;
-/// otherwise the diagnostic is classified by its SQLSTATE class.
+/// A lost connection is a `connection` error, whatever the driver reported,
+/// so that its session becomes unusable. Otherwise `class` is the
+/// Connector's classification, when its error table matched, or else the
+/// diagnostic is classified by its SQLSTATE class.
 pub(crate) fn to_connector_error(
     diagnostic: OdbcDiagnostic,
     class: Option<ErrorClass>,
 ) -> ConnectorError {
-    let class = class.unwrap_or_else(|| classify_sqlstate(diagnostic.sqlstate.as_deref()));
+    let class = if diagnostic.connection_lost {
+        ErrorClass::new(
+            ErrorKind::Connection,
+            true,
+            "the data source connection was lost",
+        )
+    } else {
+        class.unwrap_or_else(|| classify_sqlstate(diagnostic.sqlstate.as_deref()))
+    };
     let mut entries = vec![DiagnosticEntry::new(
         "odbc.native_error",
         DiagnosticValue::I32(diagnostic.native_error),

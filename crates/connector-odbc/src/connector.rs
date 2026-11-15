@@ -3,7 +3,10 @@
 
 use std::{marker::PhantomData, sync::OnceLock, time::Duration};
 
-use arrow_odbc::odbc_api::{ConnectionOptions as OdbcConnectionOptions, Environment, Shared};
+use arrow_odbc::odbc_api::{
+    ConnectionOptions as OdbcConnectionOptions, DataType as OdbcDataType, Environment, Shared,
+};
+use arrow_schema::DataType;
 use connector_sdk::{
     Access, Component, ConnectionOptions, Connector, ConnectorError, DataSourceAccess, ErrorClass,
     ErrorKind, LibrarySettings, SecretString,
@@ -24,6 +27,20 @@ pub trait OdbcConnector: Connector<Access = Odbc<Self>> {
     /// the credentials added to it, including the Connector's fixed
     /// attributes.
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError>;
+
+    /// The Arrow type a result column of `data_type`, as the ODBC driver
+    /// describes it, is read as, or `None` to read it as `arrow-odbc` derives
+    /// from the description.
+    ///
+    /// A Connector reads a column differently where the derived type cannot
+    /// carry every value of its type mapping, such as timestamps whose
+    /// fraction `arrow-odbc` would read in nanoseconds, which fail outside
+    /// 1677 to 2262. Its value conversion then turns the column into the
+    /// Analytics type.
+    fn read_type(data_type: &OdbcDataType) -> Option<DataType> {
+        let _ = data_type;
+        None
+    }
 }
 
 /// What an ODBC connection opens with.
@@ -54,13 +71,14 @@ impl ConnectionString {
     }
 }
 
-/// Writes an attribute value so that it is taken literally.
+/// Writes a connection string attribute value so that it is taken literally.
 ///
 /// A value with a character that the connection string grammar gives meaning
 /// is enclosed in braces, with closing braces doubled. Other values are
 /// written as they are, because some ODBC drivers, such as the PostgreSQL ODBC
-/// driver for `UID`, keep the braces as part of the value.
-fn attribute_value(value: &str) -> String {
+/// driver for `UID`, keep the braces as part of the value. A Connector writes
+/// the option values it puts in [`ConnectionString::attributes`] with it.
+pub fn attribute_value(value: &str) -> String {
     let needs_braces = value.contains([';', '{', '}', '='])
         || value.starts_with(char::is_whitespace)
         || value.ends_with(char::is_whitespace);
@@ -114,7 +132,7 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
         };
         let connection = environment()?
             .connect_with_connection_string(data_source.connection_string.expose(), options)
-            .map_err(|error| odbc_error::<C>(&error))?;
+            .map_err(|error| odbc_error::<C>(&error, None))?;
         Ok(OdbcConnection::new(Shared::new(connection)))
     }
 

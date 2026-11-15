@@ -23,7 +23,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_odbc::{
-    OdbcReader, OdbcReaderBuilder, arrow_schema_from,
+    OdbcReader, OdbcReaderBuilder, TextEncoding, arrow_schema_from,
     odbc_api::{
         Connection, ConnectionTransitions, CursorImpl, DataType as OdbcDataType, OwnedCursor,
         Preallocated, ResultSetMetadata, Shared,
@@ -46,9 +46,10 @@ type Cursor = OwnedCursor<Shared<Connection<'static>>>;
 ///
 /// Nothing is sent before the first pull, which executes the statement and
 /// reads its first batch. A statement without a result set returns no
-/// batches. Each column's Arrow type follows the SQL type the ODBC driver
-/// reports, except that `FLOAT` is read as `Float64`
-/// ([`result_schema`]). A value that cannot be carried exactly, including one
+/// batches. Each column's Arrow type is the one Connector `C` chooses for the
+/// SQL type the ODBC driver reports, or otherwise follows that SQL type,
+/// except that `FLOAT` is read as `Float64` ([`result_schema`]). Text is
+/// fetched as UTF-16. A value that cannot be carried exactly, including one
 /// longer than the column size the ODBC driver reports, is a `data` error.
 /// Connector `C` classifies every ODBC error the statement reports.
 pub fn query<C: OdbcConnector>(connection: &OdbcConnection<C>, sql: String) -> ExecutionOutput {
@@ -155,9 +156,12 @@ impl<C: OdbcConnector> OdbcQueryStream<C> {
     /// it produced no result set.
     fn start(&mut self, sql: &str) -> Result<Option<OdbcReader<Cursor>>, ConnectorError> {
         advance(&self.state, State::Preparing)?;
-        let preallocated = (&self.connection.lock())
-            .into_preallocated()
-            .map_err(|error| odbc_error::<C>(&error))?;
+        let preallocated = {
+            let guard = self.connection.lock();
+            (&guard)
+                .into_preallocated()
+                .map_err(|error| odbc_error::<C>(&error, Some(guard.connection())))?
+        };
         let mut statement: StatementConnection<Shared<Connection<'static>>> =
             preallocated.into_handle();
         let handle = StatementHandle(statement.as_stmt_ref().as_sys());
@@ -174,7 +178,12 @@ impl<C: OdbcConnector> OdbcQueryStream<C> {
         let cancelled = advance(&self.state, State::Preparing);
         let has_result = match (executed, cancelled) {
             (_, Err(cancelled)) => return Err(cancelled),
-            (Err(error), Ok(())) => return Err(odbc_error::<C>(&error)),
+            (Err(error), Ok(())) => {
+                return Err(odbc_error::<C>(
+                    &error,
+                    Some(self.connection.lock().connection()),
+                ));
+            }
             (Ok(has_result), Ok(())) => has_result,
         };
         if !has_result {
@@ -182,13 +191,16 @@ impl<C: OdbcConnector> OdbcQueryStream<C> {
         }
         // SAFETY: executing the statement put it in cursor state.
         let mut cursor = unsafe { CursorImpl::new(preallocated.into_handle()) };
-        let schema = result_schema::<C>(&mut cursor)?;
+        let schema = result_schema::<C>(&mut cursor, &self.connection)?;
         // Building the reader frees the handle if it fails, so the state stays
-        // preparing until the reader holds the cursor.
+        // preparing until the reader holds the cursor. Text is fetched as
+        // UTF-16, so that it does not depend on the client's locale, which
+        // decides the narrow encoding outside Windows.
         let reader = OdbcReaderBuilder::new()
             .with_schema(schema)
+            .with_payload_text_encoding(TextEncoding::Utf16)
             .build(cursor)
-            .map_err(reader_error::<C>)?;
+            .map_err(|error| reader_error::<C>(error, self.connection.lock().connection()))?;
         advance(&self.state, State::Running(handle))?;
         Ok(Some(reader))
     }
@@ -235,7 +247,10 @@ impl<C: OdbcConnector> Stream for OdbcQueryStream<C> {
         };
         match reader.next() {
             Some(Ok(batch)) => Poll::Ready(Some(Ok(batch))),
-            Some(Err(error)) => this.fail(batch_error::<C>(error)),
+            Some(Err(error)) => {
+                let error = batch_error::<C>(error, this.connection.lock().connection());
+                this.fail(error)
+            }
             None => {
                 this.finish();
                 Poll::Ready(None)
@@ -253,24 +268,31 @@ impl<C> Drop for OdbcQueryStream<C> {
 
 /// The Arrow schema a result set is read as.
 ///
-/// It is the schema `arrow-odbc` derives from the column descriptions, except
-/// that a `FLOAT` column is read as `Float64`. ODBC defines `FLOAT(p)` with a
-/// binary precision `p` and reads it as a C `double` by default, while some
-/// ODBC drivers, such as the PostgreSQL ODBC driver for `double precision`,
-/// report a decimal precision that `arrow-odbc` would map to `Float32`,
-/// losing digits.
+/// Each column is read as the type Connector `C` chooses for its
+/// description ([`OdbcConnector::read_type`]). Otherwise it is read as
+/// `arrow-odbc` derives from the description, except that a `FLOAT` column
+/// is read as `Float64`. ODBC defines `FLOAT(p)` with a binary precision `p`
+/// and reads it as a C `double` by default, while some ODBC drivers, such as
+/// the PostgreSQL ODBC driver for `double precision`, report a decimal
+/// precision that `arrow-odbc` would map to `Float32`, losing digits.
 fn result_schema<C: OdbcConnector>(
     cursor: &mut impl ResultSetMetadata,
+    connection: &Shared<Connection<'static>>,
 ) -> Result<SchemaRef, ConnectorError> {
-    let schema = arrow_schema_from(cursor, None, false).map_err(reader_error::<C>)?;
+    let schema = arrow_schema_from(cursor, None, false)
+        .map_err(|error| reader_error::<C>(error, connection.lock().connection()))?;
     let mut fields = Vec::with_capacity(schema.fields().len());
     for (index, field) in (1..).zip(schema.fields().iter()) {
-        let field = match cursor
+        let data_type = cursor
             .col_data_type(index)
-            .map_err(|error| odbc_error::<C>(&error))?
-        {
-            OdbcDataType::Float { .. } => field.as_ref().clone().with_data_type(DataType::Float64),
-            _ => field.as_ref().clone(),
+            .map_err(|error| odbc_error::<C>(&error, Some(connection.lock().connection())))?;
+        let read_type = C::read_type(&data_type).or(match data_type {
+            OdbcDataType::Float { .. } => Some(DataType::Float64),
+            _ => None,
+        });
+        let field = match read_type {
+            Some(read_type) => field.as_ref().clone().with_data_type(read_type),
+            None => field.as_ref().clone(),
         };
         fields.push(field);
     }
