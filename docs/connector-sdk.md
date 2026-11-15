@@ -348,10 +348,12 @@ ErrorHandler:
 ~~~
 
 The SDK owns the units that hold component state. `DataSource<C>` holds the
-access's Data Source state. `Session<C>` holds the access's session state
-(`Session::access`), the catalog's context (`Session::context`), and the
-planner's rewrite rules; `Session::open` builds it from a newly opened access
-session, reading the context on it. Components receive the `Session<C>`, so no
+access's Data Source state and the Connector's `Settings`, read from the
+connection options when it opens. `Session<C>` holds the access's session
+state (`Session::access`), the catalog's context (`Session::context`), the
+Data Source's `Settings`, and the planner's rewrite rules; `Session::open`
+builds it from a newly opened access session and the Data Source's settings,
+reading the context on the session. Components receive the `Session<C>`, so no
 connection or catalog handle is passed separately. The library's per-Connector
 state, which holds the access's library state, is private to the SDK.
 

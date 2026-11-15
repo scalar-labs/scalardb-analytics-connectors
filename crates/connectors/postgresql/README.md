@@ -65,9 +65,9 @@ Expressions, view definitions, and display names are as PostgreSQL prints
 them, which qualifies names off the `search_path`. Statistics, owners,
 privileges, and row security policies are not read.
 
-Table metadata derives from the document. A column is not nullable when its
-own `NOT NULL` is validated or a domain its type resolves through is
-`NOT NULL`; CHECK constraints are not interpreted.
+Table metadata derives from the document; no connection option changes it. A
+column is not nullable when its own `NOT NULL` is validated or a domain its
+type resolves through is `NOT NULL`; CHECK constraints are not interpreted.
 
 For example, this table in schema `metadata_test`:
 

@@ -82,7 +82,8 @@ fields mean:
 Fields are in describe order, which is the column order. Picklist values,
 child relationships, record types, and URLs are not read.
 
-Table metadata derives from the document:
+Table metadata derives from the document, and no connection option changes
+it:
 
 - Every object is in the one namespace `sobjects`, because Salesforce objects
   have no hierarchy, and table references are `sobjects` and the object's API

@@ -56,7 +56,7 @@ each dependency the user installs, its requirements and installation.>
 <What the source metadata document holds and the type whose rustdoc defines
 its fields. A table of each item and the catalog, metadata, or reader output
 it comes from. What is not read. How table metadata derives from the document,
-such as nullability, and which connection options change that derivation, or
+such as nullability, and which mapping options change that derivation, or
 "None". One example table and its document, with the source
 version it was read from. That the document's shape can change between
 connector versions, and what that means for comparing stored source

@@ -330,7 +330,8 @@ will be decided then and rules added for it.
 The library has a version. It names the release and is returned in the
 [static information](#static-information). Type mappings have no version of
 their own; a change in how a source is mapped appears as a change in the
-connector's version ([Type mappings and coverage](#type-mappings-and-coverage)).
+connector's version, apart from the choices a data source's mapping options
+make ([Type mappings and coverage](#type-mappings-and-coverage)).
 
 Exchanging Analytics types between distributions, such as between nodes of a
 data mesh, is outside this contract.
@@ -427,9 +428,10 @@ Each table read is returned in two layers:
   and an LLM interprets it, so it has no fixed schema across Connectors.
 - **Table metadata** is the source-independent subset that this section
   defines. The connector derives it from the source metadata and the data
-  source's connection options that choose how it reads, such as how a Data
-  Source type maps, so it states nothing that the source metadata does not.
-  Source metadata holds only what was read; those options are not part of it.
+  source's mapping options, which choose how a Data Source type maps
+  ([Type mappings and coverage](#type-mappings-and-coverage)), so it states
+  nothing that the source metadata does not. Source metadata holds only what
+  was read; mapping options are not part of it.
   The Physical Catalog registers it
   to plan and run queries. It also includes items the Physical Catalog itself
   does not use, such as unique indexes and CHECK constraints, because the
@@ -509,8 +511,8 @@ Catalog's contracts.
 
 Table metadata and source metadata are deterministic: when the source's state
 and the data source's connection options are the same, a connector of the
-same version returns the same content, in the same order. Columns are ordered by ordinal, and constraints by kind, name, and
-columns. Values that change without a change at the source, such as the
+same version returns the same content, in the same order. Columns are ordered
+by ordinal, and constraints by kind, name, and columns. Values that change without a change at the source, such as the
 retrieval time, are not part of the content and are carried separately as
 retrieval info.
 
@@ -519,14 +521,17 @@ with newly retrieved metadata. The library performs that comparison
 ([Comparing table metadata](#comparing-table-metadata)).
 
 The same table can receive different Analytics types from a different
-connector, connector version, or ADBC driver or driver version. A different
-type mapping or a different fixed setting appears as a different connector
+connector, connector version, or ADBC driver or driver version, or from a
+different value of a mapping option of its data source. A different type
+mapping or a different fixed setting appears as a different connector
 version ([Type mappings and coverage](#type-mappings-and-coverage),
 [Data Source types](#data-source-types)). With direct access, the code that
 reads the source is built into the connector and its versions are part of the
 connector's version ([Data Source access rules](#data-source-access-rules)), so the
-connector's name and version identify them. To trace the cause of a
-difference, table metadata carries retrieval info:
+connector's name and version identify them. A mapping option is part of the
+data source's connection options, which the receiver registered, not of the
+retrieval info. To trace the cause of a difference, table metadata carries
+retrieval info:
 
 | Item | Content |
 | --- | --- |
@@ -657,10 +662,10 @@ differences of the documents. Each document difference names its location as
 a JSON Pointer and carries the older value, the newer value, or both. Object
 members are compared by name. Array elements are matched by equality along
 their longest common subsequence, so an inserted or removed element does not
-make the elements after it differ. Between two matched elements, unmatched elements are paired in order
-as changed elements located in the older document, and the remaining ones are
-removed elements located in the older document or added elements located in
-the newer one.
+make the elements after it differ. Between two matched elements, unmatched
+elements are paired in order as changed elements located in the older
+document, and the remaining ones are removed elements located in the older
+document or added elements located in the newer one.
 
 Comparison accepts only table metadata that is valid in this library's
 structures, and only source metadata documents the producing connector can
@@ -681,13 +686,16 @@ caller must keep comparing across such an update.
 - Settings of JDBC drivers, the ADBC driver the connector uses, and client
   libraries do not change the retrieved schema. The connector fixes the
   settings that change how types and values are produced, and raises its
-  version when it changes them.
+  version when it changes them. Only a mapping option, which the connector
+  interprets itself, chooses between mapping rules
+  ([Type mappings and coverage](#type-mappings-and-coverage)).
 - Where the source spells a type name relative to a session setting, such as
   PostgreSQL `format_type`, which omits the schema of a type on the
   `search_path`, the connector may accept that setting as a connection option.
-  The option changes only how Data Source types are spelled, never Analytics
-  types or values. When the option is omitted, the source's own setting
-  applies, so changing that setting at the source changes the spelling.
+  Such an option changes only how Data Source types are spelled, never
+  Analytics types or values. When the option is omitted, the source's own
+  setting applies, so changing that setting at the source changes the
+  spelling.
 - Excluded namespaces, such as PostgreSQL `pg_toast` and `pg_temp_*`, are
   listed by the connector as its own rule.
 
@@ -719,10 +727,22 @@ values naturally have, such as an unsigned integer to the unsigned integer of
 the same width, rather than to a wider type that also holds them.
 
 Type mappings have no version. The mapping is built into the connector, so the
-connector's name and version determine which mapping produced given table
-metadata or values. Conformance tests
+connector's name and version, together with the data source's mapping
+options, determine which mapping produced given table metadata or values.
+Conformance tests
 ([Metadata conformance tests](#metadata-conformance-tests)) check that a
 connector maps as its type mapping says.
+
+A mapping option is a connection option the connector interprets itself to
+choose between mapping rules, such as MySQL `tinyint1_as_boolean`, which maps
+`tinyint(1)` to `Boolean` instead of `Byte`. It is a setting of the data
+source, not of a session or a table: every table of the data source is mapped
+with it, and source metadata does not hold it. The connector's type mapping
+lists each mapping option, the rules it selects, and its default. Changing a
+mapping option changes the table metadata of the tables it affects, not their
+source metadata, and a receiver that registered a table with one value finds
+the other as a difference of Analytics types
+([Comparing table metadata](#comparing-table-metadata)).
 
 A connector's coverage is the set of mapping rules it can satisfy, and it is
 part of the connector's version. A rule

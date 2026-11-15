@@ -146,9 +146,9 @@ own pair, and matches what callers hold: records stored per table.
 
 ## Consequences
 
-- `SourceTableMetadata` requires serialization and deserialization, so every
-  connector's source metadata type can be restored from its document and
-  compared as a document.
+- `Catalog::Table` is `Serialize + DeserializeOwned`, so every connector's
+  source metadata type can be restored from its document and compared as a
+  document.
 - The connector API has two comparison functions: table metadata differences
   item by item, and source metadata document differences.
 - A receiver that needs Analytics type differences compares table metadata,
