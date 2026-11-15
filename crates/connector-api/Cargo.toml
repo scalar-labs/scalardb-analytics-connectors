@@ -11,6 +11,7 @@ description = "C API implementation and connector assembly"
 default = []
 mysql = ["dep:connector-mysql"]
 postgresql = ["dep:connector-postgresql"]
+salesforce = ["dep:connector-salesforce"]
 # Registers the SDK's in-memory Connector for this crate's ABI tests.
 test-connector = ["connector-sdk/test-connector"]
 
@@ -23,6 +24,7 @@ arrow-schema.workspace = true
 connector-sdk.workspace = true
 connector-mysql = { workspace = true, optional = true }
 connector-postgresql = { workspace = true, optional = true }
+connector-salesforce = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [dev-dependencies]

@@ -8,6 +8,7 @@ writes, and how it is tested are in
 | --- | --- |
 | [postgresql](postgresql/README.md) | ADBC, through the Apache Arrow ADBC PostgreSQL driver |
 | mysql | Not implemented; the crate is a placeholder |
+| [salesforce](salesforce/README.md) | Direct access, through the Salesforce REST API client in [salesforce/client](salesforce/client) |
 
 ## README template
 

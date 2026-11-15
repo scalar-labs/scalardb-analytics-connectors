@@ -14,9 +14,10 @@ use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use arrow_array::{
     ArrayRef, RecordBatch,
     builder::{
-        BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int32Builder,
-        Int64Builder, StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+        BooleanBuilder, Date32Builder, Float64Builder, Int32Builder, Int64Builder,
+        PrimitiveBuilder, StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
     },
+    types::{Decimal32Type, Decimal64Type, Decimal128Type, DecimalType},
 };
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use serde_json::value::RawValue;
@@ -38,6 +39,8 @@ pub(crate) fn check_schema(schema: &SchemaRef) -> Result<()> {
             | DataType::Int32
             | DataType::Int64
             | DataType::Float64
+            | DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
             | DataType::Decimal128(_, _)
             | DataType::Date32
             | DataType::Time64(TimeUnit::Microsecond) => true,
@@ -157,25 +160,14 @@ fn decode_column(field: &Field, records: &[Record<'_>]) -> Result<ArrayRef> {
             }
             Arc::new(builder.finish())
         }
+        DataType::Decimal32(precision, scale) => {
+            decimal_column::<Decimal32Type>(&values, *precision, *scale, error)?
+        }
+        DataType::Decimal64(precision, scale) => {
+            decimal_column::<Decimal64Type>(&values, *precision, *scale, error)?
+        }
         DataType::Decimal128(precision, scale) => {
-            let mut builder = Decimal128Builder::new();
-            for value in values {
-                builder.append_option(
-                    value
-                        .map(|text| {
-                            decimal(text, *precision, *scale).ok_or_else(|| {
-                                error("expected a number that fits the precision and scale")
-                            })
-                        })
-                        .transpose()?,
-                );
-            }
-            Arc::new(
-                builder
-                    .finish()
-                    .with_precision_and_scale(*precision, *scale)
-                    .map_err(|_| error("the precision and scale are not valid"))?,
-            )
+            decimal_column::<Decimal128Type>(&values, *precision, *scale, error)?
         }
         DataType::Date32 => {
             let mut builder = Date32Builder::new();
@@ -235,6 +227,41 @@ fn decode_column(field: &Field, records: &[Record<'_>]) -> Result<ArrayRef> {
     })
 }
 
+/// Decodes JSON numbers into a decimal column of `precision` and `scale`,
+/// stored in the Arrow decimal type `T`.
+///
+/// A number that does not fit the precision and scale is an error; one that
+/// fits the precision fits `T`'s storage, which holds that many digits.
+fn decimal_column<T>(
+    values: &[Option<&str>],
+    precision: u8,
+    scale: i8,
+    error: impl Fn(&'static str) -> Error,
+) -> Result<ArrayRef>
+where
+    T: DecimalType,
+    T::Native: TryFrom<i128>,
+{
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(values.len());
+    for value in values {
+        builder.append_option(
+            value
+                .map(|text| {
+                    decimal(text, precision, scale)
+                        .and_then(|unscaled| T::Native::try_from(unscaled).ok())
+                        .ok_or_else(|| error("expected a number that fits the precision and scale"))
+                })
+                .transpose()?,
+        );
+    }
+    Ok(Arc::new(
+        builder
+            .finish()
+            .with_precision_and_scale(precision, scale)
+            .map_err(|_| error("the precision and scale are not valid"))?,
+    ))
+}
+
 fn value_error(field: &Field, reason: &'static str) -> Error {
     Error::Value {
         field: field.name().clone(),
@@ -274,7 +301,8 @@ fn float(text: &str) -> Option<f64> {
     text.parse().ok().filter(|value: &f64| value.is_finite())
 }
 
-/// Reads a JSON number as an unscaled `Decimal128(precision, scale)` value.
+/// Reads a JSON number as the unscaled value of a decimal of `precision` and
+/// `scale`.
 ///
 /// Fails when the number has non-zero digits beyond `scale` or more
 /// significant digits than `precision`.

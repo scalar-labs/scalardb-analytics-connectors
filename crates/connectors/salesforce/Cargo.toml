@@ -1,0 +1,31 @@
+[package]
+name = "connector-salesforce"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Salesforce connector for ScalarDB Analytics"
+
+[dependencies]
+analytics-types.workspace = true
+arrow-array.workspace = true
+# Planned queries carry the Arrow schema the client decodes into as JSON.
+arrow-schema = { workspace = true, features = ["serde"] }
+connector-sdk.workspace = true
+connector-salesforce-client.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+# The client's futures run on a runtime the connector holds; its I/O and
+# timers need the runtime's drivers.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+connector-sdk = { workspace = true, features = ["conformance"] }
+substrait.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[lib]
+path = "src/lib.rs"

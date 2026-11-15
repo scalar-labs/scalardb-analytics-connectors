@@ -4,8 +4,11 @@ This repository contains the language-neutral connector contract, the Rust
 connector SDK, Connectors, the C API library that assembles
 them, and the Query Engine adapters that call it. The shared Analytics type model and its Arrow schema conversion are
 implemented. The shared connector planning and execution boundaries are also
-implemented, and the PostgreSQL connector is implemented on them
-([crates/connectors/postgresql](crates/connectors/postgresql/README.md)).
+implemented, and the PostgreSQL connector
+([crates/connectors/postgresql](crates/connectors/postgresql/README.md)) and the
+Salesforce connector
+([crates/connectors/salesforce](crates/connectors/salesforce/README.md)) are
+implemented on them.
 The C API library includes a Connector when it is built with that Connector's
 feature, such as `cargo build -p connector-api --features postgresql`. The
 DuckDB adapter attaches Data Sources to DuckDB through that library
@@ -31,6 +34,8 @@ Dependencies point inward in this order:
 connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> analytics-types
              |                       +-> connector-adbc -> connector-sdk
              +-> connector-mysql ------> connector-sql
+             +-> connector-salesforce -> connector-salesforce-client
+             |                        +------------------> connector-sdk
              +-> connector-sdk -----------------------------------> analytics-types
 connector-odbc -> connector-sdk
 ```

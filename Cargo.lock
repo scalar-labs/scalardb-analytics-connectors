@@ -521,6 +521,7 @@ dependencies = [
  "connector-api",
  "connector-mysql",
  "connector-postgresql",
+ "connector-salesforce",
  "connector-sdk",
  "prost",
  "serde_json",
@@ -563,6 +564,23 @@ dependencies = [
  "serde",
  "serde_json",
  "substrait",
+]
+
+[[package]]
+name = "connector-salesforce"
+version = "0.1.0"
+dependencies = [
+ "analytics-types",
+ "arrow-array",
+ "arrow-schema",
+ "connector-salesforce-client",
+ "connector-sdk",
+ "futures-core",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "substrait",
+ "tokio",
 ]
 
 [[package]]
