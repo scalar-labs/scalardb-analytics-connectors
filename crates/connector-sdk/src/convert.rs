@@ -13,7 +13,9 @@ use analytics_types::{
 };
 use arrow_array::{
     Array, ArrayRef, Decimal128Array, FixedSizeBinaryArray, ListArray, MapArray, RecordBatch,
-    StringArray, StructArray, Time64MicrosecondArray, builder::StringBuilder,
+    StringArray, StructArray, Time64MicrosecondArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
+    builder::StringBuilder,
 };
 
 use crate::{ConnectorError, ErrorKind};
@@ -253,6 +255,48 @@ fn uuid_text(bytes: &[u8]) -> String {
     text
 }
 
+/// Aligns timestamps of any unit to microseconds, keeping their time zone.
+///
+/// Seconds and milliseconds are multiplied; nanoseconds must be whole
+/// microseconds. A value outside the microsecond range, or with a fraction of
+/// a microsecond, is a `data` error.
+pub fn timestamps_to_micros(
+    values: &ArrayRef,
+) -> Result<TimestampMicrosecondArray, ConnectorError> {
+    let DataType::Timestamp(unit, timezone) = values.data_type() else {
+        return Err(unexpected_output());
+    };
+    let to_micros = |value: i64| -> Option<i64> {
+        match unit {
+            TimeUnit::Second => value.checked_mul(1_000_000),
+            TimeUnit::Millisecond => value.checked_mul(1_000),
+            TimeUnit::Microsecond => Some(value),
+            TimeUnit::Nanosecond => (value % 1_000 == 0).then_some(value / 1_000),
+        }
+    };
+    let raw: Vec<Option<i64>> = match unit {
+        TimeUnit::Second => downcast::<TimestampSecondArray>(values)?.iter().collect(),
+        TimeUnit::Millisecond => downcast::<TimestampMillisecondArray>(values)?
+            .iter()
+            .collect(),
+        TimeUnit::Microsecond => downcast::<TimestampMicrosecondArray>(values)?
+            .iter()
+            .collect(),
+        TimeUnit::Nanosecond => downcast::<TimestampNanosecondArray>(values)?
+            .iter()
+            .collect(),
+    };
+    let micros = raw
+        .into_iter()
+        .map(|value| {
+            value
+                .map(|value| to_micros(value).ok_or_else(|| not_carried("a microsecond timestamp")))
+                .transpose()
+        })
+        .collect::<Result<TimestampMicrosecondArray, _>>()?;
+    Ok(micros.with_timezone_opt(timezone.clone()))
+}
+
 /// The `data` error for a source value that the target type cannot carry exactly.
 pub fn not_carried(target: &str) -> ConnectorError {
     ConnectorError::new(
@@ -318,6 +362,27 @@ mod tests {
                 Err(ErrorKind::Data),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn timestamps_align_to_microseconds_with_their_time_zone() {
+        let seconds: ArrayRef =
+            Arc::new(TimestampSecondArray::from(vec![Some(1), None]).with_timezone("UTC"));
+        let micros = timestamps_to_micros(&seconds).unwrap();
+        assert_eq!(
+            micros.data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        assert_eq!(micros.iter().collect::<Vec<_>>(), [Some(1_000_000), None]);
+        let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![-1]));
+        assert_eq!(timestamps_to_micros(&millis).unwrap().value(0), -1_000);
+        for overflowing in [
+            Arc::new(TimestampSecondArray::from(vec![i64::MAX])) as ArrayRef,
+            Arc::new(TimestampNanosecondArray::from(vec![1_001])),
+        ] {
+            let error = timestamps_to_micros(&overflowing).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Data);
         }
     }
 
