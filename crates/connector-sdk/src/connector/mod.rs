@@ -36,8 +36,9 @@ use crate::{
     Component, ConnectionOptions, ConnectorDescriptor, ConnectorError, DataSourceAccess,
     ExecutableQueryResult, ExecutionOutput, LibrarySettings, Listed, LogicalPlan, NameFilter,
     NamespacePath, PlanningError, PortableQuery, PushdownRequest, PushdownResult, RemoteExecution,
-    RewriteRuleSet, SourceTableMetadata, TableEntry, TableRecord, TableReference,
+    RewriteRuleSet, TableEntry, TableMetadata, TableRecord, TableReference,
 };
+use serde::{Serialize, de::DeserializeOwned};
 
 /// The diagnostic a Connector's access reports for a Data Source error.
 pub type Diagnostic<C> = <<C as Connector>::Access as Access<C>>::Diagnostic;
@@ -66,11 +67,20 @@ pub trait Connector: Sized + Send + Sync + 'static {
     ///
     /// It may be planned in one process and run in another.
     type Query: PortableQuery + Send + Sync + 'static;
+    /// The Connector's own settings of one Data Source, which it takes from
+    /// the connection options rather than passing them to its access, such as
+    /// a choice of how a Data Source type maps.
+    type Settings: Clone + Send + Sync + 'static;
 
     /// Describes this Connector for static information and option validation.
     ///
     /// It is available before the library is initialized.
     fn descriptor() -> ConnectorDescriptor;
+
+    /// Reads the Connector's settings from validated connection options when a
+    /// Data Source opens; its sessions derive table metadata with them
+    /// ([`Catalog::derive_table_metadata`]).
+    fn settings(options: &ConnectionOptions) -> Result<Self::Settings, ConnectorError>;
 
     /// Converts one column of source output to `target`'s Analytics storage,
     /// or returns it unchanged when the source already produced that storage.
@@ -173,8 +183,17 @@ pub trait Access<C: Connector>: 'static {
 /// means of stopping it. Nothing may be sent to the Data Source before the
 /// first pull.
 pub trait Catalog<C: Connector>: 'static {
-    /// The Connector's source metadata for one table.
-    type Table: SourceTableMetadata;
+    /// The Connector's source metadata for one table: what the catalog
+    /// observed of it.
+    ///
+    /// The Semantic Catalog receives it serialized as JSON, whose shape the
+    /// connector decides. Like table metadata, it is deterministic: the same
+    /// source state produces the same value and document. It holds only what
+    /// the source states, not the Data Source's settings; the retrieval time
+    /// travels beside it in [`TableRecord::Read`]. Only the connector knows
+    /// this shape, so a stored document is restored to this type to compare
+    /// it.
+    type Table: Serialize + DeserializeOwned + Send + 'static;
     /// Session-level facts the catalog reads once when a session opens, such
     /// as the server version that decides which catalog columns exist.
     type Context: Send + Sync + 'static;
@@ -201,6 +220,15 @@ pub trait Catalog<C: Connector>: 'static {
         session: &Session<C>,
         tables: &[TableReference],
     ) -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
+
+    /// Derives the source-independent table metadata of one table from its
+    /// source metadata and the settings of the Data Source it was read from.
+    ///
+    /// The connector applies its type mapping here, so the result states
+    /// nothing that the source metadata does not; the settings decide only
+    /// how it is stated, such as which Analytics type a Data Source type maps
+    /// to.
+    fn derive_table_metadata(table: &Self::Table, settings: &C::Settings) -> TableMetadata;
 }
 
 /// How a Connector decomposes an offered plan and generates its query.

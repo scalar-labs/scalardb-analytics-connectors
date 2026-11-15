@@ -6,28 +6,6 @@ use analytics_types::AnalyticsType;
 
 use crate::RequestError;
 
-/// Connector-specific metadata for one table.
-///
-/// The Semantic Catalog receives it serialized as JSON (source metadata), whose
-/// shape the connector decides. Like table metadata, it is deterministic: the
-/// same source state produces the same value and document. It holds only what
-/// the source states; the retrieval time travels beside it in
-/// [`TableRecord::Read`].
-///
-/// Only the connector knows this shape, so comparing source metadata depends on
-/// the connector: a stored document is restored to this type, and two values
-/// are compared as their documents and through the table metadata derived
-/// from both ([`crate::Catalog::compare_source_metadata`]).
-pub trait SourceTableMetadata:
-    serde::Serialize + serde::de::DeserializeOwned + Send + 'static
-{
-    /// Derives the source-independent table metadata from this source metadata.
-    ///
-    /// The connector applies its type mapping here, so the result is a subset
-    /// of what the source metadata states.
-    fn to_table_metadata(&self) -> TableMetadata;
-}
-
 /// The result for one table named in a table metadata request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableRecord<T> {

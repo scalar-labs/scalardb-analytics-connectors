@@ -24,6 +24,7 @@ impl<C: Connector> ConnectorState<C> {
         options: ConnectionOptions,
         connection_timeout: Option<Duration>,
     ) -> Result<DataSource<C>, ConnectorError> {
+        let settings = C::settings(&options)?;
         Ok(DataSource {
             access: C::Access::open_data_source(
                 &self.access,
@@ -31,6 +32,7 @@ impl<C: Connector> ConnectorState<C> {
                 options,
                 connection_timeout,
             )?,
+            settings,
         })
     }
 }
@@ -38,6 +40,7 @@ impl<C: Connector> ConnectorState<C> {
 /// One opened Data Source of Connector `C`.
 pub struct DataSource<C: Connector> {
     access: <C::Access as Access<C>>::DataSource,
+    settings: C::Settings,
 }
 
 impl<C: Connector> DataSource<C> {
@@ -47,9 +50,12 @@ impl<C: Connector> DataSource<C> {
     }
 
     /// Opens one session: the access's session, the catalog's context read
-    /// on it, and the planner's rules.
+    /// on it, the Data Source's settings, and the planner's rules.
     pub(crate) fn open_session(&self) -> Result<Session<C>, ConnectorError> {
-        Session::open(C::Access::open_session(&self.access)?)
+        Session::open(
+            C::Access::open_session(&self.access)?,
+            self.settings.clone(),
+        )
     }
 }
 
@@ -57,17 +63,22 @@ impl<C: Connector> DataSource<C> {
 pub struct Session<C: Connector> {
     access: AccessSession<C>,
     context: <C::Catalog as Catalog<C>>::Context,
+    /// The settings of the Data Source this session belongs to, with which
+    /// its table metadata is derived.
+    pub(crate) settings: C::Settings,
     rules: RewriteRuleSet<<C::Planner as Planner<C>>::Facts>,
 }
 
 impl<C: Connector> Session<C> {
-    /// Opens a session on the access's newly opened session state: the
-    /// catalog reads its context on it, and the planner's rules are built.
-    pub fn open(access: AccessSession<C>) -> Result<Self, ConnectorError> {
+    /// Opens a session on the access's newly opened session state of a Data
+    /// Source with `settings`: the catalog reads its context on it, and the
+    /// planner's rules are built.
+    pub fn open(access: AccessSession<C>, settings: C::Settings) -> Result<Self, ConnectorError> {
         let context = C::Catalog::open_context(&access)?;
         Ok(Self {
             access,
             context,
+            settings,
             rules: C::Planner::rewrite_rules(),
         })
     }

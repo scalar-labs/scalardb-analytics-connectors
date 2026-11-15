@@ -13,8 +13,8 @@ use analytics_types::AnalyticsType;
 use connector_sdk::{
     Change, Column, ColumnAttribute, ColumnType, ConnectorError, Constraint, ConstraintKind,
     ErrorKind, ExecutionCancel, ExecutionOutput, Listed, NameFilter, NamespacePath, Reported,
-    SourceStream, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
-    TableReference, UniqueKind, UnsupportedReason, start_source_read,
+    SourceStream, TableEntry, TableKind, TableMetadata, TableRecord, TableReference, UniqueKind,
+    UnsupportedReason, start_source_read,
 };
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
@@ -227,7 +227,8 @@ struct FakeConstraint {
     expression: Option<String>,
 }
 
-impl SourceTableMetadata for FakeTable {
+impl FakeTable {
+    /// Derives table metadata as a connector would from this source metadata.
     fn to_table_metadata(&self) -> TableMetadata {
         let source_id = match (self.oid_readable, self.oid) {
             (false, _) => Reported::Missing {

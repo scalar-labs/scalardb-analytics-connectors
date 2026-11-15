@@ -3,7 +3,7 @@
 use connector_sdk::{
     Catalog, Connector, ConnectorError, ExecutableQueryResult, ExecutionOutput, Executor, Listed,
     LogicalPlan, NameFilter, NamespacePath, Planner, PlanningError, PortableQuery, RewriteRuleSet,
-    Session, TableEntry, TableRecord, TableReference, test_connector::TestTable,
+    Session, TableEntry, TableMetadata, TableRecord, TableReference, test_connector::TestTable,
 };
 
 /// The catalog, planner, executor, and query of a test Connector whose tests
@@ -47,6 +47,10 @@ impl<C: Connector> Catalog<C> for Unused {
         _session: &Session<C>,
         _tables: &[TableReference],
     ) -> Result<ExecutionOutput<TableRecord<TestTable>>, ConnectorError> {
+        unreachable!("ADBC access tests request no metadata")
+    }
+
+    fn derive_table_metadata(_table: &TestTable, _settings: &C::Settings) -> TableMetadata {
         unreachable!("ADBC access tests request no metadata")
     }
 }
@@ -93,9 +97,16 @@ macro_rules! adbc_test_connector {
             type Executor = connector::Unused;
             type ErrorHandler = $error_handler;
             type Query = connector::Unused;
+            type Settings = ();
 
             fn descriptor() -> connector_sdk::ConnectorDescriptor {
                 unreachable!("ADBC access tests describe no connector")
+            }
+
+            fn settings(
+                _options: &connector_sdk::ConnectionOptions,
+            ) -> std::result::Result<(), connector_sdk::ConnectorError> {
+                Ok(())
             }
 
             fn convert_column(

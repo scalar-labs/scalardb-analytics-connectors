@@ -15,9 +15,8 @@ use crate::{
     Access, Catalog, Component, ConnectionOptions, Connector, ConnectorError, DataSource,
     ErrorKind, ExecutionOutput, ExecutionStream, JsonDifference, LibrarySettings, Listed,
     NameFilter, NamespacePath, PlannedRead, PlanningError, PortableQuery, PushdownRequest,
-    PushdownResult, RemoteExecution, RequestError, Session, SourceStream, SourceTableMetadata,
-    TableEntry, TableRecord, TableReference, connector::ConnectorState, execute_planned,
-    start_source_read,
+    PushdownResult, RemoteExecution, RequestError, Session, SourceStream, TableEntry, TableRecord,
+    TableReference, connector::ConnectorState, execute_planned, start_source_read,
 };
 use arrow_schema::SchemaRef;
 
@@ -226,9 +225,12 @@ impl<C: Connector> DynSession for Session<C> {
         deadline: Option<Instant>,
     ) -> Result<SourceStream<TableRecord<TableRead>>, ConnectorError> {
         let connector = connector.to_owned();
+        let settings = self.settings.clone();
         start_source_read(deadline, || {
             let (records, cancel) = C::Catalog::table_metadata(self, tables)?.into_parts();
-            let records = MapItems::new(records, move |record| erase(record, &connector));
+            let records = MapItems::new(records, move |record| {
+                erase::<C>(record, &connector, &settings)
+            });
             Ok(ExecutionOutput::new(Box::pin(records), cancel))
         })
     }
@@ -238,11 +240,12 @@ impl<C: Connector> DynSession for Session<C> {
     }
 }
 
-/// Erases a record's source metadata type into its derived table metadata
-/// and its JSON document.
-fn erase<T: SourceTableMetadata>(
-    record: TableRecord<T>,
+/// Erases a record's source metadata type into the table metadata derived
+/// with the Data Source's `settings` and its JSON document.
+fn erase<C: Connector>(
+    record: TableRecord<<C::Catalog as Catalog<C>>::Table>,
     connector: &str,
+    settings: &C::Settings,
 ) -> Result<TableRecord<TableRead>, ConnectorError> {
     Ok(match record {
         TableRecord::Read { metadata, read_at } => {
@@ -255,7 +258,7 @@ fn erase<T: SourceTableMetadata>(
             })?;
             TableRecord::Read {
                 metadata: TableRead {
-                    table_metadata: metadata.to_table_metadata(),
+                    table_metadata: C::Catalog::derive_table_metadata(&metadata, settings),
                     source_metadata: SourceMetadata {
                         connector: connector.to_owned(),
                         document,

@@ -232,7 +232,7 @@ pub fn open(
 
 /// Opens a session on a Data Source.
 pub fn open_session(data_source: &PostgresDataSource) -> Result<PostgresSession, ConnectorError> {
-    Session::open(PostgresAccess::open_session(data_source)?)
+    Session::open(PostgresAccess::open_session(data_source)?, ())
 }
 
 /// Opens a Data Source as the superuser.

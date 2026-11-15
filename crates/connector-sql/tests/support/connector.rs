@@ -21,9 +21,16 @@ macro_rules! sql_test_connector {
             type Executor = connector_sql::SqlExecutor<Self>;
             type ErrorHandler = connector_sdk::GenericErrorHandler<connector_adbc::AdbcDiagnostic>;
             type Query = connector_sql::SqlRead;
+            type Settings = ();
 
             fn descriptor() -> connector_sdk::ConnectorDescriptor {
                 unreachable!("SQL path tests describe no connector")
+            }
+
+            fn settings(
+                _options: &connector_sdk::ConnectionOptions,
+            ) -> std::result::Result<(), connector_sdk::ConnectorError> {
+                Ok(())
             }
 
             fn convert_column(
@@ -132,6 +139,13 @@ macro_rules! sql_test_connector {
                 unreachable!("SQL path tests read no table metadata")
             }
 
+            fn derive_table_metadata(
+                _table: &connector_sdk::test_connector::TestTable,
+                _settings: &(),
+            ) -> connector_sdk::TableMetadata {
+                unreachable!("SQL path tests read no table metadata")
+            }
+
             fn planning_facts(
                 _session: &connector_sdk::Session<Self>,
                 offered_plan: &connector_sdk::LogicalPlan,
@@ -161,11 +175,11 @@ pub(crate) use sql_test_connector;
 #[allow(dead_code)]
 pub(crate) fn session<C>(connection: AdbcConnection<C>) -> Session<C>
 where
-    C: Connector<Access = connector_adbc::Adbc<C>> + connector_adbc::AdbcConnector,
+    C: Connector<Access = connector_adbc::Adbc<C>, Settings = ()> + connector_adbc::AdbcConnector,
 {
     let driver = Component {
         name: "fixture".to_owned(),
         version: "1.0.0".to_owned(),
     };
-    Session::open(AdbcSession::new(connection, driver)).expect("a fixture session opens")
+    Session::open(AdbcSession::new(connection, driver), ()).expect("a fixture session opens")
 }

@@ -107,16 +107,19 @@ fn fixture_turn() -> MutexGuard<'static, ()> {
 
 /// Plans the requested plan on a session of a Connector using the shared SQL
 /// planner.
-fn plan_with<C: connector_sql::SqlConnector + connector_adbc::AdbcConnector>()
--> PlannedPushdown<PlannedRead<SqlRead>> {
+fn plan_with<C>() -> PlannedPushdown<PlannedRead<SqlRead>>
+where
+    C: connector_sql::SqlConnector<Settings = ()> + connector_adbc::AdbcConnector,
+{
     plan_offered::<C>(requested_plan("equal:any1_any1", column(0)))
 }
 
 /// Plans `offered_plan` on a session of a Connector using the shared SQL
 /// planner.
-fn plan_offered<C: connector_sql::SqlConnector + connector_adbc::AdbcConnector>(
-    offered_plan: Plan,
-) -> PlannedPushdown<PlannedRead<SqlRead>> {
+fn plan_offered<C>(offered_plan: Plan) -> PlannedPushdown<PlannedRead<SqlRead>>
+where
+    C: connector_sql::SqlConnector<Settings = ()> + connector_adbc::AdbcConnector,
+{
     let _turn = fixture_turn();
     let (_fixture, connection) = Fixture::install(FixtureExecution::Batches(Vec::new()));
     let session = connector::session::<C>(connection);

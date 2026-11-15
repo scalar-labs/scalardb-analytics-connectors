@@ -9,11 +9,12 @@
 use std::collections::BTreeSet;
 
 use analytics_types::AnalyticsType;
+use serde::Serialize;
 use serde_json::Value;
 
 use super::{
-    Column, ColumnType, Constraint, ConstraintKind, Reported, SourceTableMetadata, TableMetadata,
-    TableReference, UniqueKind, UnsupportedReason,
+    Column, ColumnType, Constraint, ConstraintKind, Reported, TableMetadata, TableReference,
+    UniqueKind, UnsupportedReason,
 };
 use crate::{ConnectorError, ErrorKind};
 
@@ -127,7 +128,7 @@ impl TableMetadata {
 /// No table metadata is derived here: each observation's table metadata is
 /// the one its read returned, compared on its own by
 /// [`TableMetadata::compare`].
-pub(crate) fn compare_source_metadata<T: SourceTableMetadata>(
+pub(crate) fn compare_source_metadata<T: Serialize>(
     before: &T,
     after: &T,
 ) -> Result<Option<Vec<JsonDifference>>, ConnectorError> {
@@ -136,7 +137,7 @@ pub(crate) fn compare_source_metadata<T: SourceTableMetadata>(
 }
 
 /// The source metadata as the JSON document the connector defines.
-fn document<T: SourceTableMetadata>(metadata: &T) -> Result<Value, ConnectorError> {
+fn document<T: Serialize>(metadata: &T) -> Result<Value, ConnectorError> {
     serde_json::to_value(metadata).map_err(|_| {
         ConnectorError::new(
             ErrorKind::Internal,

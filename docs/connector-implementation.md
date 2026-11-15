@@ -118,7 +118,8 @@ written as code. The PostgreSQL connector shows where each part lives:
 | ADBC driver and supported version range | A `DriverRequirement` constant | `lib.rs` |
 | Fixed session settings and driver options | Constants, applied when the connection is opened | `lib.rs`, which passes them through `AdbcConnector::database_options` in the libpq connection string and driver options |
 | Catalog queries and excluded namespaces | SQL constants and functions run through `CatalogReads` | `catalog/listing.rs`, `catalog/table_metadata.rs` |
-| Source metadata | A document type implementing `SourceTableMetadata`, shaped by the concepts its readers use rather than by the catalog's rows, and carrying what states a table's meaning, such as comments and view definitions; code assembles it from the catalog rows and derives table metadata from it, such as resolving domains to their base types | `catalog/table_metadata.rs` assembles it; `catalog/source_metadata.rs` defines it and derives table metadata; the README's "Source metadata" section describes it |
+| Source metadata | A serializable document type, the `Catalog::Table`, shaped by the concepts its readers use rather than by the catalog's rows, and carrying what states a table's meaning, such as comments and view definitions, but not the Data Source's settings; code assembles it from the catalog rows and derives table metadata from it and the settings (`derive_table_metadata`), such as resolving domains to their base types | `catalog/table_metadata.rs` assembles it; `catalog/source_metadata.rs` defines it and derives table metadata; the README's "Source metadata" section describes it |
+| Settings that change how the connector reads | `Connector::Settings`, read from the connection options by `Connector::settings`, for an option the connector interprets itself rather than passing to its access, such as a choice of type mapping | `lib.rs`; PostgreSQL has none |
 | Type mapping | A `match` from the parsed Data Source type to the Analytics type, mirroring the type mapping in the connector's README | `catalog/type_mapping.rs`; the README's "Type mapping" section |
 | Conversion of the driver's output | A table of driver Arrow type and building block per rule, and code for the conversions the SDK does not provide | `driver_output.rs` |
 | SQL spelling of identifiers and literals | `SqlDialect` code | `dialect.rs` |
@@ -147,7 +148,7 @@ Table metadata is produced in these stages:
 | --- | --- | --- | --- |
 | 1. Read the catalog | The connector, running its catalog queries (with `connector-sql` for SQL sources) or its own code | A set of tables | The connector's source metadata: names, ordinals, nullability, Data Source types, constraints, identifiers, and missing items, plus whatever else the connector reads |
 | 2. Parse Data Source types | The connector | Data Source types, and catalog information needed to tell type kinds apart | Keys for looking up the type mapping |
-| 3. Apply the type mapping | The connector, in `to_table_metadata` | Keys and the connector's coverage | Analytics types, or unsupported with a reason |
+| 3. Apply the type mapping | The connector, in `derive_table_metadata` | Keys, the Data Source's settings, and the connector's coverage | Analytics types, or unsupported with a reason |
 | 4. Build table metadata | The connector, through the SDK's `TableMetadata::new` | Results of stages 1 to 3 | Table metadata in deterministic order, with completeness derived from its values |
 | 5. Return the result | The connector SDK runtime, then the connector API | Table metadata, source metadata, and retrieval info | The runtime's `TableMetadataResult`, converted by the connector API to the C structures of the table metadata result |
 

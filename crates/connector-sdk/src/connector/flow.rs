@@ -16,8 +16,8 @@ use crate::{
     ConnectorError, ConnectorStream, ErrorKind, ExecutableQueryResult, ExecutionCancel,
     ExecutionOutput, LogicalExpression, LogicalExpressionKind, LogicalPlan, LogicalRelation,
     PlannedPushdown, PlanningError, PortableQuery, PushdownRequest, PushdownResult, QueryPlan,
-    RemoteExecution, RewriteContext, SourceTableMetadata, TableRecord, TableReference,
-    check_schema, convert::convert_batch,
+    RemoteExecution, RewriteContext, TableRecord, TableReference, check_schema,
+    convert::convert_batch,
 };
 
 use super::{Catalog, Connector, Executor, Planner, Session};
@@ -249,7 +249,11 @@ pub(super) fn read<C: Connector>(
         current: Mutex::new(0),
     });
     let stream = PlannedReadStream::<C> {
-        state: ReadState::Checking { check, data },
+        state: ReadState::Checking {
+            check,
+            settings: session.settings.clone(),
+            data,
+        },
         base_schema: read.base_schema.clone(),
         output_schema: remote.output_schema.clone(),
         steps: Arc::clone(&steps),
@@ -263,6 +267,9 @@ enum ReadState<C: Connector> {
     /// Reading the table's current metadata; the query waits.
     Checking {
         check: ConnectorStream<TableRecord<CatalogTable<C>>>,
+        /// The Data Source's settings, with which the current metadata is
+        /// derived.
+        settings: C::Settings,
         data: ConnectorStream<RecordBatch>,
     },
     /// Reading the query's result.
@@ -286,10 +293,12 @@ impl<C: Connector> Stream for PlannedReadStream<C> {
         let this = self.get_mut();
         loop {
             match &mut this.state {
-                ReadState::Checking { check, .. } => {
+                ReadState::Checking {
+                    check, settings, ..
+                } => {
                     let current = match check.as_mut().poll_next(context) {
                         Poll::Ready(Some(Ok(TableRecord::Read { metadata, .. }))) => {
-                            Some(metadata.to_table_metadata())
+                            Some(C::Catalog::derive_table_metadata(&metadata, settings))
                         }
                         Poll::Ready(Some(Ok(TableRecord::NotFound { .. }))) | Poll::Ready(None) => {
                             None

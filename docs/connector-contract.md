@@ -415,8 +415,11 @@ Each table read is returned in two layers:
   as a JSON document. The Semantic Catalog receives it as material for meaning,
   and an LLM interprets it, so it has no fixed schema across Connectors.
 - **Table metadata** is the source-independent subset that this section
-  defines. The connector derives it from the source metadata, so it states
-  nothing that the source metadata does not. The Physical Catalog registers it
+  defines. The connector derives it from the source metadata and the data
+  source's connection options that choose how it reads, such as how a Data
+  Source type maps, so it states nothing that the source metadata does not.
+  Source metadata holds only what was read; those options are not part of it.
+  The Physical Catalog registers it
   to plan and run queries. It also includes items the Physical Catalog itself
   does not use, such as unique indexes and CHECK constraints, because the
   Semantic Catalog relies on them too.
@@ -494,8 +497,8 @@ Catalog's contracts.
 ### Retrieval info and determinism
 
 Table metadata and source metadata are deterministic: when the source's state
-is the same, a connector of the same version returns the same content, in the
-same order. Columns are ordered by ordinal, and constraints by kind, name, and
+and the data source's connection options are the same, a connector of the
+same version returns the same content, in the same order. Columns are ordered by ordinal, and constraints by kind, name, and
 columns. Values that change without a change at the source, such as the
 retrieval time, are not part of the content and are carried separately as
 retrieval info.

@@ -2,8 +2,9 @@
 //!
 //! Table metadata has two layers. A connector defines its own source-specific
 //! table type, which the Semantic Catalog receives as a JSON document (source
-//! metadata). From it, the connector derives the source-independent
-//! [`TableMetadata`] that the Physical Catalog registers.
+//! metadata). From it and the Data Source's settings, the connector derives
+//! the source-independent [`TableMetadata`] that the Physical Catalog
+//! registers ([`crate::Catalog::derive_table_metadata`]).
 
 mod comparison;
 mod listing;
@@ -18,6 +19,6 @@ pub use comparison::{
 pub use listing::{Listed, NameFilter, NamespacePath, TableEntry};
 pub use schema_check::check_schema;
 pub use table::{
-    Column, ColumnType, Constraint, ConstraintKind, Reported, SourceTableMetadata, TableKind,
-    TableMetadata, TableRecord, TableReference, UniqueKind, UnsupportedReason,
+    Column, ColumnType, Constraint, ConstraintKind, Reported, TableKind, TableMetadata,
+    TableRecord, TableReference, UniqueKind, UnsupportedReason,
 };

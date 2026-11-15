@@ -10,7 +10,7 @@ use std::{
 
 use connector_sdk::{
     Component, ErrorKind, LibrarySettings, Listed, NameFilter, NamespacePath, SecretString,
-    SourceTableMetadata, TableEntry, TableKind, TableRecord, TableReference,
+    TableEntry, TableKind, TableRecord, TableReference,
     runtime::{
         BuiltInConnector, Cancellation, Library, Retrieval, SessionState, SourceMetadata, TableRead,
     },

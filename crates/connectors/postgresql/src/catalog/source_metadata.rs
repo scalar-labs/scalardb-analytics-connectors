@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use connector_sdk::{
-    Column, ColumnType, Constraint, ConstraintKind, Reported, SourceTableMetadata, TableKind,
-    TableMetadata, TableReference, UniqueKind,
+    Column, ColumnType, Constraint, ConstraintKind, Reported, TableKind, TableMetadata,
+    TableReference, UniqueKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -511,8 +511,10 @@ impl PostgresTable {
     }
 }
 
-impl SourceTableMetadata for PostgresTable {
-    fn to_table_metadata(&self) -> TableMetadata {
+impl PostgresTable {
+    /// Derives the table's table metadata. No setting of a PostgreSQL Data
+    /// Source changes it.
+    pub fn to_table_metadata(&self) -> TableMetadata {
         let kind = match self.kind {
             PostgresTableKind::Table | PostgresTableKind::PartitionedTable => TableKind::Table,
             PostgresTableKind::View => TableKind::View,

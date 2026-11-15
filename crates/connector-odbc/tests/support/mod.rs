@@ -25,7 +25,7 @@ use connector_sdk::{
     Access, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, DataSourceAccess,
     ExecutionOutput, GenericErrorHandler, LibrarySettings, Listed, LiteralValue, LogicalExpression,
     LogicalPlan, NameFilter, NamespacePath, OptionDescriptor, OptionValue, OptionValueType,
-    PlanningError, SecretString, Session, TableEntry, TableRecord, TableReference,
+    PlanningError, SecretString, Session, TableEntry, TableMetadata, TableRecord, TableReference,
     test_connector::TestTable,
 };
 use connector_sql::{
@@ -49,6 +49,11 @@ impl Connector for OdbcTestConnector {
     type Executor = SqlExecutor<Self>;
     type ErrorHandler = GenericErrorHandler<OdbcDiagnostic>;
     type Query = SqlRead;
+    type Settings = ();
+
+    fn settings(_options: &ConnectionOptions) -> Result<(), ConnectorError> {
+        Ok(())
+    }
 
     fn descriptor() -> ConnectorDescriptor {
         let option = |key: &str, secret: bool, required: bool| OptionDescriptor {
@@ -145,6 +150,10 @@ impl SqlConnector for OdbcTestConnector {
         _tables: &[TableReference],
         _context: &(),
     ) -> Result<Vec<TableRecord<TestTable>>, ConnectorError> {
+        unreachable!("the tests read no table metadata")
+    }
+
+    fn derive_table_metadata(_table: &TestTable, _settings: &()) -> TableMetadata {
         unreachable!("the tests read no table metadata")
     }
 
@@ -310,7 +319,7 @@ pub fn session_as(
         options,
         Some(Duration::from_secs(10)),
     )?;
-    Session::open(TestAccess::open_session(&data_source)?)
+    Session::open(TestAccess::open_session(&data_source)?, ())
 }
 
 /// Opens a session as the superuser.

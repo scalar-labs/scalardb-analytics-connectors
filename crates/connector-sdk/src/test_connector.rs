@@ -44,8 +44,8 @@ use crate::{
     LiteralValue, LogicalExpression, LogicalExpressionKind, LogicalPlan, LogicalRelation,
     NameFilter, NamespacePath, OptionDescriptor, OptionValue, OptionValueType, Planner,
     PlanningError, PortableQuery, QueryPlan, Reported, RewriteContext, RewriteRule, RewriteRuleSet,
-    Session, SourceTableMetadata, TableEntry, TableKind, TableMetadata, TableRecord,
-    TableReference, UniqueKind, UnsupportedReason,
+    Session, TableEntry, TableKind, TableMetadata, TableRecord, TableReference, UniqueKind,
+    UnsupportedReason,
 };
 use analytics_types::{
     AnalyticsField, AnalyticsType, ArrayType, DecimalType, EnumType, MapType, StructType,
@@ -98,6 +98,11 @@ impl Connector for TestConnector {
     type Executor = TestExecutor;
     type ErrorHandler = GenericErrorHandler<ConnectorError>;
     type Query = TestQuery;
+    type Settings = ();
+
+    fn settings(_options: &ConnectionOptions) -> Result<(), ConnectorError> {
+        Ok(())
+    }
 
     fn descriptor() -> ConnectorDescriptor {
         ConnectorDescriptor {
@@ -771,8 +776,10 @@ pub enum TestFixture {
     Values,
 }
 
-impl SourceTableMetadata for TestTable {
-    fn to_table_metadata(&self) -> TableMetadata {
+impl TestTable {
+    /// The table metadata of this fixture; the test connector has no
+    /// settings that change it.
+    pub fn to_table_metadata(&self) -> TableMetadata {
         let table = TableReference::new(self.table.clone()).expect("fixture names are non-empty");
         match self.fixture {
             TestFixture::Orders
@@ -1096,6 +1103,10 @@ impl Catalog<TestConnector> for TestCatalog {
 
     fn open_context(_session: &Arc<Probe>) -> Result<(), ConnectorError> {
         Ok(())
+    }
+
+    fn derive_table_metadata(table: &TestTable, _settings: &()) -> TableMetadata {
+        table.to_table_metadata()
     }
 
     fn namespace_list(

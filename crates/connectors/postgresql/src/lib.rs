@@ -35,8 +35,8 @@ use connector_adbc::{
 use connector_sdk::{
     Access, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ExecutionOutput,
     Listed, LogicalExpression, LogicalPlan, NameFilter, NamespacePath, OptionDescriptor,
-    OptionValue, OptionValueType, PlanningError, SecretString, Session, TableEntry, TableRecord,
-    TableReference,
+    OptionValue, OptionValueType, PlanningError, SecretString, Session, TableEntry, TableMetadata,
+    TableRecord, TableReference,
 };
 use connector_sql::{
     SqlCatalog, SqlConnector, SqlExecutor, SqlPlanner, SqlRead, catalog::CatalogReads,
@@ -100,6 +100,12 @@ impl Connector for PostgresConnector {
     type Executor = SqlExecutor<Self>;
     type ErrorHandler = PostgresErrorHandler;
     type Query = SqlRead;
+    /// Every option reaches the driver; none changes how the connector reads.
+    type Settings = ();
+
+    fn settings(_options: &ConnectionOptions) -> Result<(), ConnectorError> {
+        Ok(())
+    }
 
     fn descriptor() -> ConnectorDescriptor {
         use OptionValueType::{Integer, String};
@@ -241,6 +247,10 @@ impl SqlConnector for PostgresConnector {
         server_version: &ServerVersion,
     ) -> Result<Vec<TableRecord<PostgresTable>>, ConnectorError> {
         catalog::table_metadata(catalog, tables, server_version)
+    }
+
+    fn derive_table_metadata(table: &PostgresTable, _settings: &()) -> TableMetadata {
+        table.to_table_metadata()
     }
 
     fn planning_facts(

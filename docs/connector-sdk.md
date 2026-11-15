@@ -294,8 +294,11 @@ Connector:
     type ErrorHandler: ErrorHandler     the error table and redaction, over the
                                         access's diagnostic type
     type Query: PortableQuery           the Data Source query planned and run
+    type Settings                       the Connector's own settings of one
+                                        Data Source, such as how a type maps
 
     descriptor() -> ConnectorDescriptor            (available before initialization)
+    settings(connection_options) -> Settings       (when a Data Source opens)
     convert_column(column, target Analytics type) -> column
 
     provided:
@@ -319,13 +322,15 @@ Access<C>:
     error(diagnostic, optional ErrorClass) -> ConnectorError
 
 Catalog<C>:
-    type Table: SourceTableMetadata
+    type Table                            source metadata: what the catalog
+                                          observed of one table, serializable
     type Context                          session-level facts, read once when a
                                           session opens
     open_context(access session) -> Context
     namespace_list(session, filter) -> ExecutionOutput<Listed<NamespacePath>>
     table_list(session, namespaces, tables) -> ExecutionOutput<Listed<TableEntry>>
     table_metadata(session, tables) -> ExecutionOutput<TableRecord<Table>>
+    derive_table_metadata(Table, Settings) -> TableMetadata     (pure)
 
 Planner<C>:
     type Facts                            Connector-private planning metadata
@@ -422,6 +427,7 @@ connector-sql    SqlConnector: SqlDialect
                      session_context, namespace_list, table_list, table_metadata:
                          each a function that runs its statements on
                          CatalogReads and uses each result where it is fetched
+                     derive_table_metadata(table, settings)
                      planning_facts, runs_remotely
                  SqlCatalog<C>, SqlPlanner<C>, and SqlExecutor<C> implement
                  Catalog<C>, Planner<C>, and Executor<C>
@@ -470,7 +476,7 @@ SQL components (from SqlConnector C):
         request runs C's function as one source read on the session's
         connection, at the first pull; CatalogReads::query runs one statement
         to its end, and a cancel stops the running statement and keeps later
-        ones from starting
+        ones from starting; derive_table_metadata is C's
     SqlPlanner<C>:
         planning_facts: C::planning_facts resolves the binding and reads facts
         rewrite rules: the whole filter moves remotely when C::runs_remotely
@@ -580,12 +586,15 @@ A Connector's `Catalog` component has one function per metadata request
 ([Capabilities](connector-contract.md#capabilities)). Table metadata has two
 layers: the connector's own source metadata type, which the Semantic Catalog
 receives as JSON, and the source-independent table metadata derived from it
+and the Data Source's settings
 ([Table metadata](connector-contract.md#table-metadata)).
 
 ~~~rust
 pub trait Catalog<C: Connector>: 'static {
-    /// Connector-specific metadata for one table, such as `pg_catalog` facts.
-    type Table: SourceTableMetadata;
+    /// What the catalog observed of one table, such as `pg_catalog` facts.
+    /// Serialized as the source metadata JSON document; the connector decides
+    /// its shape. A stored document is restored to this type to compare it.
+    type Table: Serialize + DeserializeOwned + Send + 'static;
     /// Session-level facts read once when a session opens.
     type Context: Send + Sync + 'static;
 
@@ -603,15 +612,10 @@ pub trait Catalog<C: Connector>: 'static {
     /// One record per requested table.
     fn table_metadata(session: &Session<C>, tables: &[TableReference])
         -> Result<ExecutionOutput<TableRecord<Self::Table>>, ConnectorError>;
-}
 
-/// Serialized as the source metadata JSON document; the connector decides its
-/// shape. A stored document is restored to this type to compare it.
-pub trait SourceTableMetadata:
-    serde::Serialize + serde::de::DeserializeOwned + Send + 'static
-{
-    /// The connector applies its type mapping here.
-    fn to_table_metadata(&self) -> TableMetadata;
+    /// The connector applies its type mapping here, from what was observed
+    /// and how the Data Source is configured to read it.
+    fn derive_table_metadata(table: &Self::Table, settings: &C::Settings) -> TableMetadata;
 }
 
 pub enum TableRecord<T> {
@@ -649,6 +653,14 @@ per namespace, its `ExecutionCancel` stops the execution in progress. Each
 function receives the SDK's `Session<C>`, which carries the access's session
 state and the context the catalog read when the session opened.
 
+`derive_table_metadata` is the one place a connector maps types. It is a pure
+function of a table's source metadata and the `Connector::Settings` the Data
+Source was opened with, which the session carries, so it can neither read the
+source nor state what the source metadata does not. The SDK calls it when a
+table metadata request returns a read table and when a planned read checks the
+registered schema; nothing derives table metadata again from a stored
+document.
+
 The three `TableRecord` states correspond one to one to the contract's record
 states: `Read` is complete or incomplete, `NotFound` is "does not exist", and
 `Unavailable` is "could not be read"
@@ -659,8 +671,9 @@ read table metadata is complete is derived from its values
 Analytics type cannot be stated without the Data Source type it was mapped
 from.
 
-Source metadata and table metadata hold only what the source states, so equal
-source state gives equal values. The retrieval time is retrieval info, not
+Source metadata holds only what the source states, so equal source state gives
+equal values; table metadata adds only how the Data Source's settings map it,
+so equal source state and settings give equal values. The retrieval time is retrieval info, not
 content, and travels beside them in `TableRecord::Read`.
 
 Comparing two observations of one table follows the same split
@@ -744,7 +757,8 @@ The runtime owns the contract's semantics:
   an error. The timeout counts from the call, and a caller's `Cancellation`
   stops the catalog read from any thread. A connector's source metadata type
   is erased here: the runtime serializes it as the JSON document, derives the
-  table metadata from it, and adds retrieval info from the data source's
+  table metadata from it with the session's settings, and adds retrieval info
+  from the data source's
   connector, the session's ADBC driver, and the library version.
 - **Source metadata comparison:** `Library::compare_source_metadata`
   dispatches by the connector name the source metadata carries, restores both
@@ -798,8 +812,8 @@ equal the originals, so drift between the two sets of types fails a test.
 | Unit | Created | Holds | Released |
 | --- | --- | --- | --- |
 | Library | At initialization | Settings, each registered Connector's access library state (with ADBC access, the ADBC driver, loaded when the first Data Source opens), and the timeout watcher thread | Closed at shutdown; its state, including the watcher, lives until its last Data Source, session, and operation are released, so running reads still stop at their deadlines. Loaded ADBC driver shared libraries stay loaded until the process exits ([Resource ownership](#resource-ownership)). |
-| Data source | When opened | The selected connector, validated connection settings and credentials, and, with ADBC access, its ADBC database | When the data source and every session using it are closed |
-| Session | When opened | Its `Session<C>`: the access's session state (with ADBC access, an ADBC connection and the driver component), the catalog's context read when it opened, and the planner's rewrite rules | When closed, releasing its `Session<C>` |
+| Data source | When opened | The selected connector, validated connection settings and credentials, the Connector's `Settings` read from them, and, with ADBC access, its ADBC database | When the data source and every session using it are closed |
+| Session | When opened | Its `Session<C>`: the access's session state (with ADBC access, an ADBC connection and the driver component), the catalog's context read when it opened, the Data Source's `Settings`, and the planner's rewrite rules | When closed, releasing its `Session<C>` |
 | Operation | When a read starts: validates the request and takes a session lease | Data Source resources: the session lease and, after the first pull, its read state and `CancelHandle`; also cancellation, deadline, and error state | When closed, releasing every Data Source resource. Read resources are also released, and the lease returned, when the stream ends or is released. |
 | Result stream | When a read starts | A reference to the operation, conversion state, expected output schema, and cancellation/deadline state. It holds no Data Source resources. | On the stream's `release`; the operation stops the Data Source query and releases the stream returned by Data Source access |
 | Cancellation | When the caller creates it | Whether it was cancelled, and the cancel handles of the catalog reads running with it | When the caller frees it, after no request runs with it |

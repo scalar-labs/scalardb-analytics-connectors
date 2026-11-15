@@ -14,8 +14,8 @@ use connector_postgresql::{
     PostgresUniqueKey, PostgresUniqueKind, PostgresValueSource,
 };
 use connector_sdk::{
-    Catalog, Component, Connector, SecretString, SourceTableMetadata, TableMetadata, TableRecord,
-    TableReference, start_source_read,
+    Catalog, Component, Connector, SecretString, TableMetadata, TableRecord, TableReference,
+    start_source_read,
 };
 
 use support::{PASSWORD, collect_ok, library, open, open_session, options, server, session};

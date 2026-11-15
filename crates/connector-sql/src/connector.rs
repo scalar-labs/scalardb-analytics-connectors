@@ -4,9 +4,10 @@ use std::marker::PhantomData;
 
 use connector_sdk::{
     AccessSession, Catalog, Connector, ConnectorError, ExecutionOutput, Listed, LogicalExpression,
-    LogicalPlan, NameFilter, NamespacePath, PlanningError, Session, SourceTableMetadata,
-    TableEntry, TableRecord, TableReference,
+    LogicalPlan, NameFilter, NamespacePath, PlanningError, Session, TableEntry, TableMetadata,
+    TableRecord, TableReference,
 };
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     SqlDialect, SqlExecutor, SqlPlanner, SqlRead,
@@ -38,8 +39,9 @@ pub trait SqlConnector:
     /// after the request that created it returned, so it holds its own
     /// handle.
     type Connection: Clone + Send + 'static;
-    /// The Connector's source metadata for one table.
-    type Table: SourceTableMetadata;
+    /// The Connector's source metadata for one table
+    /// ([`Catalog::Table`]).
+    type Table: Serialize + DeserializeOwned + Send + 'static;
     /// Session-level facts read once when a session opens, such as the
     /// server version that decides which catalog columns exist.
     type Context: Clone + Send + Sync + 'static;
@@ -80,6 +82,10 @@ pub trait SqlConnector:
         tables: &[TableReference],
         context: &Self::Context,
     ) -> Result<Vec<TableRecord<Self::Table>>, ConnectorError>;
+
+    /// Derives a table's table metadata from its source metadata and the
+    /// Data Source's settings ([`Catalog::derive_table_metadata`]).
+    fn derive_table_metadata(table: &Self::Table, settings: &Self::Settings) -> TableMetadata;
 
     /// Resolves the offered plan's table binding and reads the current facts
     /// its planning needs.
@@ -140,5 +146,9 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
             &C::connection(session.access()),
             Box::new(move |catalog| C::table_metadata(catalog, &tables, &context)),
         ))
+    }
+
+    fn derive_table_metadata(table: &C::Table, settings: &C::Settings) -> TableMetadata {
+        C::derive_table_metadata(table, settings)
     }
 }
