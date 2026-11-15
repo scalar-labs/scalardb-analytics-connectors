@@ -12,7 +12,7 @@ using test_support::Database;
 
 TEST_CASE("an attached Data Source is a catalog of its namespaces and tables") {
 	Database database;
-	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + test_support::UniqueLabel() + "')");
+	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + test_support::UniqueLabel() + "')");
 
 	// Readable namespaces become schemas named by their name path.
 	CHECK(database.Rows("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 't' "
@@ -50,7 +50,7 @@ TEST_CASE("namespaces whose dotted names would coincide are distinct schemas") {
 
 TEST_CASE("a column without an Analytics type can be named but not read") {
 	Database database;
-	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + test_support::UniqueLabel() + "')");
+	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + test_support::UniqueLabel() + "')");
 	auto orders = std::string("t.\"test.public\".orders");
 	// `area` is a geometry column: naming it, even only in a filter, fails
 	// with the reason rather than as an unknown column.
@@ -69,7 +69,7 @@ TEST_CASE("a column without an Analytics type can be named but not read") {
 TEST_CASE("a catalog request stops at the metadata timeout set when attaching") {
 	Database database;
 	database.Rows("SET scalardb_analytics_metadata_timeout = 100");
-	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + test_support::UniqueLabel() + "')");
+	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + test_support::UniqueLabel() + "')");
 	// The test Connector's description of a table named `block` waits until
 	// it is stopped.
 	CHECK_THAT(database.Error("SELECT * FROM t.\"test.public\".block"),
@@ -78,7 +78,7 @@ TEST_CASE("a catalog request stops at the metadata timeout set when attaching") 
 
 TEST_CASE("a name not listed is described by its own request") {
 	Database database;
-	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + test_support::UniqueLabel() + "')");
+	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + test_support::UniqueLabel() + "')");
 	// The list cannot read the namespace `test.restricted` and does not show
 	// it; describing it reports why instead of saying it does not exist.
 	CHECK_THAT(database.Error("SELECT * FROM t.\"test.restricted\".x"),
@@ -100,7 +100,7 @@ TEST_CASE("a name not listed is described by its own request") {
 
 TEST_CASE("an attached catalog is read-only") {
 	Database database;
-	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + test_support::UniqueLabel() + "')");
+	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + test_support::UniqueLabel() + "')");
 	CHECK_THAT(database.Error("CREATE TABLE t.\"test.public\".created (id INTEGER)"), ContainsSubstring("read-only"));
 	CHECK_THAT(database.Error("INSERT INTO t.\"test.public\".orders (id) VALUES (1)"), ContainsSubstring("read-only"));
 	CHECK_THAT(database.Error("CREATE SCHEMA t.created"), ContainsSubstring("read-only"));
@@ -108,15 +108,15 @@ TEST_CASE("an attached catalog is read-only") {
 
 TEST_CASE("invalid connection options fail the ATTACH") {
 	Database database;
-	CHECK_THAT(database.Error("ATTACH 'test' AS t (TYPE scalardb_analytics)"), ContainsSubstring("label"));
-	CHECK_THAT(database.Error("ATTACH 'nonexistent' AS t (TYPE scalardb_analytics)"),
+	CHECK_THAT(database.Error("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors)"), ContainsSubstring("label"));
+	CHECK_THAT(database.Error("ATTACH 'nonexistent' AS t (TYPE scalardb_analytics_connectors)"),
 	           ContainsSubstring("has no Connector nonexistent"));
 }
 
 TEST_CASE("connection options have the types the Connector declares") {
 	auto label = test_support::UniqueLabel();
 	auto attach = [&](const std::string &options) {
-		return "ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + label + "'" + options + ")";
+		return "ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + label + "'" + options + ")";
 	};
 	{
 		Database database;
@@ -150,9 +150,62 @@ TEST_CASE("connection options have the types the Connector declares") {
 TEST_CASE("a database without external access attaches no Data Source") {
 	Database database;
 	database.Rows("SET enable_external_access = false");
-	CHECK_THAT(database.Error("ATTACH 'test' AS t (TYPE scalardb_analytics, label '" + test_support::UniqueLabel() +
+	CHECK_THAT(database.Error("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, label '" + test_support::UniqueLabel() +
 	                          "')"),
 	           ContainsSubstring("enable_external_access"));
+}
+
+TEST_CASE("a Data Source attaches through a secret that holds its connection options") {
+	Database database;
+	database.Rows("CALL enable_logging()");
+	// The credential is bound as a parameter, so no statement text holds it.
+	auto set = database.connection.Prepare("SET VARIABLE token = ?");
+	REQUIRE_FALSE(set->HasError());
+	duckdb::vector<duckdb::Value> values {duckdb::Value("it's secret")};
+	REQUIRE_FALSE(set->Execute(values, false)->HasError());
+	database.Rows("CREATE TEMPORARY SECRET source (TYPE scalardb_analytics_connectors, PROVIDER test, label '" +
+	              test_support::UniqueLabel() + "', token getvariable('token'), attempts '3')");
+	database.Rows("RESET VARIABLE token");
+	database.Rows("ATTACH '' AS t (TYPE scalardb_analytics_connectors, SECRET source)");
+
+	CHECK(database.Rows("SELECT count(*) FROM information_schema.tables WHERE table_catalog = 't'") ==
+	      std::vector<std::vector<std::string>> {{"3"}});
+	// The option the Connector declares secret is redacted; the others are shown.
+	auto shown = database.Rows("SELECT secret_string FROM duckdb_secrets() WHERE name = 'source'");
+	REQUIRE(shown.size() == 1);
+	CHECK_THAT(shown[0][0], !ContainsSubstring("it's secret"));
+	CHECK_THAT(shown[0][0], ContainsSubstring("attempts=3"));
+	CHECK(database.Rows("SELECT count(*) FROM duckdb_logs() WHERE message LIKE '%it''s secret%'") ==
+	      std::vector<std::vector<std::string>> {{"0"}});
+}
+
+TEST_CASE("an ATTACH through a secret takes every connection option from that secret") {
+	Database database;
+	auto label = test_support::UniqueLabel();
+	database.Rows("CREATE TEMPORARY SECRET source (TYPE scalardb_analytics_connectors, PROVIDER test, label '" + label + "')");
+	database.Rows("CREATE TEMPORARY SECRET other (TYPE http, bearer_token 'x')");
+	struct Case {
+		std::string attach;
+		std::string error;
+	};
+	std::vector<Case> cases = {
+	    {"ATTACH '' AS t (TYPE scalardb_analytics_connectors, SECRET missing)", "no secret named \"missing\""},
+	    {"ATTACH '' AS t (TYPE scalardb_analytics_connectors, SECRET other)", "is of type http, not scalardb_analytics_connectors"},
+	    {"ATTACH '' AS t (TYPE scalardb_analytics_connectors, SECRET source, attempts 3)", "takes no other option"},
+	    {"ATTACH 'postgresql' AS t (TYPE scalardb_analytics_connectors, SECRET source)",
+	     "holds a Data Source of Connector test, not postgresql"},
+	};
+	for (auto &item : cases) {
+		INFO(item.attach);
+		auto error = database.Error(item.attach);
+		CHECK_THAT(error, ContainsSubstring(item.error));
+		CHECK_THAT(error, !ContainsSubstring(label));
+	}
+	// The path may also name the secret's own Connector.
+	database.Rows("ATTACH 'test' AS t (TYPE scalardb_analytics_connectors, SECRET source)");
+	// A secret takes only the options its Connector declares.
+	CHECK_THAT(database.Error("CREATE TEMPORARY SECRET bad (TYPE scalardb_analytics_connectors, PROVIDER test, unknown 'x')"),
+	           ContainsSubstring("Unknown parameter 'unknown'"));
 }
 
 TEST_CASE("the bulk-attach pragma attaches every Data Source of a definitions file") {
@@ -175,9 +228,9 @@ TEST_CASE("the bulk-attach pragma attaches every Data Source of a definitions fi
 	      std::vector<std::vector<std::string>> {{"0"}});
 
 	// Each Data Source is an ordinary attached catalog.
-	CHECK(database.Rows("SELECT database_name, type FROM duckdb_databases() WHERE type = 'scalardb_analytics' "
+	CHECK(database.Rows("SELECT database_name, type FROM duckdb_databases() WHERE type = 'scalardb_analytics_connectors' "
 	                    "ORDER BY database_name") ==
-	      std::vector<std::vector<std::string>> {{"first", "scalardb_analytics"}, {"second", "scalardb_analytics"}});
+	      std::vector<std::vector<std::string>> {{"first", "scalardb_analytics_connectors"}, {"second", "scalardb_analytics_connectors"}});
 	CHECK(database.Rows("SELECT count(*) FROM information_schema.tables WHERE table_catalog = 'second'") ==
 	      std::vector<std::vector<std::string>> {{"3"}});
 	database.Rows("DETACH first");
@@ -236,7 +289,7 @@ TEST_CASE("the bulk-attach pragma rejects a malformed definitions file and attac
 		// No value of the file appears in the message.
 		CHECK_THAT(error, !ContainsSubstring(label));
 		// Nothing stays attached, including the valid first entry.
-		CHECK(database.Rows("SELECT count(*) FROM duckdb_databases() WHERE type = 'scalardb_analytics'") ==
+		CHECK(database.Rows("SELECT count(*) FROM duckdb_databases() WHERE type = 'scalardb_analytics_connectors'") ==
 		      std::vector<std::vector<std::string>> {{"0"}});
 	}
 }

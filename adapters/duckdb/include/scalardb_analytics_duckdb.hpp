@@ -136,7 +136,7 @@ duckdb::unique_ptr<duckdb::Catalog> CreateCatalog(duckdb::AttachedDatabase &data
 // Creates the transaction manager of a catalog made by `CreateCatalog`.
 duckdb::unique_ptr<duckdb::TransactionManager> CreateTransactionManager(duckdb::AttachedDatabase &database);
 
-// Registers the `scalardb_analytics` attach type and the bulk-attach pragma.
+// Registers the `scalardb_analytics_connectors` attach type and the bulk-attach pragma.
 //
 // `api` belongs to an initialized library that outlives the database.
 void Register(duckdb::DatabaseInstance &database, const ScalardbAnalyticsConnectorApi &api);

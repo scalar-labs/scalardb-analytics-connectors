@@ -66,7 +66,7 @@ if [ -n "${ADBC_DRIVER_DIRECTORY:-}" ]; then
 else
 	unset SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY
 fi
-attach="ATTACH 'postgresql' AS pg (TYPE scalardb_analytics, host '127.0.0.1', port $port,
+attach="ATTACH 'postgresql' AS pg (TYPE scalardb_analytics_connectors, host '127.0.0.1', port $port,
     database 'postgres', user 'postgres', password '$password', sslmode 'disable');"
 
 # Runs SQL in a fresh CLI process after loading the extension; prints its CSV
@@ -137,5 +137,19 @@ bulk=$(run "CALL enable_logging(); PRAGMA scalardb_analytics_attach('$work/sourc
         || (SELECT count(*) FROM duckdb_logs() WHERE message LIKE '%$password%');")
 expect "the bulk-attach pragma attaches the Data Source, and its password stays out of the log" "result=3,0" \
 	"$(printf '%s\n' "$bulk" | grep -o 'result=[0-9]*,[0-9]*' || printf '%s' "$bulk")"
+
+# The password reaches the secret through the environment, so no statement
+# text holds it, and the secret shows it redacted.
+secret=$(E2E_PASSWORD=$password run "CALL enable_logging();
+    SET VARIABLE pw = getenv('E2E_PASSWORD');
+    CREATE TEMPORARY SECRET pg_source (TYPE scalardb_analytics_connectors, PROVIDER postgresql, host '127.0.0.1',
+        port $port, database 'postgres', user 'postgres', password getvariable('pw'), sslmode 'disable');
+    RESET VARIABLE pw;
+    ATTACH '' AS pg (TYPE scalardb_analytics_connectors, SECRET pg_source);
+    SELECT 'result=' || (SELECT count(*) FROM $orders) || ','
+        || (SELECT count(*) FROM duckdb_logs() WHERE message LIKE '%$password%') || ','
+        || (SELECT count(*) FROM duckdb_secrets() WHERE secret_string LIKE '%$password%');")
+expect "a secret attaches the Data Source, and its password stays out of the log and the secret listing" \
+	"result=3,0,0" "$(printf '%s\n' "$secret" | grep -o 'result=[0-9]*,[0-9]*,[0-9]*' || printf '%s' "$secret")"
 
 [ "$failures" -eq 0 ] || { echo "$failures case(s) failed" >&2; exit 1; }

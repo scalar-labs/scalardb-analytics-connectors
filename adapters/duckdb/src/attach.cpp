@@ -1,6 +1,7 @@
-// Attaching Data Sources: the `scalardb_analytics` attach type, one Data
-// Source per catalog, and the pragma that attaches every Data Source listed
-// in a definitions file.
+// Attaching Data Sources: the `scalardb_analytics_connectors` attach type, one Data
+// Source per catalog, the `scalardb_analytics_connectors` secret type that holds one Data
+// Source's connection options, and the pragma that attaches every Data Source
+// listed in a definitions file.
 #include <map>
 
 #include "connector_api.hpp"
@@ -10,6 +11,7 @@
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "register.hpp"
@@ -20,12 +22,21 @@ namespace scalardb_analytics_duckdb {
 
 namespace {
 
-// The value type each Connector declares for each connection option it
-// accepts, by Connector name and option key: `string`, `integer`, or
-// `boolean`.
-using OptionTypes = std::map<std::string, std::map<std::string, std::string>>;
+// The name of both the attach type and the secret type.
+constexpr const char *TYPE_NAME = "scalardb_analytics_connectors";
 
-// Reads the declared option types from the library's static information.
+// What a Connector declares for one connection option it accepts.
+struct OptionDeclaration {
+	// `string`, `integer`, or `boolean`.
+	std::string value_type;
+	// Whether the value is a credential, which a secret redacts.
+	bool secret;
+};
+
+// The declared connection options, by Connector name and option key.
+using OptionTypes = std::map<std::string, std::map<std::string, OptionDeclaration>>;
+
+// Reads the declared options from the library's static information.
 //
 // DuckDB has no JSON parser in its public headers, so a private in-memory
 // database reads the document; it shares no state with the databases the
@@ -34,7 +45,8 @@ OptionTypes ReadOptionTypes(const ScalardbAnalyticsConnectorApi &api) {
 	duckdb::DuckDB reader(nullptr);
 	duckdb::Connection connection(reader);
 	auto statement = connection.Prepare(
-	    "SELECT handled.value->>'$', option.value->>'$.key', option.value->>'$.value_type' "
+	    "SELECT handled.value->>'$', option.value->>'$.key', option.value->>'$.value_type', "
+	    "option.value->>'$.secret' "
 	    "FROM json_each(?::JSON, '$.connectors') AS connector, json_each(connector.value, '$.connectors') AS handled "
 	    "LEFT JOIN json_each(connector.value, '$.options') AS option ON true");
 	if (statement->HasError()) {
@@ -51,7 +63,8 @@ OptionTypes ReadOptionTypes(const ScalardbAnalyticsConnectorApi &api) {
 	                     .GetRows()) {
 		auto &options = types[row.GetValue(0).GetValue<std::string>()];
 		if (!row.GetValue(1).IsNull()) {
-			options[row.GetValue(1).GetValue<std::string>()] = row.GetValue(2).GetValue<std::string>();
+			options[row.GetValue(1).GetValue<std::string>()] = {row.GetValue(2).GetValue<std::string>(),
+			                                                     row.GetValue(3).GetValue<std::string>() == "true"};
 		}
 	}
 	return types;
@@ -102,10 +115,66 @@ std::string OptionText(const std::string &connector, const std::string &key, con
 	                                      connector, type);
 }
 
-// `ATTACH '<connector>' AS <name> (TYPE scalardb_analytics, <option> <value>, ...)`
+// The Connector of a Data Source and its connection options, as DuckDB values.
+struct ConnectionSource {
+	std::string connector;
+	std::map<std::string, duckdb::Value> options;
+};
+
+// Reads the Connector and the connection options from the secret an ATTACH
+// names with its `SECRET` option.
+//
+// Every connection option comes from the secret, so the ATTACH takes no other
+// option, and its path, which names the Connector without a secret, is empty
+// or the secret's Connector. Messages name the secret, never a value.
+ConnectionSource FromSecret(duckdb::ClientContext &context, const std::string &path,
+                            const std::unordered_map<std::string, duckdb::Value> &options) {
+	if (options.size() > 1) {
+		throw duckdb::InvalidInputException(
+		    "ScalarDB Analytics takes every connection option from the secret; the ATTACH takes no other option");
+	}
+	auto name = options.at("secret").ToString();
+	auto entry = duckdb::SecretManager::Get(context).GetSecretByName(
+	    duckdb::CatalogTransaction::GetSystemCatalogTransaction(context), name);
+	if (!entry) {
+		throw duckdb::InvalidInputException("ScalarDB Analytics found no secret named \"%s\"", name);
+	}
+	auto secret = dynamic_cast<const duckdb::KeyValueSecret *>(entry->secret.get());
+	if (entry->secret->GetType() != TYPE_NAME || !secret) {
+		throw duckdb::InvalidInputException("Secret \"%s\" is of type %s, not %s", name, entry->secret->GetType(),
+		                                    TYPE_NAME);
+	}
+	auto &connector = secret->GetProvider();
+	if (!path.empty() && path != connector) {
+		throw duckdb::InvalidInputException("Secret \"%s\" holds a Data Source of Connector %s, not %s", name,
+		                                    connector, path);
+	}
+	return {connector, {secret->secret_map.begin(), secret->secret_map.end()}};
+}
+
+// `CREATE SECRET (TYPE scalardb_analytics_connectors, PROVIDER <connector>, <option> <value>, ...)`
+// holds the connection options of one Data Source of the Connector the
+// provider names. DuckDB has already cast each value to the type the
+// Connector declares; the options the Connector declares secret are redacted.
+duckdb::unique_ptr<duckdb::BaseSecret> CreateSecret(duckdb::ClientContext &context,
+                                                    duckdb::CreateSecretInput &input) {
+	auto extension = duckdb::StorageExtension::Find(duckdb::DBConfig::GetConfig(context), TYPE_NAME);
+	auto &declared = static_cast<AdapterStorageInfo &>(*extension->storage_info).option_types.at(input.provider);
+	auto secret = duckdb::make_uniq<duckdb::KeyValueSecret>(input.scope, input.type, input.provider, input.name);
+	for (auto &option : input.options) {
+		secret->secret_map[option.first] = option.second;
+		if (declared.at(option.first).secret) {
+			secret->redact_keys.insert(option.first);
+		}
+	}
+	return std::move(secret);
+}
+
+// `ATTACH '<connector>' AS <name> (TYPE scalardb_analytics_connectors, <option> <value>, ...)`
 // opens a Data Source of the Connector the path names; every other option
 // is a connection option of the Connector, of the type the Connector
-// declares for it.
+// declares for it. With `SECRET <secret>` instead, the Connector and every
+// connection option come from that secret.
 duckdb::unique_ptr<duckdb::Catalog> Attach(duckdb::optional_ptr<duckdb::StorageExtensionInfo> storage_info,
                                            duckdb::ClientContext &context, duckdb::AttachedDatabase &database,
                                            const std::string &name, duckdb::AttachInfo &info,
@@ -116,22 +185,26 @@ duckdb::unique_ptr<duckdb::Catalog> Attach(duckdb::optional_ptr<duckdb::StorageE
 	}
 	auto &storage = static_cast<AdapterStorageInfo &>(*storage_info);
 	auto &api = storage.api;
-	auto declared = storage.option_types.find(info.path);
+	auto source = options.options.count("secret")
+	                  ? FromSecret(context, info.path, options.options)
+	                  : ConnectionSource {info.path, {options.options.begin(), options.options.end()}};
+	auto declared = storage.option_types.find(source.connector);
 	if (declared == storage.option_types.end()) {
-		throw duckdb::InvalidInputException("ScalarDB Analytics has no Connector %s", info.path);
+		throw duckdb::InvalidInputException("ScalarDB Analytics has no Connector %s", source.connector);
 	}
 	std::vector<std::pair<std::string, std::string>> connection;
-	for (auto &option : options.options) {
+	for (auto &option : source.options) {
 		auto type = declared->second.find(option.first);
 		if (type == declared->second.end()) {
 			throw duckdb::InvalidInputException("ScalarDB Analytics Connector %s does not accept option \"%s\"",
-			                                    info.path, option.first);
+			                                    source.connector, option.first);
 		}
-		connection.emplace_back(option.first, OptionText(info.path, option.first, type->second, option.second));
+		connection.emplace_back(option.first,
+		                        OptionText(source.connector, option.first, type->second.value_type, option.second));
 	}
 	options.options.clear();
 	auto data_source =
-	    std::make_shared<DataSource>(api, info.path, connection, Milliseconds(context, CONNECTION_TIMEOUT));
+	    std::make_shared<DataSource>(api, source.connector, connection, Milliseconds(context, CONNECTION_TIMEOUT));
 	return CreateCatalog(database, data_source,
 	                     ConnectorCatalogSource(data_source, Milliseconds(context, METADATA_TIMEOUT)));
 }
@@ -273,7 +346,7 @@ void AttachAll(duckdb::ClientContext &context, const duckdb::FunctionParameters 
 			duckdb::AttachInfo info;
 			info.name = definition.name;
 			info.path = definition.connector;
-			info.options["type"] = duckdb::Value("scalardb_analytics");
+			info.options["type"] = duckdb::Value(TYPE_NAME);
 			for (auto &option : definition.options) {
 				info.options[option.first] = option.second;
 			}
@@ -297,8 +370,26 @@ void RegisterWith(duckdb::ExtensionLoader &loader, const ScalardbAnalyticsConnec
 	auto storage = duckdb::make_shared_ptr<duckdb::StorageExtension>();
 	storage->attach = Attach;
 	storage->create_transaction_manager = CreateTransactions;
-	storage->storage_info = duckdb::make_shared_ptr<AdapterStorageInfo>(api);
-	duckdb::StorageExtension::Register(config, "scalardb_analytics", std::move(storage));
+	auto info = duckdb::make_shared_ptr<AdapterStorageInfo>(api);
+	storage->storage_info = info;
+	duckdb::StorageExtension::Register(config, TYPE_NAME, std::move(storage));
+
+	duckdb::SecretType secret_type;
+	secret_type.name = TYPE_NAME;
+	secret_type.deserializer = duckdb::KeyValueSecret::Deserialize<duckdb::KeyValueSecret>;
+	secret_type.extension = "scalardb_analytics_connectors";
+	loader.RegisterSecretType(secret_type);
+	// One provider per Connector, taking the options it declares with their types.
+	for (auto &connector : info->option_types) {
+		duckdb::CreateSecretFunction function {TYPE_NAME, connector.first, CreateSecret, {}};
+		for (auto &option : connector.second) {
+			auto &type = option.second.value_type;
+			function.named_parameters[option.first] = type == "integer"   ? duckdb::LogicalType::BIGINT
+			                                          : type == "boolean" ? duckdb::LogicalType::BOOLEAN
+			                                                              : duckdb::LogicalType::VARCHAR;
+		}
+		loader.RegisterFunction(function);
+	}
 	loader.RegisterFunction(
 	    duckdb::PragmaFunction::PragmaCall("scalardb_analytics_attach", AttachAll, {duckdb::LogicalType::VARCHAR}));
 }

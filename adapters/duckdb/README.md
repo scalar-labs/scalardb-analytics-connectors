@@ -12,18 +12,44 @@ This document records what is specific to DuckDB.
 
 ## Attaching Data Sources
 
-A Data Source attaches with the `scalardb_analytics` type. The path names the
-Connector, and every other option is a connection option of that Connector.
+A Data Source attaches with the `scalardb_analytics_connectors` type. The path
+names the Connector, and every other option is a connection option of that
+Connector.
 Each option has the value type the Connector declares in the library's static
 information: a string, a 64-bit integer, or a boolean. A value of another type
 is rejected rather than converted, so `port '5432'` fails where `port 5432` is
 accepted, and an option the Connector does not declare fails the ATTACH:
 
 ```sql
-ATTACH 'postgresql' AS pg (TYPE scalardb_analytics,
+ATTACH 'postgresql' AS pg (TYPE scalardb_analytics_connectors,
     host '127.0.0.1', port 5432, database 'postgres', user 'postgres', password '...');
 SELECT * FROM pg.public.orders WHERE id = 1;
 ```
+
+A DuckDB secret of the `scalardb_analytics_connectors` type holds one Data
+Source's connection options instead, so that the ATTACH carries none of them.
+Each
+Connector is a provider of the type, whose parameters are the options the
+Connector declares. DuckDB casts each value to the declared type when it
+creates the secret, so there `port '5432'` is accepted, and an option the
+Connector does not declare fails. The options the Connector declares secret,
+such as a password, are redacted in `duckdb_secrets()`. An ATTACH with
+`SECRET` takes its Connector and every connection option from the secret: it
+takes no other option, and its path is empty or the secret's Connector. A
+credential that the application binds to a variable never appears in any
+statement text or in DuckDB's query log:
+
+```sql
+SET VARIABLE pw = ?;  -- bound by the application
+CREATE TEMPORARY SECRET pg_source (TYPE scalardb_analytics_connectors,
+    PROVIDER postgresql, host '127.0.0.1', port 5432, database 'postgres',
+    user 'postgres', password getvariable('pw'));
+RESET VARIABLE pw;
+ATTACH '' AS pg (TYPE scalardb_analytics_connectors, SECRET pg_source);
+```
+
+Whether secrets may persist is DuckDB's setting (`allow_persistent_secrets`);
+a persistent secret is stored by DuckDB, not by the adapter.
 
 The catalog's schemas are the Connector's readable namespaces, named by their
 name path joined with dots, such as `test.public`; a name containing a dot or
@@ -236,7 +262,8 @@ nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
 loads the built extension, which initializes the library itself, and queries
 PostgreSQL as a user would: complete and partial pushdown with their plans, an
 aggregate, a join with a DuckDB table, a rejected write, and the bulk-attach
-pragma with the query log checked for the password.
+pragma and an ATTACH through a secret, each with the query log checked for the
+password.
 
 The extension of the distribution package is built with
 `-DSCALARDB_ANALYTICS_DISTRIBUTION=ON` by `packaging/package.sh`: CMake then

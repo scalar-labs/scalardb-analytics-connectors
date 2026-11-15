@@ -110,7 +110,7 @@ Server &PostgreSQL() {
 
 void AttachPostgreSQL(Database &database) {
 	auto &server = PostgreSQL();
-	database.Rows("ATTACH 'postgresql' AS pg (TYPE scalardb_analytics, host '127.0.0.1', port " + server.port +
+	database.Rows("ATTACH 'postgresql' AS pg (TYPE scalardb_analytics_connectors, host '127.0.0.1', port " + server.port +
 	              ", database 'postgres', user 'postgres', password '" + PASSWORD + "', sslmode 'disable')");
 }
 

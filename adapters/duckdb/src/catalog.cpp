@@ -417,7 +417,7 @@ void AdapterCatalog::Initialize(bool load_builtin) {
 }
 
 std::string AdapterCatalog::GetCatalogType() {
-	return "scalardb_analytics";
+	return "scalardb_analytics_connectors";
 }
 
 void AdapterCatalog::LoadSchemas() {
