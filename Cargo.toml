@@ -46,8 +46,7 @@ futures-core = "0.3"
 futures-util = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 url = "2"
-# 0.6.5 requires Rust 1.88 (let chains), above the workspace MSRV.
-wiremock = "=0.6.4"
+wiremock = "0.6"
 prost = "0.13.5"
 prost-types = "0.13.5"
 regress = "=0.10.4"
