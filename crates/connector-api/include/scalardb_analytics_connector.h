@@ -352,6 +352,10 @@ typedef uint32_t ScalardbAnalyticsConnectorAnalyticsTypeKind;
 #define ScalardbAnalyticsConnectorAnalyticsTypeKind_ENUM 22
 #define ScalardbAnalyticsConnectorAnalyticsTypeKind_YEAR 23
 #define ScalardbAnalyticsConnectorAnalyticsTypeKind_TIME_WITH_TIME_ZONE 24
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BYTE 25
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_SMALL_INT 26
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_INT 27
+#define ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BIG_INT 28
 
 // A named, nullable field of a `STRUCT` Analytics type.
 typedef struct ScalardbAnalyticsConnectorAnalyticsField {

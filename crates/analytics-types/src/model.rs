@@ -59,6 +59,10 @@ pub enum AnalyticsType {
     SmallInt,
     Int,
     BigInt,
+    UnsignedByte,
+    UnsignedSmallInt,
+    UnsignedInt,
+    UnsignedBigInt,
     Float,
     Double,
     Decimal(DecimalType),
@@ -87,10 +91,16 @@ pub struct DecimalType {
     scale: i8,
 }
 
+/// The largest decimal precision, the most digits Arrow's widest decimal,
+/// `Decimal256`, holds.
+pub const MAX_DECIMAL_PRECISION: u8 = 76;
+
 impl DecimalType {
     /// Creates a decimal with Arrow-compatible precision and scale parameters.
     pub fn new(precision: u8, scale: i8) -> Result<Self, TypeError> {
-        if !(1..=38).contains(&precision) || (scale > 0 && scale as u8 > precision) {
+        if !(1..=MAX_DECIMAL_PRECISION).contains(&precision)
+            || (scale > 0 && scale as u8 > precision)
+        {
             return Err(TypeError::InvalidDecimal { precision, scale });
         }
         Ok(Self { precision, scale })

@@ -84,10 +84,48 @@ substrait::Type Encode(const ScalardbAnalyticsConnectorAnalyticsType &source, bo
 		type.mutable_fp64()->set_nullability(n);
 		break;
 	case ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL: {
+		// Substrait's decimal holds 38 digits; a wider decimal is a logical
+		// type over its decimal text.
+		if (source.decimal_precision > DUCKDB_DECIMAL_PRECISION) {
+			SetLogical(type, anchor, "decimal",
+			           "{\"precision\":" + std::to_string(source.decimal_precision) +
+			               ",\"scale\":" + std::to_string(source.decimal_scale) + "}",
+			           StringType(false), nullable);
+			break;
+		}
 		auto &decimal = *type.mutable_decimal();
 		decimal.set_precision(source.decimal_precision);
 		decimal.set_scale(source.decimal_scale);
 		decimal.set_nullability(n);
+		break;
+	}
+	// Unsigned integers are logical types over the next wider signed integer,
+	// or `decimal(20, 0)` for 64 bits, which Substrait has no unsigned type for.
+	case ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BYTE: {
+		substrait::Type carrier;
+		carrier.mutable_i16()->set_nullability(substrait::Type::NULLABILITY_REQUIRED);
+		SetLogical(type, anchor, "unsigned_byte", "{}", std::move(carrier), nullable);
+		break;
+	}
+	case ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_SMALL_INT: {
+		substrait::Type carrier;
+		carrier.mutable_i32()->set_nullability(substrait::Type::NULLABILITY_REQUIRED);
+		SetLogical(type, anchor, "unsigned_smallint", "{}", std::move(carrier), nullable);
+		break;
+	}
+	case ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_INT: {
+		substrait::Type carrier;
+		carrier.mutable_i64()->set_nullability(substrait::Type::NULLABILITY_REQUIRED);
+		SetLogical(type, anchor, "unsigned_int", "{}", std::move(carrier), nullable);
+		break;
+	}
+	case ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BIG_INT: {
+		substrait::Type carrier;
+		auto &decimal = *carrier.mutable_decimal();
+		decimal.set_precision(20);
+		decimal.set_scale(0);
+		decimal.set_nullability(substrait::Type::NULLABILITY_REQUIRED);
+		SetLogical(type, anchor, "unsigned_bigint", "{}", std::move(carrier), nullable);
 		break;
 	}
 	case ScalardbAnalyticsConnectorAnalyticsTypeKind_TEXT:
@@ -319,6 +357,18 @@ duckdb::LogicalType MapType(const substrait::Type &type, NameCursor &names, bool
 		if (name == "year") {
 			return LogicalType::SMALLINT;
 		}
+		if (name == "unsigned_byte") {
+			return LogicalType::UTINYINT;
+		}
+		if (name == "unsigned_smallint") {
+			return LogicalType::USMALLINT;
+		}
+		if (name == "unsigned_int") {
+			return LogicalType::UINTEGER;
+		}
+		if (name == "unsigned_bigint") {
+			return LogicalType::UBIGINT;
+		}
 		if (name == "timetz") {
 			return LogicalType::VARCHAR;
 		}
@@ -356,7 +406,7 @@ std::string StorageFormat(const substrait::Type &type) {
 	case substrait::Type::kFp64:
 		return "g";
 	case substrait::Type::kDecimal:
-		return "d:" + std::to_string(type.decimal().precision()) + "," + std::to_string(type.decimal().scale());
+		return DecimalFormat(type.decimal().precision(), type.decimal().scale());
 	case substrait::Type::kString:
 		return "u";
 	case substrait::Type::kBinary:
@@ -379,11 +429,33 @@ std::string StorageFormat(const substrait::Type &type) {
 		return "+m";
 	case substrait::Type::kStruct:
 		return "+s";
-	case substrait::Type::kUserDefined:
+	case substrait::Type::kUserDefined: {
+		// Unsigned integers are stored as themselves, not as their carriers.
+		auto name = LogicalName(type);
+		if (name == "unsigned_byte") {
+			return "C";
+		}
+		if (name == "unsigned_smallint") {
+			return "S";
+		}
+		if (name == "unsigned_int") {
+			return "I";
+		}
+		if (name == "unsigned_bigint") {
+			return "L";
+		}
 		return StorageFormat(Carrier(type));
+	}
 	default:
 		return "";
 	}
+}
+
+// Whether a logical type is an Arrow extension type of the Analytics type
+// model; unsigned integers and wide decimals are Arrow's own types.
+bool HasArrowExtension(const std::string &logical_name) {
+	return logical_name == "uuid" || logical_name == "json" || logical_name == "enum" || logical_name == "year" ||
+	       logical_name == "timetz";
 }
 
 void CheckArrow(const ArrowSchema &schema, const substrait::Type &type, NameCursor &names, const std::string &path) {
@@ -404,7 +476,7 @@ void CheckArrow(const ArrowSchema &schema, const substrait::Type &type, NameCurs
 	auto extension = LogicalName(type);
 	duckdb::ArrowSchemaMetadata metadata(schema.metadata);
 	auto received = metadata.GetOption(duckdb::ArrowSchemaMetadata::ARROW_EXTENSION_NAME);
-	if (received != (extension.empty() ? "" : "scalardb.analytics." + extension)) {
+	if (received != (HasArrowExtension(extension) ? "scalardb.analytics." + extension : "")) {
 		fail("extension " + received);
 	}
 	switch (type.kind_case()) {
@@ -575,6 +647,20 @@ std::string LogicalName(const substrait::Type &type) {
 		return "";
 	}
 	return type.user_defined().type_parameters(0).string();
+}
+
+std::string DecimalFormat(int precision, int scale) {
+	auto format = "d:" + std::to_string(precision) + "," + std::to_string(scale);
+	if (precision <= 9) {
+		return format + ",32";
+	}
+	if (precision <= 18) {
+		return format + ",64";
+	}
+	if (precision <= DUCKDB_DECIMAL_PRECISION) {
+		return format;
+	}
+	return format + ",256";
 }
 
 duckdb::LogicalType DuckDBType(const Field &field) {

@@ -56,6 +56,14 @@ std::string LogicalName(const substrait::Type &type);
 // The DuckDB type of an Analytics type: the adapter's mapping table.
 duckdb::LogicalType DuckDBType(const Field &field);
 
+// The largest decimal precision of Substrait and of DuckDB. A wider Analytics
+// decimal has no DuckDB type.
+constexpr uint8_t DUCKDB_DECIMAL_PRECISION = 38;
+
+// The Arrow format of a decimal in its Analytics storage, the narrowest Arrow
+// decimal that holds the precision, such as `d:10,2,64`.
+std::string DecimalFormat(int precision, int scale);
+
 // Checks one field of a read's Arrow schema against its planned Analytics
 // type: name, storage type without dictionary encoding, extension name,
 // nullability, and struct fields.

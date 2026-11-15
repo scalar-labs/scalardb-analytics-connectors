@@ -33,15 +33,16 @@ struct Database {
 	duckdb::Connection connection;
 };
 
-// A column of a table a fixture catalog source serves. A Decimal has
-// precision 10 and the given scale, an Enum the members `pending` and `done`,
-// an Array Text elements, a Map Text keys and BigInt values, and a Struct one
+// A column of a table a fixture catalog source serves. A Decimal has the
+// given scale and precision, an Enum the members `pending` and `done`, an
+// Array Text elements, a Map Text keys and BigInt values, and a Struct one
 // BigInt field `f`.
 struct FixtureColumn {
 	std::string name;
 	ScalardbAnalyticsConnectorAnalyticsTypeKind kind;
 	bool nullable;
 	int8_t decimal_scale = 2;
+	uint8_t decimal_precision = 10;
 };
 
 // Attaches `alias`: a Data Source of the test Connector whose catalog comes

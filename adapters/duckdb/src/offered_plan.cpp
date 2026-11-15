@@ -78,6 +78,16 @@ bool BaseColumn(const duckdb::Expression &expression, const duckdb::LogicalGet &
 	return true;
 }
 
+// The carrier kind of an unsigned integer type, or none for another type.
+substrait::Type::KindCase UnsignedCarrier(const substrait::Type &type) {
+	auto name = LogicalName(type);
+	if (name == "unsigned_byte" || name == "unsigned_smallint" || name == "unsigned_int" ||
+	    name == "unsigned_bigint") {
+		return type.user_defined().type_parameters(2).data_type().kind_case();
+	}
+	return substrait::Type::KIND_NOT_SET;
+}
+
 // Whether the Analytics type's order, not only its equality, is defined and
 // shared by DuckDB's comparison of the mapped type.
 bool Ordered(const substrait::Type &type) {
@@ -98,6 +108,8 @@ bool Ordered(const substrait::Type &type) {
 		return true;
 	case substrait::Type::kDecimal:
 		return type.decimal().scale() >= 0;
+	case substrait::Type::kUserDefined:
+		return UnsignedCarrier(type) != substrait::Type::KIND_NOT_SET;
 	default:
 		return false;
 	}
@@ -201,8 +213,24 @@ bool Literal(const duckdb::Value &value, const Field &field, substrait::Expressi
 		logical.set_type_reference(type.user_defined().type_reference());
 		*logical.mutable_type_parameters() = type.user_defined().type_parameters();
 		auto &carrier = *logical.mutable_struct_()->add_fields();
-		if (LogicalName(type) == "year") {
+		auto name = LogicalName(type);
+		if (name == "year") {
 			carrier.set_i16(value.GetValue<int16_t>());
+		} else if (name == "unsigned_byte") {
+			carrier.set_i16(value.GetValue<uint8_t>());
+		} else if (name == "unsigned_smallint") {
+			carrier.set_i32(value.GetValue<uint16_t>());
+		} else if (name == "unsigned_int") {
+			carrier.set_i64(value.GetValue<uint32_t>());
+		} else if (name == "unsigned_bigint") {
+			auto &decimal = *carrier.mutable_decimal();
+			// The unsigned value in the 128-bit decimal, positive however high.
+			duckdb::hugeint_t unscaled;
+			unscaled.lower = value.GetValue<uint64_t>();
+			unscaled.upper = 0;
+			LittleEndian(unscaled, *decimal.mutable_value());
+			decimal.set_precision(20);
+			decimal.set_scale(0);
 		} else {
 			// Uuid in its canonical lowercase form, Enum as its label, and
 			// Json and TimeWithTimeZone as the text DuckDB holds.

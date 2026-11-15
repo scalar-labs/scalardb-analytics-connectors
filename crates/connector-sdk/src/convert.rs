@@ -8,15 +8,17 @@
 use std::sync::Arc;
 
 use analytics_types::{
-    AnalyticsSchema, AnalyticsType,
+    AnalyticsSchema, AnalyticsType, DecimalType as AnalyticsDecimal,
     arrow_schema::{DataType, TimeUnit},
 };
 use arrow_array::{
-    Array, ArrayRef, Decimal128Array, FixedSizeBinaryArray, ListArray, MapArray, RecordBatch,
+    Array, ArrayRef, FixedSizeBinaryArray, ListArray, MapArray, PrimitiveArray, RecordBatch,
     StringArray, StructArray, Time64MicrosecondArray, TimestampMicrosecondArray,
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
     builder::StringBuilder,
+    types::{Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type, DecimalType},
 };
+use arrow_buffer::i256;
 
 use crate::{ConnectorError, ErrorKind};
 
@@ -146,18 +148,19 @@ fn unexpected_output() -> ConnectorError {
     )
 }
 
-/// Converts decimal text, such as `-12.50`, to `Decimal128(precision, scale)`.
+/// Converts decimal text, such as `-12.50`, to `decimal`'s Analytics storage,
+/// the narrowest Arrow decimal that holds its precision.
 ///
 /// The text is an optional `-` or `+`, digits, and an optional `.` followed by
-/// digits. Fractional digits beyond `scale` must be zero; with a negative
-/// scale, the integer digits it removes must be zero. A value outside
-/// `precision`, or text in any other form, such as `NaN` or `Infinity`, is a
+/// digits. Fractional digits beyond the scale must be zero; with a negative
+/// scale, the integer digits it removes must be zero. A value outside the
+/// precision, or text in any other form, such as `NaN` or `Infinity`, is a
 /// `data` error.
-pub fn decimal128_from_text(
+pub fn decimal_from_text(
     text: &StringArray,
-    precision: u8,
-    scale: i8,
-) -> Result<Decimal128Array, ConnectorError> {
+    decimal: AnalyticsDecimal,
+) -> Result<ArrayRef, ConnectorError> {
+    let (precision, scale) = (decimal.precision(), decimal.scale());
     let values = text
         .iter()
         .map(|value| {
@@ -169,19 +172,42 @@ pub fn decimal128_from_text(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Decimal128Array::from(values)
-        .with_precision_and_scale(precision, scale)
-        .map_err(|_| {
-            ConnectorError::new(
-                ErrorKind::Internal,
-                false,
-                "a decimal conversion targeted an invalid decimal type",
-            )
+    let to_i128 = |value: i256| value.to_i128();
+    match AnalyticsType::Decimal(decimal).storage_type() {
+        DataType::Decimal32(..) => decimal_array::<Decimal32Type>(&values, decimal, |value| {
+            to_i128(value).and_then(|value| i32::try_from(value).ok())
+        }),
+        DataType::Decimal64(..) => decimal_array::<Decimal64Type>(&values, decimal, |value| {
+            to_i128(value).and_then(|value| i64::try_from(value).ok())
+        }),
+        DataType::Decimal128(..) => decimal_array::<Decimal128Type>(&values, decimal, to_i128),
+        _ => decimal_array::<Decimal256Type>(&values, decimal, Some),
+    }
+}
+
+/// Builds a decimal array of width `T` from unscaled values that have at most
+/// `decimal`'s precision of digits, which the width holds.
+fn decimal_array<T: DecimalType>(
+    values: &[Option<i256>],
+    decimal: AnalyticsDecimal,
+    narrow: impl Fn(i256) -> Option<T::Native>,
+) -> Result<ArrayRef, ConnectorError> {
+    let values = values
+        .iter()
+        .map(|value| {
+            value
+                .map(|value| narrow(value).ok_or_else(unexpected_output))
+                .transpose()
         })
+        .collect::<Result<PrimitiveArray<T>, _>>()?;
+    let array = values
+        .with_precision_and_scale(decimal.precision(), decimal.scale())
+        .map_err(|_| unexpected_output())?;
+    Ok(Arc::new(array))
 }
 
 /// Returns the unscaled value of `text` at `scale`, if it is exact and within `precision`.
-fn parse_decimal(text: &str, precision: u8, scale: i8) -> Option<i128> {
+fn parse_decimal(text: &str, precision: u8, scale: i8) -> Option<i256> {
     let (negative, unsigned) = match text.as_bytes().first()? {
         b'-' => (true, &text[1..]),
         b'+' => (false, &text[1..]),
@@ -222,9 +248,12 @@ fn parse_decimal(text: &str, precision: u8, scale: i8) -> Option<i128> {
     if significant.len() > usize::from(precision) {
         return None;
     }
-    let mut value: i128 = 0;
+    // At most 76 digits, which 256 bits hold.
+    let mut value = i256::ZERO;
     for digit in significant {
-        value = value * 10 + i128::from(digit - b'0');
+        value = value
+            .checked_mul(i256::from(10_i8))?
+            .checked_add(i256::from(i16::from(digit - b'0')))?;
     }
     Some(if negative { -value } else { value })
 }
@@ -310,14 +339,38 @@ pub fn not_carried(target: &str) -> ConnectorError {
 mod tests {
     use super::*;
 
+    /// Converts decimal text and returns the unscaled values, as 256-bit
+    /// integers whatever the storage width.
     fn decimals(
         values: &[Option<&str>],
         precision: u8,
         scale: i8,
     ) -> Result<Vec<Option<i128>>, ErrorKind> {
-        decimal128_from_text(&StringArray::from(values.to_vec()), precision, scale)
-            .map(|array| array.iter().collect())
-            .map_err(|error| error.kind())
+        let decimal = AnalyticsDecimal::new(precision, scale).unwrap();
+        let array = decimal_from_text(&StringArray::from(values.to_vec()), decimal)
+            .map_err(|error| error.kind())?;
+        assert_eq!(
+            array.data_type(),
+            &AnalyticsType::Decimal(decimal).storage_type()
+        );
+        let cast = |column: &ArrayRef| -> Vec<Option<i128>> {
+            use arrow_array::{Decimal32Array, Decimal64Array, Decimal128Array, Decimal256Array};
+            let any = column.as_any();
+            if let Some(array) = any.downcast_ref::<Decimal32Array>() {
+                array.iter().map(|value| value.map(i128::from)).collect()
+            } else if let Some(array) = any.downcast_ref::<Decimal64Array>() {
+                array.iter().map(|value| value.map(i128::from)).collect()
+            } else if let Some(array) = any.downcast_ref::<Decimal128Array>() {
+                array.iter().collect()
+            } else {
+                let array = any.downcast_ref::<Decimal256Array>().unwrap();
+                array
+                    .iter()
+                    .map(|value| value.map(|value| value.to_i128().unwrap()))
+                    .collect()
+            }
+        };
+        Ok(cast(&array))
     }
 
     #[test]
@@ -363,6 +416,29 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn decimal_text_takes_the_storage_width_of_its_precision() {
+        for precision in [9, 18, 38] {
+            assert_eq!(
+                decimals(&[Some("-1.25"), None], precision, 2),
+                Ok(vec![Some(-125), None]),
+                "{precision}"
+            );
+        }
+        let widest = format!("-{}", "9".repeat(76));
+        let decimal = AnalyticsDecimal::new(76, 0).unwrap();
+        let array = decimal_from_text(&StringArray::from(vec![widest.as_str()]), decimal).unwrap();
+        let array = array
+            .as_any()
+            .downcast_ref::<arrow_array::Decimal256Array>()
+            .unwrap();
+        assert_eq!(array.value(0).to_string(), widest);
+        assert_eq!(
+            decimals(&[Some(&"9".repeat(77))], 76, 0),
+            Err(ErrorKind::Data)
+        );
     }
 
     #[test]

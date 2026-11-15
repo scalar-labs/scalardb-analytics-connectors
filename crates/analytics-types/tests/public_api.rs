@@ -64,8 +64,40 @@ fn decimal_boundaries_are_validated() {
             scale: 0
         })
     );
-    assert!(DecimalType::new(39, 0).is_err());
+    assert_eq!(DecimalType::new(76, 0).unwrap().precision(), 76);
+    assert!(DecimalType::new(77, 0).is_err());
     assert!(DecimalType::new(10, 11).is_err());
+}
+
+#[test]
+fn decimals_use_the_narrowest_arrow_decimal_for_their_precision() {
+    for (precision, data_type) in [
+        (9, DataType::Decimal32(9, 2)),
+        (10, DataType::Decimal64(10, 2)),
+        (18, DataType::Decimal64(18, 2)),
+        (19, DataType::Decimal128(19, 2)),
+        (38, DataType::Decimal128(38, 2)),
+        (39, DataType::Decimal256(39, 2)),
+        (76, DataType::Decimal256(76, 2)),
+    ] {
+        let field = AnalyticsField::new(
+            "amount",
+            AnalyticsType::Decimal(DecimalType::new(precision, 2).unwrap()),
+            true,
+        );
+        assert_eq!(field.to_arrow().data_type(), &data_type);
+        assert_eq!(
+            AnalyticsField::try_from_arrow(&field.to_arrow()).unwrap(),
+            field
+        );
+    }
+    // A wider decimal than its precision needs is another representation of
+    // the same values, which the fixed encoding does not admit.
+    let wider = Field::new("amount", DataType::Decimal128(9, 2), true);
+    assert!(matches!(
+        AnalyticsField::try_from_arrow(&wider),
+        Err(TypeError::UnsupportedArrowType { .. })
+    ));
 }
 
 #[test]
@@ -173,9 +205,9 @@ fn unsupported_arrow_parameters_are_typed_errors() {
         Err(TypeError::UnsupportedArrowType { .. })
     ));
 
-    let unsigned = Schema::new(vec![Field::new("value", DataType::UInt64, false)]);
+    let half_float = Schema::new(vec![Field::new("value", DataType::Float16, false)]);
     assert!(matches!(
-        AnalyticsSchema::try_from_arrow(&unsigned),
+        AnalyticsSchema::try_from_arrow(&half_float),
         Err(TypeError::UnsupportedArrowType { .. })
     ));
 }
@@ -188,9 +220,14 @@ fn every_direct_arrow_scalar_type_round_trips() {
         AnalyticsType::SmallInt,
         AnalyticsType::Int,
         AnalyticsType::BigInt,
+        AnalyticsType::UnsignedByte,
+        AnalyticsType::UnsignedSmallInt,
+        AnalyticsType::UnsignedInt,
+        AnalyticsType::UnsignedBigInt,
         AnalyticsType::Float,
         AnalyticsType::Double,
         AnalyticsType::Decimal(DecimalType::new(2, -3).unwrap()),
+        AnalyticsType::Decimal(DecimalType::new(65, 30).unwrap()),
         AnalyticsType::Text,
         AnalyticsType::Blob,
         AnalyticsType::Date,

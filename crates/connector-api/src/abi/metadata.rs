@@ -184,6 +184,10 @@ impl ScalardbAnalyticsConnectorAnalyticsTypeKind {
     pub const ENUM: Self = Self(22);
     pub const YEAR: Self = Self(23);
     pub const TIME_WITH_TIME_ZONE: Self = Self(24);
+    pub const UNSIGNED_BYTE: Self = Self(25);
+    pub const UNSIGNED_SMALL_INT: Self = Self(26);
+    pub const UNSIGNED_INT: Self = Self(27);
+    pub const UNSIGNED_BIG_INT: Self = Self(28);
 }
 
 /// An Analytics type, as the Analytics type model defines it.
@@ -707,6 +711,10 @@ impl Arena {
             AnalyticsType::SmallInt => Kind::SMALL_INT,
             AnalyticsType::Int => Kind::INT,
             AnalyticsType::BigInt => Kind::BIG_INT,
+            AnalyticsType::UnsignedByte => Kind::UNSIGNED_BYTE,
+            AnalyticsType::UnsignedSmallInt => Kind::UNSIGNED_SMALL_INT,
+            AnalyticsType::UnsignedInt => Kind::UNSIGNED_INT,
+            AnalyticsType::UnsignedBigInt => Kind::UNSIGNED_BIG_INT,
             AnalyticsType::Float => Kind::FLOAT,
             AnalyticsType::Double => Kind::DOUBLE,
             AnalyticsType::Decimal(decimal) => {
@@ -1146,6 +1154,10 @@ unsafe fn read_analytics_type(
         }
         Kind::YEAR => AnalyticsType::Year,
         Kind::TIME_WITH_TIME_ZONE => AnalyticsType::TimeWithTimeZone,
+        Kind::UNSIGNED_BYTE => AnalyticsType::UnsignedByte,
+        Kind::UNSIGNED_SMALL_INT => AnalyticsType::UnsignedSmallInt,
+        Kind::UNSIGNED_INT => AnalyticsType::UnsignedInt,
+        Kind::UNSIGNED_BIG_INT => AnalyticsType::UnsignedBigInt,
         other => return Err(unknown("Analytics type kind", other.0)),
     })
 }
@@ -1228,6 +1240,7 @@ mod tests {
             AnalyticsType::Float,
             AnalyticsType::Double,
             AnalyticsType::Decimal(DecimalType::new(38, -2).unwrap()),
+            AnalyticsType::Decimal(DecimalType::new(76, 10).unwrap()),
             AnalyticsType::Text,
             AnalyticsType::Blob,
             AnalyticsType::Date,
@@ -1262,6 +1275,10 @@ mod tests {
             AnalyticsType::Enum(EnumType::new(names(&["small", "large"]))),
             AnalyticsType::Year,
             AnalyticsType::TimeWithTimeZone,
+            AnalyticsType::UnsignedByte,
+            AnalyticsType::UnsignedSmallInt,
+            AnalyticsType::UnsignedInt,
+            AnalyticsType::UnsignedBigInt,
         ];
         for analytics_type in &all {
             match analytics_type {
@@ -1270,6 +1287,10 @@ mod tests {
                 | AnalyticsType::SmallInt
                 | AnalyticsType::Int
                 | AnalyticsType::BigInt
+                | AnalyticsType::UnsignedByte
+                | AnalyticsType::UnsignedSmallInt
+                | AnalyticsType::UnsignedInt
+                | AnalyticsType::UnsignedBigInt
                 | AnalyticsType::Float
                 | AnalyticsType::Double
                 | AnalyticsType::Decimal(_)

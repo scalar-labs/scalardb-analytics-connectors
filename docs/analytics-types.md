@@ -46,8 +46,9 @@ every adapter without conversion.
 | --- | --- | --- | --- |
 | Boolean | Bool | The same value | false before true |
 | Byte, SmallInt, Int, BigInt | Int8, Int16, Int32, Int64 | The same number | Numeric |
+| UnsignedByte, UnsignedSmallInt, UnsignedInt, UnsignedBigInt | UInt8, UInt16, UInt32, UInt64 | The same number | Numeric |
 | Float, Double | Float32, Float64 | The same number; -0 equals +0, and NaN equals NaN | Numeric, with NaN after every other value, including positive infinity |
-| Decimal(p, s) | Decimal128(p, s) | The same number | Numeric |
+| Decimal(p, s), p from 1 to 76 | The narrowest Arrow decimal that holds p digits: Decimal32(p, s) up to 9, Decimal64(p, s) up to 18, Decimal128(p, s) up to 38, and Decimal256(p, s) up to 76 | The same number | Numeric |
 | Text | Utf8 | The same UTF-8 bytes; no normalization, case folding, or padding, so trailing spaces count | By UTF-8 bytes, which is code point order; a string precedes every longer string it begins |
 | Blob | Binary | The same bytes | By bytes; a value precedes every longer value it begins |
 | Date | Date32 | The same date | Chronological |
@@ -65,13 +66,15 @@ every adapter without conversion.
 | Year | Int16, extension `scalardb.analytics.year` | The same year | Not defined |
 | TimeWithTimeZone | Utf8, extension `scalardb.analytics.timetz` | The same time and zone, so `10:00:00+09` and `01:00:00+00` differ | Not defined |
 
-Unsigned integers and decimals with precision above 38 are not admitted, even
-though Arrow has `uint8` through `uint64` and `decimal256`, and MySQL `DECIMAL`
-reaches precision 65 while PostgreSQL `numeric` allows an unspecified
-precision. How type mappings handle such Data Source types is defined in
-[Type mappings and coverage](connector-contract.md#type-mappings-and-coverage).
-Admitting them is an addition of Analytics types
-([Adding Analytics types](#adding-analytics-types)).
+Each encoding is the Arrow type a source's values are naturally in, so a
+connector whose Data Source access returns that type passes it through
+without converting values or using more space than they need. That is why
+unsigned integers keep their own types rather than widening to signed ones,
+and why a decimal's width follows its precision rather than being fixed. One
+encoding per type keeps it the same for every connector, so an adapter
+recognizes a type by its Arrow encoding alone. Decimals beyond Arrow's 76
+digits, such as PostgreSQL `numeric` without a declared precision, are not
+admitted ([Type mappings and coverage](connector-contract.md#type-mappings-and-coverage)).
 
 ### Comparison
 

@@ -186,9 +186,11 @@ comparison of the mapped type differs from the
 | --- | --- | --- | --- | --- |
 | Boolean | BOOLEAN | Lossless | Equality and ordering | The same |
 | Byte, SmallInt, Int, BigInt | TINYINT, SMALLINT, INTEGER, BIGINT | Lossless | Equality and ordering | The same |
+| UnsignedByte, UnsignedSmallInt, UnsignedInt, UnsignedBigInt | UTINYINT, USMALLINT, UINTEGER, UBIGINT | Lossless | Equality and ordering | The same |
 | Float, Double | FLOAT, DOUBLE | Lossless | Equality and ordering | The same: NaN equals NaN and orders after every other value, and -0 equals +0 |
-| Decimal(p, s), s ≥ 0 | DECIMAL(p, s) | Lossless | Equality and ordering | The same |
-| Decimal(p, s), s < 0 | DOUBLE | DuckDB has no negative scale; the value becomes an approximate floating-point number. Inside an Array, Map, or Struct it is not mapped, and a table with such a column cannot be bound | None | Compares the approximate numbers |
+| Decimal(p, s), p ≤ 38, s ≥ 0 | DECIMAL(p, s) | Lossless | Equality and ordering | The same |
+| Decimal(p, s), p ≤ 38, s < 0 | DOUBLE | DuckDB has no negative scale; the value becomes an approximate floating-point number. Inside an Array, Map, or Struct it is not mapped, and a table with such a column cannot be bound | None | Compares the approximate numbers |
+| Decimal(p, s), p > 38 | Not mapped | DuckDB decimals hold at most 38 digits. The column can be named but not read; reading it fails with the reason | None | — |
 | Text | VARCHAR | Lossless | Equality and ordering | The same without a collation; a collated comparison binds through a collation function, which is not offered |
 | Blob | BLOB | Lossless | Equality and ordering | The same |
 | Date | DATE | Lossless | Equality and ordering | The same |

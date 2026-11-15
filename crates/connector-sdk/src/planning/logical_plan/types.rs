@@ -9,6 +9,37 @@ use substrait::proto::{Type, r#type};
 use super::profile::PlanExtensions;
 use crate::RequestError;
 
+/// The largest precision of Substrait's own decimal type. A wider Analytics
+/// decimal is the logical `decimal` type over decimal text.
+const SUBSTRAIT_DECIMAL_PRECISION: u8 = 38;
+
+/// The logical type name of an Analytics type that Substrait has no type for,
+/// and the carrier type that holds its values: a string for text-like types,
+/// the next wider signed integer for unsigned integers up to 32 bits,
+/// `decimal(20, 0)` for unsigned 64-bit integers, and decimal text for
+/// decimals wider than Substrait's.
+pub(super) fn logical_encoding(data_type: &AnalyticsType) -> Option<(&'static str, AnalyticsType)> {
+    let encoding = match data_type {
+        AnalyticsType::Uuid => ("uuid", AnalyticsType::Text),
+        AnalyticsType::Json => ("json", AnalyticsType::Text),
+        AnalyticsType::Enum(_) => ("enum", AnalyticsType::Text),
+        AnalyticsType::TimeWithTimeZone => ("timetz", AnalyticsType::Text),
+        AnalyticsType::Year => ("year", AnalyticsType::SmallInt),
+        AnalyticsType::UnsignedByte => ("unsigned_byte", AnalyticsType::SmallInt),
+        AnalyticsType::UnsignedSmallInt => ("unsigned_smallint", AnalyticsType::Int),
+        AnalyticsType::UnsignedInt => ("unsigned_int", AnalyticsType::BigInt),
+        AnalyticsType::UnsignedBigInt => (
+            "unsigned_bigint",
+            AnalyticsType::Decimal(DecimalType::new(20, 0).expect("decimal(20, 0) is valid")),
+        ),
+        AnalyticsType::Decimal(decimal) if decimal.precision() > SUBSTRAIT_DECIMAL_PRECISION => {
+            ("decimal", AnalyticsType::Text)
+        }
+        _ => return None,
+    };
+    Some(encoding)
+}
+
 /// Converts one Substrait type and its nullability to the Analytics type model.
 ///
 /// Nested struct names are consumed from the same depth-first name stream used
@@ -44,9 +75,15 @@ pub(super) fn parse_type<'a>(
             (AnalyticsType::TimestampTz, value.nullability)
         }
         r#type::Kind::Decimal(value) => {
-            let precision = u8::try_from(value.precision).map_err(|_| {
-                RequestError::invalid("decimal precision is outside the valid range")
-            })?;
+            let precision = u8::try_from(value.precision)
+                .ok()
+                .filter(|precision| *precision <= SUBSTRAIT_DECIMAL_PRECISION)
+                .ok_or_else(|| {
+                    RequestError::invalid(
+                        "decimal precision is outside Substrait's decimal range; \
+                         wider decimals use the logical decimal type",
+                    )
+                })?;
             let scale = i8::try_from(value.scale)
                 .map_err(|_| RequestError::invalid("decimal scale is outside the valid range"))?;
             let decimal = DecimalType::new(precision, scale)
@@ -161,38 +198,68 @@ fn parse_logical_type<'a>(
     }
 
     let logical = match name {
-        "uuid" => logical_without_parameters(
-            parameters,
-            carrier,
-            AnalyticsType::Text,
-            AnalyticsType::Uuid,
-        )?,
-        "json" => logical_without_parameters(
-            parameters,
-            carrier,
-            AnalyticsType::Text,
-            AnalyticsType::Json,
-        )?,
-        "year" => logical_without_parameters(
-            parameters,
-            carrier,
-            AnalyticsType::SmallInt,
-            AnalyticsType::Year,
-        )?,
-        "timetz" => logical_without_parameters(
-            parameters,
-            carrier,
-            AnalyticsType::Text,
-            AnalyticsType::TimeWithTimeZone,
-        )?,
         "enum" => parse_enum(parameters, carrier)?,
+        "decimal" => parse_wide_decimal(parameters, carrier)?,
         _ => {
-            return Err(RequestError::undeclared(format!(
-                "logical type {name:?} is not supported"
-            )));
+            let logical = PARAMETERLESS_LOGICAL_TYPES
+                .iter()
+                .find(|logical| logical_encoding(logical).is_some_and(|(known, _)| known == name))
+                .ok_or_else(|| {
+                    RequestError::undeclared(format!("logical type {name:?} is not supported"))
+                })?;
+            logical_without_parameters(parameters, carrier, logical.clone())?
         }
     };
     Ok((logical, parse_nullability(data_type.nullability)?))
+}
+
+/// The logical types without parameters, found by their names.
+const PARAMETERLESS_LOGICAL_TYPES: [AnalyticsType; 8] = [
+    AnalyticsType::Uuid,
+    AnalyticsType::Json,
+    AnalyticsType::Year,
+    AnalyticsType::TimeWithTimeZone,
+    AnalyticsType::UnsignedByte,
+    AnalyticsType::UnsignedSmallInt,
+    AnalyticsType::UnsignedInt,
+    AnalyticsType::UnsignedBigInt,
+];
+
+/// Decodes a decimal wider than Substrait's from the logical type's JSON
+/// parameters, `{"precision": p, "scale": s}`, over decimal text.
+fn parse_wide_decimal(
+    parameters: &str,
+    carrier: AnalyticsType,
+) -> Result<AnalyticsType, RequestError> {
+    if carrier != AnalyticsType::Text {
+        return Err(RequestError::invalid(
+            "the decimal carrier type must be string",
+        ));
+    }
+    let value: Value = serde_json::from_str(parameters)
+        .map_err(|error| RequestError::invalid(format!("invalid decimal parameters: {error}")))?;
+    let parameter = |key: &str| value.get(key).and_then(Value::as_i64);
+    let (Some(precision), Some(scale)) = (parameter("precision"), parameter("scale")) else {
+        return Err(RequestError::invalid(
+            "decimal parameters must hold an integer precision and scale",
+        ));
+    };
+    if value.as_object().is_none_or(|object| object.len() != 2) {
+        return Err(RequestError::invalid(
+            "decimal parameters must contain only precision and scale",
+        ));
+    }
+    let (Ok(precision), Ok(scale)) = (u8::try_from(precision), i8::try_from(scale)) else {
+        return Err(RequestError::invalid("decimal parameters are out of range"));
+    };
+    if precision <= SUBSTRAIT_DECIMAL_PRECISION {
+        return Err(RequestError::invalid(
+            "a decimal within Substrait's decimal range uses Substrait's decimal type",
+        ));
+    }
+    let decimal = DecimalType::new(precision, scale)
+        .map_err(|error| RequestError::invalid(error.to_string()))?;
+    Ok(AnalyticsType::Decimal(decimal))
 }
 
 /// Decodes enum members from the logical type's JSON parameters.
@@ -245,7 +312,6 @@ fn string_parameter<'a>(
 fn logical_without_parameters(
     parameters: &str,
     carrier: AnalyticsType,
-    expected_carrier: AnalyticsType,
     logical: AnalyticsType,
 ) -> Result<AnalyticsType, RequestError> {
     if parameters != "{}" {
@@ -253,7 +319,7 @@ fn logical_without_parameters(
             "this logical type does not accept parameters",
         ));
     }
-    if carrier != expected_carrier {
+    if logical_encoding(&logical).map(|(_, expected)| expected) != Some(carrier) {
         return Err(RequestError::invalid(
             "the logical type uses an unexpected carrier type",
         ));
@@ -304,6 +370,10 @@ pub(super) fn encode_type(
             nullability,
             ..Default::default()
         }),
+        AnalyticsType::UnsignedByte
+        | AnalyticsType::UnsignedSmallInt
+        | AnalyticsType::UnsignedInt
+        | AnalyticsType::UnsignedBigInt => logical_type(data_type, nullability, extensions),
         AnalyticsType::Float => r#type::Kind::Fp32(r#type::Fp32 {
             nullability,
             ..Default::default()
@@ -312,6 +382,9 @@ pub(super) fn encode_type(
             nullability,
             ..Default::default()
         }),
+        AnalyticsType::Decimal(decimal) if decimal.precision() > SUBSTRAIT_DECIMAL_PRECISION => {
+            logical_type(data_type, nullability, extensions)
+        }
         AnalyticsType::Decimal(decimal) => r#type::Kind::Decimal(r#type::Decimal {
             precision: i32::from(decimal.precision()),
             scale: i32::from(decimal.scale()),
@@ -385,45 +458,40 @@ pub(super) fn encode_type(
             nullability,
             ..Default::default()
         }),
-        AnalyticsType::Uuid => {
-            logical_type("uuid", "{}", AnalyticsType::Text, nullability, extensions)
-        }
-        AnalyticsType::Json => {
-            logical_type("json", "{}", AnalyticsType::Text, nullability, extensions)
-        }
-        AnalyticsType::Year => logical_type(
-            "year",
-            "{}",
-            AnalyticsType::SmallInt,
-            nullability,
-            extensions,
-        ),
-        AnalyticsType::TimeWithTimeZone => {
-            logical_type("timetz", "{}", AnalyticsType::Text, nullability, extensions)
-        }
-        AnalyticsType::Enum(enum_type) => logical_type(
-            "enum",
-            &serde_json::json!({ "members": enum_type.members() }).to_string(),
-            AnalyticsType::Text,
-            nullability,
-            extensions,
-        ),
+        AnalyticsType::Uuid
+        | AnalyticsType::Json
+        | AnalyticsType::Enum(_)
+        | AnalyticsType::Year
+        | AnalyticsType::TimeWithTimeZone => logical_type(data_type, nullability, extensions),
     };
     Type { kind: Some(kind) }
 }
 
+/// Encodes an Analytics type that [`logical_encoding`] names as the logical
+/// type, with its JSON parameters and carrier.
 fn logical_type(
-    name: &str,
-    parameters: &str,
-    carrier: AnalyticsType,
+    data_type: &AnalyticsType,
     nullability: i32,
     extensions: &PlanExtensions,
 ) -> r#type::Kind {
+    let (name, carrier) =
+        logical_encoding(data_type).expect("only types with a logical encoding are encoded here");
+    let parameters = match data_type {
+        AnalyticsType::Enum(enum_type) => {
+            serde_json::json!({ "members": enum_type.members() }).to_string()
+        }
+        AnalyticsType::Decimal(decimal) => serde_json::json!({
+            "precision": decimal.precision(),
+            "scale": decimal.scale(),
+        })
+        .to_string(),
+        _ => "{}".to_owned(),
+    };
     r#type::Kind::UserDefined(r#type::UserDefined {
         type_reference: extensions.logical_type_anchor(),
         type_parameters: vec![
             string_type_parameter(name),
-            string_type_parameter(parameters),
+            string_type_parameter(&parameters),
             r#type::Parameter {
                 parameter: Some(r#type::parameter::Parameter::DataType(encode_type(
                     &carrier, false, extensions,

@@ -17,6 +17,7 @@ connector-sql.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+arrow-buffer.workspace = true
 connector-sdk = { workspace = true, features = ["conformance"] }
 futures-core.workspace = true
 serde_json.workspace = true

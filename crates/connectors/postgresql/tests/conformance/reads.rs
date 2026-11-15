@@ -4,10 +4,12 @@
 use std::sync::Arc;
 
 use arrow_array::{
-    ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray, StringArray,
-    Time64MicrosecondArray, TimestampMicrosecondArray, types::IntervalMonthDayNano,
+    ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal32Array, Decimal64Array,
+    Decimal128Array, Decimal256Array, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, IntervalMonthDayNanoArray, StringArray, Time64MicrosecondArray,
+    TimestampMicrosecondArray, types::IntervalMonthDayNano,
 };
+use arrow_buffer::i256;
 use connector_sdk::{
     ErrorKind,
     conformance::{
@@ -325,11 +327,47 @@ fn string(value: &str) -> Expression {
     literal(LiteralType::String(value.to_owned()))
 }
 
+/// A decimal array in the Analytics storage of `Decimal(precision, scale)`,
+/// the narrowest Arrow decimal that holds the precision.
 fn decimal_array(values: Vec<Option<i128>>, precision: u8, scale: i8) -> ArrayRef {
-    Arc::new(
-        Decimal128Array::from(values)
+    match precision {
+        ..=9 => Arc::new(
+            Decimal32Array::from_iter(
+                values
+                    .iter()
+                    .map(|value| value.map(|value| i32::try_from(value).unwrap())),
+            )
             .with_precision_and_scale(precision, scale)
             .unwrap(),
+        ),
+        10..=18 => Arc::new(
+            Decimal64Array::from_iter(
+                values
+                    .iter()
+                    .map(|value| value.map(|value| i64::try_from(value).unwrap())),
+            )
+            .with_precision_and_scale(precision, scale)
+            .unwrap(),
+        ),
+        _ => Arc::new(
+            Decimal128Array::from(values)
+                .with_precision_and_scale(precision, scale)
+                .unwrap(),
+        ),
+    }
+}
+
+/// A `Decimal256` array of decimal text without a point, such as `-12345`.
+fn decimal256_array(values: Vec<Option<String>>, precision: u8, scale: i8) -> ArrayRef {
+    Arc::new(
+        Decimal256Array::from(
+            values
+                .into_iter()
+                .map(|value| value.map(|value| i256::from_string(&value).unwrap()))
+                .collect::<Vec<_>>(),
+        )
+        .with_precision_and_scale(precision, scale)
+        .unwrap(),
     )
 }
 
@@ -363,6 +401,11 @@ fn value_types() -> ReadPlan {
             ),
             ("zoned", logical("timetz", "{}", true)),
             ("count", i32(true)),
+            ("narrow", decimal(9, 2, true)),
+            (
+                "widest",
+                logical("decimal", r#"{"precision":76,"scale":10}"#, true),
+            ),
         ],
     )
 }
@@ -428,6 +471,16 @@ fn value_type_rows() -> Vec<ArrayRef> {
         text([Some("ok"), None, Some("sad")]),
         text([Some("10:00:00.25+05:30"), None, Some("00:00:00+00")]),
         Arc::new(Int32Array::from(vec![Some(1), None, Some(i32::MAX)])),
+        decimal_array(vec![Some(999_999_999), None, Some(-999_999_999)], 9, 2),
+        decimal256_array(
+            vec![
+                Some("9".repeat(76)),
+                None,
+                Some(format!("-{}", "9".repeat(76))),
+            ],
+            76,
+            10,
+        ),
     ]
 }
 

@@ -219,8 +219,8 @@ records the change in its changelog
 - The connector's constant tables list, per mapping rule, the Arrow type the
   Data Source access (ADBC driver or reader crate) returns and the building block that
   converts it to the Analytics type. Building blocks are chosen from the
-  value-preserving conversions the connector SDK provides, such as widening
-  integers, converting decimal strings to `decimal128`, and aligning time units.
+  value-preserving conversions the connector SDK provides, such as converting
+  decimal strings to the Analytics decimal encoding and aligning time units.
 - When Data Source access already returns the Analytics type, nothing is converted
   and the returned buffers pass through to the caller.
 - Values that cannot be carried exactly are a `data` error

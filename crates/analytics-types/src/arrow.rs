@@ -89,6 +89,14 @@ impl AnalyticsField {
     }
 }
 
+impl AnalyticsType {
+    /// The Arrow data type that stores this type's values, without the
+    /// extension metadata an extension-encoded type also carries.
+    pub fn storage_type(&self) -> DataType {
+        analytics_type_to_arrow(self)
+    }
+}
+
 fn arrow_extension_encoding(data_type: &AnalyticsType) -> Option<(&'static str, String)> {
     let encoding = match data_type {
         AnalyticsType::Uuid => ("uuid", "{}".to_owned()),
@@ -189,11 +197,13 @@ fn analytics_type_to_arrow(data_type: &AnalyticsType) -> DataType {
         AnalyticsType::SmallInt => DataType::Int16,
         AnalyticsType::Int => DataType::Int32,
         AnalyticsType::BigInt => DataType::Int64,
+        AnalyticsType::UnsignedByte => DataType::UInt8,
+        AnalyticsType::UnsignedSmallInt => DataType::UInt16,
+        AnalyticsType::UnsignedInt => DataType::UInt32,
+        AnalyticsType::UnsignedBigInt => DataType::UInt64,
         AnalyticsType::Float => DataType::Float32,
         AnalyticsType::Double => DataType::Float64,
-        AnalyticsType::Decimal(decimal) => {
-            DataType::Decimal128(decimal.precision(), decimal.scale())
-        }
+        AnalyticsType::Decimal(decimal) => decimal_to_arrow(*decimal),
         AnalyticsType::Text | AnalyticsType::Uuid | AnalyticsType::Json => DataType::Utf8,
         AnalyticsType::Enum(_) | AnalyticsType::TimeWithTimeZone => DataType::Utf8,
         AnalyticsType::Year => DataType::Int16,
@@ -232,6 +242,19 @@ fn analytics_type_to_arrow(data_type: &AnalyticsType) -> DataType {
     }
 }
 
+/// The narrowest Arrow decimal that holds the precision: `Decimal32` up to 9
+/// digits, `Decimal64` up to 18, `Decimal128` up to 38, and `Decimal256` up
+/// to 76.
+fn decimal_to_arrow(decimal: DecimalType) -> DataType {
+    let (precision, scale) = (decimal.precision(), decimal.scale());
+    match precision {
+        ..=9 => DataType::Decimal32(precision, scale),
+        10..=18 => DataType::Decimal64(precision, scale),
+        19..=38 => DataType::Decimal128(precision, scale),
+        _ => DataType::Decimal256(precision, scale),
+    }
+}
+
 fn analytics_type_from_arrow(data_type: &DataType) -> Result<AnalyticsType, TypeError> {
     let analytics_type = match data_type {
         DataType::Boolean => AnalyticsType::Boolean,
@@ -239,10 +262,26 @@ fn analytics_type_from_arrow(data_type: &DataType) -> Result<AnalyticsType, Type
         DataType::Int16 => AnalyticsType::SmallInt,
         DataType::Int32 => AnalyticsType::Int,
         DataType::Int64 => AnalyticsType::BigInt,
+        DataType::UInt8 => AnalyticsType::UnsignedByte,
+        DataType::UInt16 => AnalyticsType::UnsignedSmallInt,
+        DataType::UInt32 => AnalyticsType::UnsignedInt,
+        DataType::UInt64 => AnalyticsType::UnsignedBigInt,
         DataType::Float32 => AnalyticsType::Float,
         DataType::Float64 => AnalyticsType::Double,
-        DataType::Decimal128(precision, scale) => {
-            AnalyticsType::Decimal(DecimalType::new(*precision, *scale)?)
+        DataType::Decimal32(precision, scale)
+        | DataType::Decimal64(precision, scale)
+        | DataType::Decimal128(precision, scale)
+        | DataType::Decimal256(precision, scale) => {
+            let decimal = DecimalType::new(*precision, *scale)?;
+            if &decimal_to_arrow(decimal) != data_type {
+                return Err(TypeError::UnsupportedArrowType {
+                    data_type: format!(
+                        "{data_type:?}; a decimal of precision {precision} uses {:?}",
+                        decimal_to_arrow(decimal)
+                    ),
+                });
+            }
+            AnalyticsType::Decimal(decimal)
         }
         DataType::Utf8 => AnalyticsType::Text,
         DataType::Binary => AnalyticsType::Blob,

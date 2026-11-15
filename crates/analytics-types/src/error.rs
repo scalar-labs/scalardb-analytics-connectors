@@ -7,7 +7,7 @@ use thiserror::Error;
 pub enum TypeError {
     /// A decimal parameter pair is outside the supported range.
     #[error(
-        "invalid DECIMAL({precision}, {scale}); precision must be 1..=38 and a positive scale must not exceed precision"
+        "invalid DECIMAL({precision}, {scale}); precision must be 1..=76 and a positive scale must not exceed precision"
     )]
     InvalidDecimal { precision: u8, scale: i8 },
 

@@ -39,7 +39,7 @@ CREATE TABLE "Mixed Case" (
   double_value double precision,
   exact numeric(10, 2),
   widest numeric(38, 0),
-  too_wide numeric(39, 0),
+  too_wide numeric(77, 0),
   unbounded numeric,
   negative_scale numeric(5, -2),
   free_text text,
@@ -94,7 +94,9 @@ CREATE TABLE value_types (
   binary_document jsonb,
   feeling mood,
   zoned timetz,
-  count positive
+  count positive,
+  narrow numeric(9, 2),
+  widest numeric(76, 10)
 );
 INSERT INTO value_types VALUES
   (1, true, 32767, 2147483647, -9223372036854775808, 0.5, 0.25,
@@ -102,15 +104,17 @@ INSERT INTO value_types VALUES
    '0001-01-01 BC', '23:59:59.999999', '1970-01-01 00:00:00.000001',
    '2020-01-01 00:00:00+09', '1 year 2 mons 3 days 04:05:06.789',
    'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11', '{"a": 1}', '{"b": [1, 2]}', 'ok',
-   '10:00:00.25+05:30', 1),
+   '10:00:00.25+05:30', 1, 9999999.99,
+   (repeat('9', 66) || '.' || repeat('9', 10))::numeric),
   (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-   NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+   NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
   (3, false, -32768, -2147483648, 9223372036854775807, -3.4028235e38,
    1.7976931348623157e308, '-9999999999999999999999999999999999.9999', '',
    'ten chars.', 'abcde', '\x', '5874897-12-31', '00:00:00',
    '294247-01-10 04:00:54.775807', '2020-01-01 00:00:00-08',
    '-1 year -2 days -00:00:01', '00000000-0000-0000-0000-000000000000', '[]',
-   '{}', 'sad', '00:00:00+00', 2147483647);
+   '{}', 'sad', '00:00:00+00', 2147483647, -9999999.99,
+   ('-' || repeat('9', 66) || '.' || repeat('9', 10))::numeric);
 
 -- Values that cannot be carried exactly.
 CREATE TABLE special (id integer NOT NULL, amount numeric(10, 2), clock time);

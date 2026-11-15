@@ -12,8 +12,8 @@ mod model;
 
 pub use error::TypeError;
 pub use model::{
-    AnalyticsField, AnalyticsSchema, AnalyticsType, ArrayType, DecimalType, EnumType, MapType,
-    StructType,
+    AnalyticsField, AnalyticsSchema, AnalyticsType, ArrayType, DecimalType, EnumType,
+    MAX_DECIMAL_PRECISION, MapType, StructType,
 };
 
 pub use arrow_schema;

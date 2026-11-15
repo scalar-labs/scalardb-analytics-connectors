@@ -113,6 +113,10 @@ fn type_name(data_type: &AnalyticsType) -> Option<String> {
         AnalyticsType::TimeWithTimeZone => "timetz",
         AnalyticsType::Enum(_)
         | AnalyticsType::Year
+        | AnalyticsType::UnsignedByte
+        | AnalyticsType::UnsignedSmallInt
+        | AnalyticsType::UnsignedInt
+        | AnalyticsType::UnsignedBigInt
         | AnalyticsType::Array(_)
         | AnalyticsType::Map(_)
         | AnalyticsType::Struct(_) => return None,

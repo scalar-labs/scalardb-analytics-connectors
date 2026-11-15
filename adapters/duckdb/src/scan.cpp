@@ -306,7 +306,7 @@ void ReadSchema(duckdb::ClientContext &context, ScanGlobalState &state) {
 		auto &type = fields[i].type;
 		if (type.kind_case() == substrait::Type::kDecimal && type.decimal().scale() < 0) {
 			auto &child = *state.schema.children[i];
-			replacements.push_back("d:" + std::to_string(type.decimal().precision()) + ",0");
+			replacements.push_back(DecimalFormat(type.decimal().precision(), 0));
 			borrowed.formats.emplace_back(&child, child.format);
 			child.format = replacements.back().c_str();
 			state.scaled.emplace_back(i, std::pow(10.0, -type.decimal().scale()));

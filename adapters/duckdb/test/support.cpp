@@ -82,7 +82,7 @@ struct FixtureTable {
 			auto &type = column.analytics_type;
 			switch (columns[i].kind) {
 			case ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL:
-				type.decimal_precision = 10;
+				type.decimal_precision = columns[i].decimal_precision;
 				type.decimal_scale = columns[i].decimal_scale;
 				break;
 			case ScalardbAnalyticsConnectorAnalyticsTypeKind_ENUM:

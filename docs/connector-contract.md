@@ -689,11 +689,10 @@ Values that cannot be carried exactly, such as PostgreSQL `numeric` NaN, are a
 `data` error in data read under any rule ([Values](#values)).
 
 A Data Source type whose values no admitted Analytics type holds is not
-mapped: unsigned 64-bit integers, decimals with precision above 38, and
-decimals without a declared precision. A rule may map an unsigned integer of
-32 bits or fewer to the next wider signed integer, which holds its range. Such
-rules rely on unsigned integers being outside the Analytics types, and change
-if those types are admitted.
+mapped, such as decimals with precision above 76 or without a declared
+precision. A rule maps to the Analytics type whose Arrow encoding the source's
+values naturally have, such as an unsigned integer to the unsigned integer of
+the same width, rather than to a wider type that also holds them.
 
 Type mappings have no version. The mapping is built into the connector, so the
 connector's name and version determine which mapping produced given table
@@ -1170,8 +1169,10 @@ follows:
 | --- | --- |
 | `Boolean` | `boolean` |
 | `Byte`, `SmallInt`, `Int`, `BigInt` | `i8`, `i16`, `i32`, `i64` |
+| `UnsignedByte`, `UnsignedSmallInt`, `UnsignedInt`, `UnsignedBigInt` | `logical` named `unsigned_byte`, `unsigned_smallint`, `unsigned_int`, and `unsigned_bigint`, over `i16`, `i32`, `i64`, and `decimal<20, 0>` |
 | `Float`, `Double` | `fp32`, `fp64` |
-| `Decimal(p, s)` | `decimal<p, s>` |
+| `Decimal(p, s)`, p up to 38 | `decimal<p, s>` |
+| `Decimal(p, s)`, p above 38 | `logical` named `decimal` with `{"precision":p,"scale":s}`, over `string` holding the canonical decimal text |
 | `Text` | `string` |
 | `Blob` | `binary` |
 | `Date` | `date` |
@@ -1203,6 +1204,15 @@ Extension-encoded types travel as a Substrait user-defined type because
 lowering them to their carrier type would make `Uuid` and `Text`
 indistinguishable in the plan, so the connector could not validate the schema
 or the concrete expression semantics.
+
+Substrait has no unsigned integers and no decimal above 38 digits, so those
+Analytics types also travel as `logical`, although their Arrow encodings are
+Arrow's own types. Each carrier holds every value of its type: an unsigned
+integer in the next wider signed integer, or `decimal<20, 0>` for 64 bits, and
+a wide decimal as its canonical text, an optional `-`, integer digits without
+leading zeros, and for a positive scale a point followed by exactly the
+scale's digits. A literal whose carrier holds no value of the type, such as
+`unsigned_byte` over 256, is an invalid request.
 
 Conditions with literals that Substrait types cannot express, such as dates
 outside `date`'s range, are not put in the plan by the adapter and stay in the

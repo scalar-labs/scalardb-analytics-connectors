@@ -183,9 +183,17 @@ TEST_CASE("values of every Analytics type are read as their mapped DuckDB values
 	    {{"i16", ScalardbAnalyticsConnectorAnalyticsTypeKind_SMALL_INT, true}, "SMALLINT", "7"},
 	    {{"i32", ScalardbAnalyticsConnectorAnalyticsTypeKind_INT, true}, "INTEGER", "42"},
 	    {{"i64", ScalardbAnalyticsConnectorAnalyticsTypeKind_BIG_INT, true}, "BIGINT", "42"},
+	    {{"u8", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BYTE, true}, "UTINYINT", "7"},
+	    {{"u16", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_SMALL_INT, true}, "USMALLINT", "7"},
+	    {{"u32", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_INT, true}, "UINTEGER", "42"},
+	    {{"u64", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BIG_INT, true}, "UBIGINT", "42"},
 	    {{"f32", ScalardbAnalyticsConnectorAnalyticsTypeKind_FLOAT, true}, "FLOAT", "0.5"},
 	    {{"f64", ScalardbAnalyticsConnectorAnalyticsTypeKind_DOUBLE, true}, "DOUBLE", "2.5"},
+	    // A decimal arrives in the Arrow width of its precision: 32, 64, and
+	    // 128 bits.
+	    {{"d32", ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL, true, 2, 9}, "DECIMAL(9,2)", "10.50"},
 	    {{"dec", ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL, true}, "DECIMAL(10,2)", "10.50"},
+	    {{"d128", ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL, true, 2, 38}, "DECIMAL(38,2)", "10.50"},
 	    {{"neg", ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL, true, -2}, "DOUBLE", "105000.0"},
 	    {{"txt", ScalardbAnalyticsConnectorAnalyticsTypeKind_TEXT, true}, "VARCHAR", "text"},
 	    {{"blb", ScalardbAnalyticsConnectorAnalyticsTypeKind_BLOB, true}, "BLOB", "\\x01\\x02"},
@@ -253,6 +261,10 @@ TEST_CASE("every offered plan shape passes the library's validation") {
 	    {"i16", ScalardbAnalyticsConnectorAnalyticsTypeKind_SMALL_INT, true},
 	    {"i32", ScalardbAnalyticsConnectorAnalyticsTypeKind_INT, true},
 	    {"i64", ScalardbAnalyticsConnectorAnalyticsTypeKind_BIG_INT, false},
+	    {"u8", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BYTE, true},
+	    {"u16", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_SMALL_INT, true},
+	    {"u32", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_INT, true},
+	    {"u64", ScalardbAnalyticsConnectorAnalyticsTypeKind_UNSIGNED_BIG_INT, true},
 	    {"f32", ScalardbAnalyticsConnectorAnalyticsTypeKind_FLOAT, true},
 	    {"f64", ScalardbAnalyticsConnectorAnalyticsTypeKind_DOUBLE, true},
 	    {"dec", ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL, true},
@@ -290,6 +302,10 @@ TEST_CASE("every offered plan shape passes the library's validation") {
 	    {"i16 <= 3", true},
 	    {"i32 > 3", true},
 	    {"i64 >= 3", true},
+	    {"u8 < 200", true},
+	    {"u16 > 60000", true},
+	    {"u32 >= 4000000000", true},
+	    {"u64 = 18446744073709551615::UBIGINT", true},
 	    {"f32 <> 1.5", true},
 	    {"f64 = 2.5", true},
 	    {"f32 <> 1.5 OR f64 = 2.5", true},
@@ -329,6 +345,17 @@ TEST_CASE("every offered plan shape passes the library's validation") {
 		CHECK(filtered == item.offered);
 	}
 	CHECK_THAT(database.Error("SELECT count(*) FROM p.tests.shapes"), ContainsSubstring("does not know this table"));
+}
+
+TEST_CASE("a decimal wider than DuckDB's can be named but not read") {
+	Database database;
+	test_support::AttachFixture(database, "p",
+	                            {{{"tests", "shapes"},
+	                              {{"wide", ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL, true, 10, 65},
+	                               {"i64", ScalardbAnalyticsConnectorAnalyticsTypeKind_BIG_INT, true}}}});
+	CHECK(database.Rows("SELECT column_name FROM duckdb_columns() WHERE table_name = 'shapes' ORDER BY 1") ==
+	      std::vector<std::vector<std::string>> {{"i64"}});
+	CHECK_THAT(database.Error("SELECT wide FROM p.tests.shapes"), ContainsSubstring("Decimal(65, 10) has no DuckDB type"));
 }
 
 TEST_CASE("a time of 24:00:00 stays in DuckDB while the other filters are offered") {

@@ -6,7 +6,7 @@
 //!
 //! | Mapping rule | Driver output | Conversion |
 //! | --- | --- | --- |
-//! | `numeric(p,s)` | Utf8 decimal text | Text to `Decimal128(p, s)`; `NaN` and infinities are `data` errors |
+//! | `numeric(p,s)` | Utf8 decimal text | Text to the narrowest Arrow decimal of precision p; `NaN` and infinities are `data` errors |
 //! | `uuid` | FixedSizeBinary(16) | Bytes to canonical text |
 //! | `time with time zone` | Binary wire value | Wire value to PostgreSQL's text form |
 //! | `date`, `timestamp`, `timestamp with time zone` | Their Analytics storage | Checked against PostgreSQL's range |
@@ -29,7 +29,7 @@ use arrow_array::{
 };
 use connector_sdk::{
     ConnectorError, ErrorKind,
-    convert::{decimal128_from_text, downcast, not_carried, uuid_text_from_bytes},
+    convert::{decimal_from_text, downcast, not_carried, uuid_text_from_bytes},
 };
 
 /// PostgreSQL's earliest date, 4714-11-24 BC, in days since the Unix epoch.
@@ -45,11 +45,9 @@ pub(crate) fn convert_column(
     target: &AnalyticsType,
 ) -> Result<ArrayRef, ConnectorError> {
     Ok(match target {
-        AnalyticsType::Decimal(decimal) => Arc::new(decimal128_from_text(
-            downcast::<StringArray>(column)?,
-            decimal.precision(),
-            decimal.scale(),
-        )?),
+        AnalyticsType::Decimal(decimal) => {
+            decimal_from_text(downcast::<StringArray>(column)?, *decimal)?
+        }
         AnalyticsType::Uuid => Arc::new(uuid_text_from_bytes(downcast::<FixedSizeBinaryArray>(
             column,
         )?)?),

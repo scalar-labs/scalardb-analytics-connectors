@@ -195,7 +195,7 @@ fn mixed_case() -> TableMetadata {
             "too_wide",
             10,
             true,
-            unsupported("numeric(39,0)", UnsupportedReason::ParameterOutOfRange),
+            unsupported("numeric(77,0)", UnsupportedReason::ParameterOutOfRange),
         ),
         (
             "unbounded",

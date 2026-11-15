@@ -126,9 +126,10 @@ std::string UnmappedReason(const ScalardbAnalyticsConnectorColumn &column) {
 	}
 }
 
-// The base schema of a table: its columns that have an Analytics type, in
-// ordinal order. Columns without one are not part of any plan; they are kept
-// with the reason so that naming one can say why it cannot be read.
+// The base schema of a table: its columns that have an Analytics type with a
+// DuckDB type, in ordinal order. The other columns are not part of any plan;
+// they are kept with the reason so that naming one can say why it cannot be
+// read. A decimal wider than DuckDB's 38 digits has no DuckDB type.
 std::shared_ptr<const TableShape> Shape(const ScalardbAnalyticsConnectorTableMetadata &metadata) {
 	std::vector<const ScalardbAnalyticsConnectorColumn *> columns;
 	for (size_t i = 0; i < metadata.column_count; i++) {
@@ -143,6 +144,15 @@ std::shared_ptr<const TableShape> Shape(const ScalardbAnalyticsConnectorTableMet
 	for (auto column : columns) {
 		if (column->type_state != ScalardbAnalyticsConnectorColumnTypeState_MAPPED) {
 			shape->unmapped.emplace_back(Text(column->name), UnmappedReason(*column));
+			continue;
+		}
+		auto &type = column->analytics_type;
+		if (type.kind == ScalardbAnalyticsConnectorAnalyticsTypeKind_DECIMAL &&
+		    type.decimal_precision > DUCKDB_DECIMAL_PRECISION) {
+			shape->unmapped.emplace_back(Text(column->name),
+			                             "Decimal(" + std::to_string(type.decimal_precision) + ", " +
+			                                 std::to_string(type.decimal_scale) +
+			                                 ") has no DuckDB type: DuckDB decimals hold at most 38 digits");
 			continue;
 		}
 		shape->fields.push_back(FieldFromMetadata(Text(column->name), column->analytics_type,

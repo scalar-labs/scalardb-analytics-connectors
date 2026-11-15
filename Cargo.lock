@@ -555,6 +555,7 @@ dependencies = [
  "adbc_core",
  "analytics-types",
  "arrow-array",
+ "arrow-buffer",
  "connector-adbc",
  "connector-sdk",
  "connector-sql",

@@ -51,12 +51,13 @@ use analytics_types::{
     AnalyticsField, AnalyticsType, ArrayType, DecimalType, EnumType, MapType, StructType,
 };
 use arrow_array::{
-    ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DurationMicrosecondArray,
-    Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
-    IntervalMonthDayNanoArray, ListArray, MapArray, RecordBatch, StringArray, StructArray,
-    Time64MicrosecondArray, TimestampMicrosecondArray, types::IntervalMonthDayNano,
+    ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal32Array, Decimal64Array,
+    Decimal128Array, Decimal256Array, DurationMicrosecondArray, Float32Array, Float64Array,
+    Int8Array, Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray, ListArray, MapArray,
+    RecordBatch, StringArray, StructArray, Time64MicrosecondArray, TimestampMicrosecondArray,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array, types::IntervalMonthDayNano,
 };
-use arrow_buffer::{NullBuffer, OffsetBuffer};
+use arrow_buffer::{NullBuffer, OffsetBuffer, i256};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures_core::Stream;
 
@@ -542,13 +543,39 @@ fn sample(field: &Field, valid: &[bool]) -> ArrayRef {
         (AnalyticsType::Year, _) => Arc::new(Int16Array::from_iter(each(valid, 2026))),
         (AnalyticsType::Int, _) => Arc::new(Int32Array::from_iter(each(valid, 42))),
         (AnalyticsType::BigInt, _) => Arc::new(Int64Array::from_iter(each(valid, 42))),
+        (AnalyticsType::UnsignedByte, _) => Arc::new(UInt8Array::from_iter(each(valid, 7))),
+        (AnalyticsType::UnsignedSmallInt, _) => Arc::new(UInt16Array::from_iter(each(valid, 7))),
+        (AnalyticsType::UnsignedInt, _) => Arc::new(UInt32Array::from_iter(each(valid, 42))),
+        (AnalyticsType::UnsignedBigInt, _) => Arc::new(UInt64Array::from_iter(each(valid, 42))),
         (AnalyticsType::Float, _) => Arc::new(Float32Array::from_iter(each(valid, 0.5))),
         (AnalyticsType::Double, _) => Arc::new(Float64Array::from_iter(each(valid, 2.5))),
-        (AnalyticsType::Decimal(decimal), _) => Arc::new(
-            Decimal128Array::from_iter(each(valid, 1050))
-                .with_precision_and_scale(decimal.precision(), decimal.scale())
-                .expect("a declared decimal type is valid"),
-        ),
+        // The unscaled 1050 in the decimal's storage width.
+        (AnalyticsType::Decimal(decimal), storage) => {
+            let (precision, scale) = (decimal.precision(), decimal.scale());
+            let invalid = "a declared decimal type is valid";
+            match storage {
+                DataType::Decimal32(..) => Arc::new(
+                    Decimal32Array::from_iter(each(valid, 1050))
+                        .with_precision_and_scale(precision, scale)
+                        .expect(invalid),
+                ),
+                DataType::Decimal64(..) => Arc::new(
+                    Decimal64Array::from_iter(each(valid, 1050))
+                        .with_precision_and_scale(precision, scale)
+                        .expect(invalid),
+                ),
+                DataType::Decimal128(..) => Arc::new(
+                    Decimal128Array::from_iter(each(valid, 1050))
+                        .with_precision_and_scale(precision, scale)
+                        .expect(invalid),
+                ),
+                _ => Arc::new(
+                    Decimal256Array::from_iter(each(valid, i256::from(1050_i32)))
+                        .with_precision_and_scale(precision, scale)
+                        .expect(invalid),
+                ),
+            }
+        }
         (AnalyticsType::Text, _) => Arc::new(StringArray::from_iter(each(valid, "text"))),
         (AnalyticsType::Uuid, _) => Arc::new(StringArray::from_iter(each(
             valid,
@@ -831,22 +858,30 @@ impl SourceTableMetadata for TestTable {
 }
 
 /// The columns of the `values` table: one of every Analytics type, named
-/// as adapters' tests name them. A Decimal is `(10, 2)`, or `(10, -2)` for
-/// `neg`; an Array holds Text, a Map maps Text to BigInt, a Struct has one
-/// BigInt field `f`, and an Enum has the members `pending` and `done`.
+/// as adapters' tests name them. A Decimal is `(10, 2)`, `(9, 2)` for `d32`,
+/// `(38, 2)` for `d128`, or `(10, -2)` for `neg`, one of each storage width
+/// an adapter reads; an Array holds Text, a Map maps Text to BigInt, a Struct
+/// has one BigInt field `f`, and an Enum has the members `pending` and `done`.
 fn every_type() -> Vec<(&'static str, AnalyticsType)> {
-    let decimal =
-        |scale| AnalyticsType::Decimal(DecimalType::new(10, scale).expect("a valid decimal type"));
+    let decimal = |precision, scale| {
+        AnalyticsType::Decimal(DecimalType::new(precision, scale).expect("a valid decimal type"))
+    };
     vec![
         ("b", AnalyticsType::Boolean),
         ("i8", AnalyticsType::Byte),
         ("i16", AnalyticsType::SmallInt),
         ("i32", AnalyticsType::Int),
         ("i64", AnalyticsType::BigInt),
+        ("u8", AnalyticsType::UnsignedByte),
+        ("u16", AnalyticsType::UnsignedSmallInt),
+        ("u32", AnalyticsType::UnsignedInt),
+        ("u64", AnalyticsType::UnsignedBigInt),
         ("f32", AnalyticsType::Float),
         ("f64", AnalyticsType::Double),
-        ("dec", decimal(2)),
-        ("neg", decimal(-2)),
+        ("d32", decimal(9, 2)),
+        ("dec", decimal(10, 2)),
+        ("d128", decimal(38, 2)),
+        ("neg", decimal(10, -2)),
         ("txt", AnalyticsType::Text),
         ("blb", AnalyticsType::Blob),
         ("d", AnalyticsType::Date),

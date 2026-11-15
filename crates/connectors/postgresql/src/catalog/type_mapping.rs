@@ -66,7 +66,7 @@ pub(crate) fn map_type(base: &BaseType) -> Result<AnalyticsType, UnsupportedReas
 ///
 /// PostgreSQL stores `((p << 16) | s) + 4` in the type modifier, with the
 /// scale as an 11-bit two's-complement value since PostgreSQL 15. `numeric`
-/// without a precision, a precision above 38, and a scale greater than the
+/// without a precision, a precision above 76, and a scale greater than the
 /// precision are outside the mappable range.
 fn numeric(typmod: i32) -> Result<AnalyticsType, UnsupportedReason> {
     if typmod < 4 {
@@ -115,10 +115,14 @@ mod tests {
             decimal(38, 0)
         );
         assert_eq!(
+            map_type(&builtin("numeric", numeric_typmod(76, 10))),
+            decimal(76, 10)
+        );
+        assert_eq!(
             map_type(&builtin("numeric", numeric_typmod(5, -2))),
             decimal(5, -2)
         );
-        for typmod in [-1, numeric_typmod(39, 0), numeric_typmod(2, 5)] {
+        for typmod in [-1, numeric_typmod(77, 0), numeric_typmod(2, 5)] {
             assert_eq!(
                 map_type(&builtin("numeric", typmod)),
                 Err(UnsupportedReason::ParameterOutOfRange)

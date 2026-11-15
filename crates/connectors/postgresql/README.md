@@ -234,7 +234,7 @@ PostgreSQL ([Pushdown](#pushdown)):
 | `boolean` | `Boolean` | The same | Equality and ordering |
 | `smallint`, `integer`, `bigint` | `SmallInt`, `Int`, `BigInt` | The same | Equality and ordering |
 | `real`, `double precision` | `Float`, `Double` | The same: NaN equals NaN and orders after every other value, and -0 equals +0 | None |
-| `numeric(p,s)` | `Decimal(p, s)` when p is at most 38; `numeric` without precision is unsupported | The same | Equality and ordering |
+| `numeric(p,s)` | `Decimal(p, s)` when p is at most 76; `numeric` without precision is unsupported | The same | Equality and ordering |
 | `text`, `character varying(n)` | `Text` | Equality is the same under a deterministic collation, where equal strings are byte-equal; ordering follows the collation | Equality and inequality on a column with a deterministic collation, with a constant without NUL or with a column of the same collation |
 | `character(n)` | `Text` | Ignores trailing spaces | None |
 | `bytea` | `Blob` | The same | None |

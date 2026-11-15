@@ -3,7 +3,11 @@
 use analytics_types::{AnalyticsType, DecimalType};
 use substrait::proto::{Type, expression};
 
-use super::{expression::parse_scalar_type, profile::PlanExtensions, types::encode_type};
+use super::{
+    expression::parse_scalar_type,
+    profile::PlanExtensions,
+    types::{encode_type, logical_encoding},
+};
 use crate::RequestError;
 
 /// A canonical literal value in the SDK-supported logical-plan profile.
@@ -209,9 +213,14 @@ pub(super) fn parse(
             };
             let (logical, _) = parse_scalar_type(&data_type, extensions)?;
             let (carrier_type, carrier) = parse(carrier, extensions)?;
-            if logical_carrier_type(&logical) != Some(&carrier_type) {
+            if logical_encoding(&logical).map(|(_, carrier)| carrier) != Some(carrier_type) {
                 return Err(RequestError::invalid(
                     "a logical literal carrier does not match its declared logical type",
+                ));
+            }
+            if !carrier_holds_value(&logical, &carrier) {
+                return Err(RequestError::invalid(
+                    "a logical literal carrier holds no value of its declared logical type",
                 ));
             }
             Ok((
@@ -300,17 +309,68 @@ fn require_consistent_interval_sign(
     Ok(())
 }
 
-fn logical_carrier_type(data_type: &AnalyticsType) -> Option<&'static AnalyticsType> {
-    static TEXT: AnalyticsType = AnalyticsType::Text;
-    static SMALL_INT: AnalyticsType = AnalyticsType::SmallInt;
-    match data_type {
-        AnalyticsType::Uuid
-        | AnalyticsType::Json
-        | AnalyticsType::Enum(_)
-        | AnalyticsType::TimeWithTimeZone => Some(&TEXT),
-        AnalyticsType::Year => Some(&SMALL_INT),
-        _ => None,
+/// Whether a carrier value is a value of its logical type: an unsigned
+/// integer within its range, or a wide decimal's canonical text. A carrier of
+/// another logical type holds any value of the carrier type.
+fn carrier_holds_value(logical: &AnalyticsType, carrier: &LiteralValue) -> bool {
+    match (logical, carrier) {
+        (AnalyticsType::UnsignedByte, LiteralValue::SmallInt(value)) => {
+            u8::try_from(*value).is_ok()
+        }
+        (AnalyticsType::UnsignedSmallInt, LiteralValue::Int(value)) => {
+            u16::try_from(*value).is_ok()
+        }
+        (AnalyticsType::UnsignedInt, LiteralValue::BigInt(value)) => u32::try_from(*value).is_ok(),
+        (AnalyticsType::UnsignedBigInt, LiteralValue::Decimal { value, .. }) => {
+            u64::try_from(*value).is_ok()
+        }
+        (AnalyticsType::Decimal(decimal), LiteralValue::Text(text)) => {
+            canonical_decimal_text(text, *decimal)
+        }
+        (
+            AnalyticsType::UnsignedByte
+            | AnalyticsType::UnsignedSmallInt
+            | AnalyticsType::UnsignedInt
+            | AnalyticsType::UnsignedBigInt
+            | AnalyticsType::Decimal(_),
+            _,
+        ) => false,
+        _ => true,
     }
+}
+
+/// Whether `text` is a value of `decimal` in canonical form: an optional `-`,
+/// integer digits without leading zeros, and, for a positive scale, a point
+/// followed by exactly `scale` digits. With a negative scale, the digits the
+/// scale removes are zero. At most `precision` digits are significant.
+fn canonical_decimal_text(text: &str, decimal: DecimalType) -> bool {
+    let unsigned = text.strip_prefix('-').unwrap_or(text);
+    let scale = decimal.scale();
+    let (integer, fraction) = match unsigned.split_once('.') {
+        Some((integer, fraction)) if scale > 0 => (integer, fraction),
+        None if scale <= 0 => (unsigned, ""),
+        _ => return false,
+    };
+    let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+    if integer.is_empty()
+        || !digits(integer)
+        || !digits(fraction)
+        || (integer.len() > 1 && integer.starts_with('0'))
+        || fraction.len() != usize::try_from(scale.max(0)).unwrap_or(usize::MAX)
+    {
+        return false;
+    }
+    let removed = usize::from(scale.min(0).unsigned_abs());
+    let significant = integer.trim_start_matches('0').len() + fraction.len();
+    let zero = integer == "0" && fraction.bytes().all(|byte| byte == b'0');
+    if zero {
+        return text == unsigned;
+    }
+    integer.len() > removed
+        && integer[integer.len() - removed..]
+            .bytes()
+            .all(|byte| byte == b'0')
+        && significant.saturating_sub(removed) <= usize::from(decimal.precision())
 }
 
 /// Encodes a canonical literal for the Substrait boundary.

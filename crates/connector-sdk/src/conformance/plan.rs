@@ -266,13 +266,28 @@ pub fn literal(value: expression::literal::LiteralType) -> Expression {
 /// A logical literal of a registered extension-encoded type over a string
 /// carrier, such as `logical_text("uuid", "{}", "a0eebc99-...")`.
 pub fn logical_text(name: &str, parameters: &str, value: &str) -> Expression {
+    logical_literal(
+        name,
+        parameters,
+        expression::literal::LiteralType::String(value.to_owned()),
+    )
+}
+
+/// A logical literal whose carrier holds `carrier`, of the carrier type
+/// [`logical`] declares for `name`, such as
+/// `logical_literal("unsigned_byte", "{}", LiteralType::I16(200))`.
+pub fn logical_literal(
+    name: &str,
+    parameters: &str,
+    carrier: expression::literal::LiteralType,
+) -> Expression {
     use expression::literal::{LiteralType, Struct, UserDefined, user_defined::Val};
     literal(LiteralType::UserDefined(UserDefined {
         type_reference: LOGICAL,
         type_parameters: logical_parameters(name, parameters),
         val: Some(Val::Struct(Struct {
             fields: vec![expression::Literal {
-                literal_type: Some(LiteralType::String(value.to_owned())),
+                literal_type: Some(carrier),
                 ..Default::default()
             }],
         })),
@@ -280,15 +295,19 @@ pub fn logical_text(name: &str, parameters: &str, value: &str) -> Expression {
 }
 
 /// The parameters of a logical type: its name, its JSON parameters, and its
-/// carrier, which is 16-bit for `year` and a string for every other type.
+/// carrier, as the Analytics type model encodes it: the next wider signed
+/// integer for `year` and unsigned integers up to 32 bits, `decimal(20, 0)`
+/// for `unsigned_bigint`, and a string for every other type.
 fn logical_parameters(name: &str, parameters: &str) -> Vec<r#type::Parameter> {
     let string = |value: &str| r#type::Parameter {
         parameter: Some(r#type::parameter::Parameter::String(value.to_owned())),
     };
-    let carrier = if name == "year" {
-        i16(false)
-    } else {
-        text(false)
+    let carrier = match name {
+        "year" | "unsigned_byte" => i16(false),
+        "unsigned_smallint" => i32(false),
+        "unsigned_int" => i64(false),
+        "unsigned_bigint" => decimal(20, 0, false),
+        _ => text(false),
     };
     vec![
         string(name),
