@@ -15,6 +15,10 @@ permissions:
 
 env:
   DUCKDB_CLI_URL: https://github.com/duckdb/duckdb/releases/download/v1.5.6
+  # DuckDB's JDBC driver, which loads the extension without DuckDB's C++
+  # symbols in the host process.
+  DUCKDB_JDBC_URL: https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.6.0/duckdb_jdbc-1.5.6.0.jar
+  DUCKDB_JDBC_SHA256: 04ae3375d7c40dc88dc9bf0014b82ba5e66715564584af4e3abea39c7ba144d3
 
 jobs:
   linux:
@@ -25,22 +29,29 @@ jobs:
           - platform: linux_amd64
             runner: ubuntu-24.04
             cli: duckdb_cli-linux-amd64.zip
-            cli_sha256: fc9145affabca627431e73ddaf6b8117e5c192692480c13886f227be202d5d15
+            cli_sha256: 6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f
           - platform: linux_arm64
             runner: ubuntu-24.04-arm
             cli: duckdb_cli-linux-arm64.zip
-            cli_sha256: 28b15a8d78e6df62f6ec43da6b0e6397dcd28e25ab93d847df3c5c97f59375f5
+            cli_sha256: c544e92c9b7c31fc53c2139802cabd8e2d1b2b3e3f933117f31611239c1402db
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build package
         run: packaging/linux/package.sh
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
       - name: Check package
         run: |
           curl -fsSL -o "$RUNNER_TEMP/cli.zip" "$DUCKDB_CLI_URL/${{ matrix.cli }}"
           echo "${{ matrix.cli_sha256 }}  $RUNNER_TEMP/cli.zip" | sha256sum -c -
           unzip -q -d "$RUNNER_TEMP/duckdb" "$RUNNER_TEMP/cli.zip"
-          packaging/check-package.sh target/dist/*-${{ matrix.platform }}.tgz "$RUNNER_TEMP/duckdb/duckdb"
+          curl -fsSL -o "$RUNNER_TEMP/duckdb_jdbc.jar" "$DUCKDB_JDBC_URL"
+          echo "$DUCKDB_JDBC_SHA256  $RUNNER_TEMP/duckdb_jdbc.jar" | sha256sum -c -
+          packaging/test/check-package.sh target/dist/*-${{ matrix.platform }}.tgz "$RUNNER_TEMP/duckdb/duckdb" \
+            "$RUNNER_TEMP/duckdb_jdbc.jar"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package-${{ matrix.platform }}
@@ -63,15 +74,22 @@ jobs:
           printf '%s\n' connector-test-secret > "$RUNNER_TEMP/password"
           "$pg/initdb" -D "$RUNNER_TEMP/pg" -U postgres --pwfile="$RUNNER_TEMP/password" -A scram-sha-256
           "$pg/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 5432 -k $RUNNER_TEMP" -l "$RUNNER_TEMP/pg.log" -w start
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
       # Outside the Nix development shell, as a user runs it.
       - name: Check package
         env:
           POSTGRESQL_TEST_PORT: "5432"
         run: |
           curl -fsSL -o "$RUNNER_TEMP/cli.zip" "$DUCKDB_CLI_URL/duckdb_cli-osx-universal.zip"
-          echo "de789904e1b0b5f305d31b88a6fd8bd4f6ed3f63a00d95f8c7a2559a0995a2f1  $RUNNER_TEMP/cli.zip" | shasum -a 256 -c -
+          echo "80a80c68736bd7dea53e8b02447e9759db0c8596ea156476ba396c44f54c5810  $RUNNER_TEMP/cli.zip" | shasum -a 256 -c -
           unzip -q -d "$RUNNER_TEMP/duckdb" "$RUNNER_TEMP/cli.zip"
-          packaging/check-package.sh target/dist/*-osx_arm64.tgz "$RUNNER_TEMP/duckdb/duckdb"
+          curl -fsSL -o "$RUNNER_TEMP/duckdb_jdbc.jar" "$DUCKDB_JDBC_URL"
+          echo "$DUCKDB_JDBC_SHA256  $RUNNER_TEMP/duckdb_jdbc.jar" | shasum -a 256 -c -
+          packaging/test/check-package.sh target/dist/*-osx_arm64.tgz "$RUNNER_TEMP/duckdb/duckdb" \
+            "$RUNNER_TEMP/duckdb_jdbc.jar"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package-osx_arm64

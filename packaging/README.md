@@ -8,9 +8,10 @@ platform that works wherever it is unpacked.
 | --- | --- |
 | `dependencies.json` | What ships: the connectors built into the library and the dependencies each one ships |
 | `package.sh` | Builds the package of the running platform from that declaration |
-| `check-package.sh` | Checks an unpacked package: binary references, and the DuckDB e2e |
 | `linux/package.sh` | Runs `package.sh` for Linux in the pinned manylinux_2_28 image with Docker |
 | `linux/build.sh` | Prepares the manylinux container and runs `package.sh` in it |
+| `test/check-package.sh` | Checks an unpacked package: binary references, the extension loaded through DuckDB's JDBC driver, and the DuckDB e2e |
+| `test/LoadExtension.java` | Loads the packaged extension through DuckDB's JDBC driver, for `test/check-package.sh` |
 | `about.toml`, `about.hbs` | cargo-about configuration and template for the Rust crates' license texts |
 
 ## What ships
@@ -43,10 +44,10 @@ A dependency the user installs is not listed here.
    dependencies it ships.
 2. Declare each new dependency under `dependencies` with an existing kind, or
    add a kind as below.
-3. Build and check the package on each platform. `check-package.sh` rejects a
-   shipped binary that references a library which is neither a system library
-   nor in the package's `lib/`: such a library is a dependency that is not
-   declared, or is placed where nothing finds it.
+3. Build and check the package on each platform. `test/check-package.sh`
+   rejects a shipped binary that references a library which is neither a
+   system library nor in the package's `lib/`: such a library is a dependency
+   that is not declared, or is placed where nothing finds it.
 
 ## Adding a kind
 

@@ -1,0 +1,8 @@
+/* The distribution extension's exports on Linux: only the entry point DuckDB
+   calls, so that the DuckDB, protobuf and abseil it carries stay its own. */
+{
+  global:
+    scalardb_analytics_connectors_duckdb_cpp_init;
+  local:
+    *;
+};

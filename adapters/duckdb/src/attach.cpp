@@ -4,6 +4,9 @@
 // listed in a definitions file.
 #include <map>
 
+#include <google/protobuf/struct.pb.h>
+#include <google/protobuf/util/json_util.h>
+
 #include "connector_api.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/main/attached_database.hpp"
@@ -36,35 +39,35 @@ struct OptionDeclaration {
 // The declared connection options, by Connector name and option key.
 using OptionTypes = std::map<std::string, std::map<std::string, OptionDeclaration>>;
 
+// A field of a static information object, which the document's schema
+// requires.
+const google::protobuf::Value &Field(const google::protobuf::Value &object, const std::string &key) {
+	auto &fields = object.struct_value().fields();
+	auto field = fields.find(key);
+	if (field == fields.end()) {
+		throw duckdb::InternalException("ScalarDB Analytics static information has an object without \"%s\"", key);
+	}
+	return field->second;
+}
+
 // Reads the declared options from the library's static information.
 //
-// DuckDB has no JSON parser in its public headers, so a private in-memory
-// database reads the document; it shares no state with the databases the
-// adapter is registered on.
+// DuckDB has no JSON parser in its public headers, and the protobuf the
+// adapter links for Substrait parses JSON without a database.
 OptionTypes ReadOptionTypes(const ScalardbAnalyticsConnectorApi &api) {
-	duckdb::DuckDB reader(nullptr);
-	duckdb::Connection connection(reader);
-	auto statement = connection.Prepare(
-	    "SELECT handled.value->>'$', option.value->>'$.key', option.value->>'$.value_type', "
-	    "option.value->>'$.secret' "
-	    "FROM json_each(?::JSON, '$.connectors') AS connector, json_each(connector.value, '$.connectors') AS handled "
-	    "LEFT JOIN json_each(connector.value, '$.options') AS option ON true");
-	if (statement->HasError()) {
-		throw duckdb::InternalException("ScalarDB Analytics static information query: %s", statement->GetError());
-	}
-	duckdb::vector<duckdb::Value> values {duckdb::Value(Text(api.static_information()))};
-	auto result = statement->Execute(values, false);
-	if (result->HasError()) {
-		throw duckdb::InternalException("ScalarDB Analytics static information: %s", result->GetError());
+	google::protobuf::Value information;
+	auto status = google::protobuf::util::JsonStringToMessage(Text(api.static_information()), &information);
+	if (!status.ok()) {
+		throw duckdb::InternalException("ScalarDB Analytics static information: %s", std::string(status.message()));
 	}
 	OptionTypes types;
-	for (auto &row : duckdb::unique_ptr_cast<duckdb::QueryResult, duckdb::MaterializedQueryResult>(std::move(result))
-	                     ->Collection()
-	                     .GetRows()) {
-		auto &options = types[row.GetValue(0).GetValue<std::string>()];
-		if (!row.GetValue(1).IsNull()) {
-			options[row.GetValue(1).GetValue<std::string>()] = {row.GetValue(2).GetValue<std::string>(),
-			                                                     row.GetValue(3).GetValue<std::string>() == "true"};
+	for (auto &connector : Field(information, "connectors").list_value().values()) {
+		for (auto &handled : Field(connector, "connectors").list_value().values()) {
+			auto &options = types[handled.string_value()];
+			for (auto &option : Field(connector, "options").list_value().values()) {
+				options[Field(option, "key").string_value()] = {Field(option, "value_type").string_value(),
+				                                                 Field(option, "secret").bool_value()};
+			}
 		}
 	}
 	return types;

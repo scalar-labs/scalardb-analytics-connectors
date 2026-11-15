@@ -122,14 +122,15 @@ and dependencies ship is declared in `packaging/dependencies.json`
 `packaging/package.sh`: on macOS in the Nix shell, and for Linux in
 a manylinux_2_28 container that `packaging/linux/package.sh` starts with
 Docker, for the Docker engine's architecture. Each is checked unpacked with
-`packaging/check-package.sh` on its own platform:
+`packaging/test/check-package.sh` on its own platform:
 
 ```sh
 # macOS arm64
 nix develop --command packaging/package.sh
 # Linux, on a host whose Docker engine runs Linux containers
 packaging/linux/package.sh
-packaging/check-package.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz <DuckDB v1.5.6 CLI>
+packaging/test/check-package.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz \
+  <DuckDB v1.5.6 CLI> <DuckDB JDBC 1.5.6.0 jar>
 ```
 
 ### Versioning

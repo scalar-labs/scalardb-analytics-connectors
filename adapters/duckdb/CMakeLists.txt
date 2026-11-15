@@ -34,18 +34,36 @@ if(NOT EXISTS "${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
   message(FATAL_ERROR "build the connector API library first: ${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
 endif()
 option(SCALARDB_ANALYTICS_DISTRIBUTION
-  "Build only the loadable extension for the distribution package: it finds the connector API library in ../lib, carries protobuf and abseil inside, and builds them and takes DuckDB's headers from pinned sources instead of the development environment"
+  "Build only the loadable extension for the distribution package: it finds the connector API library in ../lib, carries DuckDB, protobuf and abseil inside, and takes them from pinned sources and DuckDB release libraries instead of the development environment"
   OFF)
 
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
   include(FetchContent)
   # A SOURCE_SUBDIR without a CMakeLists.txt makes FetchContent download a
   # source without building it.
-  # DuckDB's headers only: the host process provides DuckDB itself.
   FetchContent_Declare(duckdb
     URL https://github.com/duckdb/duckdb/archive/refs/tags/v1.5.6.tar.gz
     URL_HASH SHA256=1fadcbe9e69e1470f9093b6bcde08daf477d729c449e59a807f45c346622099b
     SOURCE_SUBDIR headers-only)
+  # DuckDB's static library from its release, which the extension carries: a
+  # host process need not export DuckDB's C++ symbols, and DuckDB's JDBC
+  # driver exports none.
+  if(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+    set(DUCKDB_STATIC_ASSET osx-arm64)
+    set(DUCKDB_STATIC_SHA256 e77c382fba15e3f5c0b3265d12e3a4de534699fdb91bcc9d10d4a857a58103d5)
+  elseif(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    set(DUCKDB_STATIC_ASSET linux-arm64)
+    set(DUCKDB_STATIC_SHA256 56249751117a4c04289764e06eb431352ce33fb3f8e2f30401122d4d0e184139)
+  elseif(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    set(DUCKDB_STATIC_ASSET linux-amd64)
+    set(DUCKDB_STATIC_SHA256 ab3d1d33951b8cb8bdcae740d8e06adf66bfb7ee880a3f7052d7a35088e16d2d)
+  else()
+    message(FATAL_ERROR "no DuckDB static library is pinned for ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+  FetchContent_Declare(duckdb_static
+    URL https://github.com/duckdb/duckdb/releases/download/v1.5.6/static-libs-${DUCKDB_STATIC_ASSET}.zip
+    URL_HASH SHA256=${DUCKDB_STATIC_SHA256}
+    SOURCE_SUBDIR libraries-only)
   # The Substrait specification version flake.nix pins for development.
   FetchContent_Declare(substrait
     URL https://github.com/substrait-io/substrait/archive/refs/tags/v0.69.0.tar.gz
@@ -67,7 +85,7 @@ if(SCALARDB_ANALYTICS_DISTRIBUTION)
   FetchContent_Declare(protobuf
     URL https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protobuf-34.1.tar.gz
     URL_HASH SHA256=e4e6ff10760cf747a2decd1867741f561b216bd60cc4038c87564713a6da1848)
-  FetchContent_MakeAvailable(duckdb substrait absl protobuf)
+  FetchContent_MakeAvailable(duckdb duckdb_static substrait absl protobuf)
   include("${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake")
   set(DuckDB_VERSION v1.5.6)
   set(DuckDB_INCLUDE_DIRS "${duckdb_SOURCE_DIR}/src/include")
@@ -117,8 +135,9 @@ add_library(scalardb_analytics_duckdb STATIC
   src/offered_plan.cpp
   src/scan.cpp
   src/types.cpp)
-# DuckDB itself is linked by the final binary: the host process provides it
-# to the loadable extension, and an embedding application links it.
+# DuckDB itself is linked by the final binary: the distribution extension
+# carries it, the development extension takes it from the host process, and
+# an embedding application links it.
 target_include_directories(scalardb_analytics_duckdb
   PUBLIC include "${CONNECTOR_API_INCLUDE_DIR}" ${DuckDB_INCLUDE_DIRS}
   PRIVATE src)
@@ -133,7 +152,6 @@ set_target_properties(scalardb_analytics_connectors_extension PROPERTIES
   PREFIX ""
   SUFFIX ".duckdb_extension")
 if(APPLE)
-  target_link_options(scalardb_analytics_connectors_extension PRIVATE -undefined dynamic_lookup)
   set(DUCKDB_PLATFORM_OS osx)
   set(PACKAGE_LIBRARY_RPATH "@loader_path/../lib")
 else()
@@ -141,10 +159,29 @@ else()
   set(PACKAGE_LIBRARY_RPATH "$ORIGIN/../lib")
 endif()
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
+  # The extension resolves DuckDB in its own copy and exports only the entry
+  # point DuckDB calls, so neither its DuckDB nor its protobuf and abseil
+  # meet the host's. Unused code is stripped: the parts of DuckDB the
+  # extension never runs reference DuckDB's built-in extensions, which the
+  # static library leaves to libraries the extension does not carry.
+  find_package(Threads REQUIRED)
+  target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
+    "${duckdb_static_SOURCE_DIR}/libduckdb_static.a" Threads::Threads ${CMAKE_DL_LIBS})
+  if(APPLE)
+    target_link_options(scalardb_analytics_connectors_extension PRIVATE
+      "LINKER:-dead_strip"
+      "LINKER:-exported_symbol,_scalardb_analytics_connectors_duckdb_cpp_init")
+  else()
+    target_link_options(scalardb_analytics_connectors_extension PRIVATE
+      "LINKER:--gc-sections"
+      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/extension.map")
+  endif()
   # The package's lib directory, and not the directory it was built in.
   set_target_properties(scalardb_analytics_connectors_extension PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
     INSTALL_RPATH "${PACKAGE_LIBRARY_RPATH}")
+elseif(APPLE)
+  target_link_options(scalardb_analytics_connectors_extension PRIVATE -undefined dynamic_lookup)
 endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
   set(DUCKDB_PLATFORM "${DUCKDB_PLATFORM_OS}_arm64")
@@ -160,7 +197,7 @@ add_custom_command(TARGET scalardb_analytics_connectors_extension POST_BUILD
   VERBATIM)
 
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
-  # The package is tested by unpacking it (packaging/check-package.sh).
+  # The package is tested by unpacking it (packaging/test/check-package.sh).
   return()
 endif()
 

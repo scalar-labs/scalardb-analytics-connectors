@@ -112,7 +112,7 @@ cmake --build "$work/duckdb" --parallel "$(getconf _NPROCESSORS_ONLN)" --target 
 cp "$work/duckdb/scalardb_analytics_connectors.duckdb_extension" "$stage/duckdb/"
 
 # License texts: this repository, the C++ libraries and the Substrait types
-# built into the extension, DuckDB's headers it is compiled from, and the Rust
+# built into the extension, DuckDB, which the extension carries, and the Rust
 # crates in the library.
 cp "$root/LICENSE" "$stage/LICENSES/scalardb-analytics-connectors.txt"
 for source in protobuf absl duckdb substrait; do

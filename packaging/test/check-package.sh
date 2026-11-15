@@ -6,17 +6,23 @@
 #    the package's lib/, and searches for them only relative to itself; on
 #    Linux, no glibc symbol is newer than the 2.28 baseline. A native library
 #    that is neither is a dependency packaging/dependencies.json does not ship.
-# 2. The DuckDB CLI loads the packaged extension, which finds the packaged
+# 2. The extension carries DuckDB: it leaves no DuckDB symbol for the host
+#    process to provide, and DuckDB's JDBC driver, which exports none of
+#    DuckDB's C++ symbols, loads it (packaging/test/LoadExtension.java, with
+#    the java on PATH).
+# 3. The DuckDB CLI loads the packaged extension, which finds the packaged
 #    library and ADBC driver by itself, and queries PostgreSQL
 #    (adapters/duckdb/test/e2e.sh: in Docker, or the local server that
 #    POSTGRESQL_TEST_PORT names).
 #
-# Usage: check-package.sh <package .tgz> <DuckDB v1.5.6 CLI>
+# Usage: check-package.sh <package .tgz> <DuckDB v1.5.6 CLI> <DuckDB JDBC 1.5.6.0 jar>
 set -eu
 
-root=$(cd "$(dirname "$0")/.." && pwd)
-package=${1:?usage: check-package.sh <package .tgz> <DuckDB CLI>}
-duckdb=${2:?usage: check-package.sh <package .tgz> <DuckDB CLI>}
+root=$(cd "$(dirname "$0")/../.." && pwd)
+usage="usage: check-package.sh <package .tgz> <DuckDB CLI> <DuckDB JDBC jar>"
+package=${1:?$usage}
+duckdb=${2:?$usage}
+jdbc=${3:?$usage}
 
 unpacked=$(mktemp -d)
 trap 'rm -rf "$unpacked"' EXIT
@@ -94,8 +100,25 @@ for file in lib/libconnector_api.* duckdb/scalardb_analytics_connectors.duckdb_e
 	[ -f "$1" ] || fail "the package holds $file"
 done
 
+extension=$home/duckdb/scalardb_analytics_connectors.duckdb_extension
+case "$(uname -s)" in
+Darwin) undefined=$(nm -u "$extension" | grep duckdb || true) ;;
+Linux) undefined=$(nm -D --undefined-only "$extension" | grep duckdb || true) ;;
+esac
+if [ -n "$undefined" ]; then
+	fail "the extension leaves no DuckDB symbol to the host process"
+	printf '%s\n' "$undefined" >&2
+else
+	echo "ok - the extension leaves no DuckDB symbol to the host process"
+fi
+if java -cp "$jdbc" "$root/packaging/test/LoadExtension.java" "$extension"; then
+	echo "ok - DuckDB's JDBC driver loads the packaged extension"
+else
+	fail "DuckDB's JDBC driver loads the packaged extension"
+fi
+
 env -u ADBC_DRIVER_DIRECTORY -u SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY \
-	sh "$root/adapters/duckdb/test/e2e.sh" "$duckdb" "$home/duckdb/scalardb_analytics_connectors.duckdb_extension" ||
+	sh "$root/adapters/duckdb/test/e2e.sh" "$duckdb" "$extension" ||
 	fail "the packaged extension queries PostgreSQL with the packaged driver"
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed" >&2; exit 1; }

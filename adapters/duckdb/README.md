@@ -268,10 +268,15 @@ password.
 The extension of the distribution package is built with
 `-DSCALARDB_ANALYTICS_DISTRIBUTION=ON` by `packaging/package.sh`: CMake then
 builds only the extension, finds the connector API library in `../lib` beside
-its own directory, links protobuf and abseil statically, and takes them,
-DuckDB's headers, and the Substrait specification from pinned source archives
-instead of the development shell. The adapter has no version of its own;
-CMake reads the workspace version from Cargo.
+its own directory, and links DuckDB, protobuf, and abseil statically. It takes
+DuckDB's static library from the DuckDB release, and DuckDB's headers,
+protobuf, abseil, and the Substrait specification from pinned source archives,
+instead of the development shell. The extension exports only its entry point,
+so a process that embeds DuckDB v1.5.6 loads it even when it exports none of
+DuckDB's C++ symbols, as DuckDB's JDBC driver does. The development build
+takes DuckDB from the process that loads it, as the DuckDB CLI provides. The
+adapter has no version of its own; CMake reads the workspace version from
+Cargo.
 
 The integration tests embed DuckDB through the embedding entry. Against the
 items of [Integration tests](../../docs/adapter-implementation.md#integration-tests):
