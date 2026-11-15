@@ -88,14 +88,14 @@ else
 	echo "ok - shipped binaries reference only the system and the package"
 fi
 
-for file in lib/libconnector_api.* duckdb/scalardb_analytics.duckdb_extension include/scalardb_analytics_connector.h \
+for file in lib/libconnector_api.* duckdb/scalardb_analytics_connectors.duckdb_extension include/scalardb_analytics_connector.h \
 	LICENSES/scalardb-analytics-connectors.txt LICENSES/rust-crates.txt; do
 	set -- "$home"/$file
 	[ -f "$1" ] || fail "the package holds $file"
 done
 
 env -u ADBC_DRIVER_DIRECTORY -u SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY \
-	sh "$root/adapters/duckdb/test/e2e.sh" "$duckdb" "$home/duckdb/scalardb_analytics.duckdb_extension" ||
+	sh "$root/adapters/duckdb/test/e2e.sh" "$duckdb" "$home/duckdb/scalardb_analytics_connectors.duckdb_extension" ||
 	fail "the packaged extension queries PostgreSQL with the packaged driver"
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed" >&2; exit 1; }

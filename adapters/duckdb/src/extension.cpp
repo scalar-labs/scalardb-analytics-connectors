@@ -37,7 +37,7 @@ std::string PackagedDriverDirectory() {
 
 extern "C" {
 
-DUCKDB_CPP_EXTENSION_ENTRY(scalardb_analytics, loader) {
+DUCKDB_CPP_EXTENSION_ENTRY(scalardb_analytics_connectors, loader) {
 	auto &api = *scalardb_analytics_connector_api();
 	// Every database of the process loads the extension; the library is
 	// initialized once for the process.

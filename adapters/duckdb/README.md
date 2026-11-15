@@ -96,7 +96,7 @@ batch.
 
 ## Entry points
 
-The loadable extension, `scalardb_analytics.duckdb_extension`, owns the
+The loadable extension, `scalardb_analytics_connectors.duckdb_extension`, owns the
 connector API library: it initializes the library when DuckDB loads it and
 never shuts it down, because DuckDB does not unload extensions. It reads the
 ADBC driver directory from the environment variable

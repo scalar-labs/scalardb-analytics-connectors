@@ -108,8 +108,8 @@ cmake -S "$root/adapters/duckdb" -B "$work/duckdb" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DSCALARDB_ANALYTICS_DISTRIBUTION=ON \
 	-DSCALARDB_ANALYTICS_CONNECTOR_LIBRARY="$library"
-cmake --build "$work/duckdb" --parallel "$(getconf _NPROCESSORS_ONLN)" --target scalardb_analytics_extension
-cp "$work/duckdb/scalardb_analytics.duckdb_extension" "$stage/duckdb/"
+cmake --build "$work/duckdb" --parallel "$(getconf _NPROCESSORS_ONLN)" --target scalardb_analytics_connectors_extension
+cp "$work/duckdb/scalardb_analytics_connectors.duckdb_extension" "$stage/duckdb/"
 
 # License texts: this repository, the C++ libraries and the Substrait types
 # built into the extension, DuckDB's headers it is compiled from, and the Rust

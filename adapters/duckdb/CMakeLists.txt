@@ -125,15 +125,15 @@ target_include_directories(scalardb_analytics_duckdb
 target_link_libraries(scalardb_analytics_duckdb PUBLIC substrait_proto)
 
 # The extension DuckDB loads; it owns the connector API library.
-add_library(scalardb_analytics_extension SHARED src/extension.cpp)
-target_link_libraries(scalardb_analytics_extension PRIVATE
+add_library(scalardb_analytics_connectors_extension SHARED src/extension.cpp)
+target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
   scalardb_analytics_duckdb "${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
-set_target_properties(scalardb_analytics_extension PROPERTIES
-  OUTPUT_NAME scalardb_analytics
+set_target_properties(scalardb_analytics_connectors_extension PROPERTIES
+  OUTPUT_NAME scalardb_analytics_connectors
   PREFIX ""
   SUFFIX ".duckdb_extension")
 if(APPLE)
-  target_link_options(scalardb_analytics_extension PRIVATE -undefined dynamic_lookup)
+  target_link_options(scalardb_analytics_connectors_extension PRIVATE -undefined dynamic_lookup)
   set(DUCKDB_PLATFORM_OS osx)
   set(PACKAGE_LIBRARY_RPATH "@loader_path/../lib")
 else()
@@ -142,7 +142,7 @@ else()
 endif()
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
   # The package's lib directory, and not the directory it was built in.
-  set_target_properties(scalardb_analytics_extension PROPERTIES
+  set_target_properties(scalardb_analytics_connectors_extension PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
     INSTALL_RPATH "${PACKAGE_LIBRARY_RPATH}")
 endif()
@@ -154,8 +154,8 @@ endif()
 # DuckDB loads only a file that ends with its metadata footer; CMake strings
 # cannot hold the footer's NUL bytes, so a build tool writes it.
 add_executable(append_metadata cmake/append_metadata.cpp)
-add_custom_command(TARGET scalardb_analytics_extension POST_BUILD
-  COMMAND append_metadata $<TARGET_FILE:scalardb_analytics_extension>
+add_custom_command(TARGET scalardb_analytics_connectors_extension POST_BUILD
+  COMMAND append_metadata $<TARGET_FILE:scalardb_analytics_connectors_extension>
     ${DUCKDB_PLATFORM} ${DuckDB_VERSION} ${PROJECT_VERSION}
   VERBATIM)
 
@@ -184,4 +184,4 @@ add_test(NAME scalardb_analytics_duckdb_tests COMMAND scalardb_analytics_duckdb_
 find_program(DUCKDB_CLI duckdb REQUIRED)
 add_test(NAME scalardb_analytics_duckdb_e2e
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test/e2e.sh" "${DUCKDB_CLI}"
-    $<TARGET_FILE:scalardb_analytics_extension>)
+    $<TARGET_FILE:scalardb_analytics_connectors_extension>)

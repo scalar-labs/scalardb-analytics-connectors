@@ -304,7 +304,7 @@ void RegisterWith(duckdb::ExtensionLoader &loader, const ScalardbAnalyticsConnec
 }
 
 void Register(duckdb::DatabaseInstance &database, const ScalardbAnalyticsConnectorApi &api) {
-	duckdb::ExtensionLoader loader(database, "scalardb_analytics");
+	duckdb::ExtensionLoader loader(database, "scalardb_analytics_connectors");
 	RegisterWith(loader, api);
 }
 
