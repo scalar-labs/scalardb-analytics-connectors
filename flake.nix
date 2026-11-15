@@ -103,8 +103,56 @@
               EOF
             '';
           };
+          # The ADBC Driver Foundry MySQL driver that the MySQL connector's
+          # tests load. Its tarball ships one self-contained shared library;
+          # no build is published for x86_64-darwin.
+          adbcDriverMysqlTarballs = {
+            "aarch64-darwin" = {
+              url = "https://dbc-cdn.columnar.tech/mysql/v0.8.0/mysql_macos_arm64_v0.8.0.tar.gz";
+              hash = "sha256-Lt9uyMQilEbrbV7Zi6ugOe0N3rLllBsx7rKAgWCI9PM=";
+            };
+            "aarch64-linux" = {
+              url = "https://dbc-cdn.columnar.tech/mysql/v0.8.0/mysql_linux_arm64_v0.8.0.tar.gz";
+              hash = "sha256-AQGrc+zFjzxAEW5egx4Jwce8ugU1XYbc9xYDSZTD9Us=";
+            };
+            "x86_64-linux" = {
+              url = "https://dbc-cdn.columnar.tech/mysql/v0.8.0/mysql_linux_amd64_v0.8.0.tar.gz";
+              hash = "sha256-uL72uaQxskbpLB+ed7R94y2/quh9vAjhSmIwiNqkY48=";
+            };
+          };
+          adbcDriverMysqlLibrary =
+            if pkgs.stdenv.isDarwin then "libadbc_driver_mysql.dylib" else "libadbc_driver_mysql.so";
+          adbcDriverMysql = pkgs.stdenv.mkDerivation {
+            pname = "adbc-driver-mysql";
+            version = "0.8.0";
+            src = pkgs.fetchurl adbcDriverMysqlTarballs.${system};
+            sourceRoot = ".";
+            dontBuild = true;
+            dontFixup = true;
+            # Install the library with an ADBC driver manifest, through which
+            # connectors load the driver.
+            installPhase = ''
+              install -Dm755 ${adbcDriverMysqlLibrary} $out/lib/${adbcDriverMysqlLibrary}
+              cat > $out/lib/adbc_driver_mysql.toml <<EOF
+              manifest_version = 1
+              name = "ADBC Driver Foundry Driver for MySQL"
+              version = "0.8.0"
+
+              [Driver]
+              shared = "$out/lib/${adbcDriverMysqlLibrary}"
+              EOF
+            '';
+          };
           # Directory of the ADBC drivers that connector tests load.
-          adbcDriverDirectory = "${adbcDriverPostgresql}/lib";
+          adbcDriverDirectory = "${
+            pkgs.symlinkJoin {
+              name = "adbc-drivers";
+              paths = [
+                adbcDriverPostgresql
+              ]
+              ++ pkgs.lib.optionals (adbcDriverMysqlTarballs ? ${system}) [ adbcDriverMysql ];
+            }
+          }/lib";
           # The ODBC driver manager that the ODBC ADBC driver links, and the
           # PostgreSQL ODBC driver that its tests reach a server through.
           odbcLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.unixodbc ];
@@ -136,7 +184,12 @@
           };
         in
         {
-          packages.adbc-driver-postgresql = adbcDriverPostgresql;
+          packages = {
+            adbc-driver-postgresql = adbcDriverPostgresql;
+          }
+          // pkgs.lib.optionalAttrs (adbcDriverMysqlTarballs ? ${system}) {
+            adbc-driver-mysql = adbcDriverMysql;
+          };
 
           _module.args.pkgs = import nixpkgs {
             inherit system;

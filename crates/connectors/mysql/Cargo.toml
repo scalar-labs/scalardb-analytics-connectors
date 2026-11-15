@@ -8,7 +8,18 @@ repository.workspace = true
 description = "MySQL connector for ScalarDB Analytics"
 
 [dependencies]
+adbc_core.workspace = true
+analytics-types.workspace = true
+arrow-array.workspace = true
+connector-adbc.workspace = true
+connector-sdk.workspace = true
 connector-sql.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+arrow-buffer.workspace = true
+connector-sdk = { workspace = true, features = ["conformance"] }
+substrait.workspace = true
 
 [lib]
 path = "src/lib.rs"

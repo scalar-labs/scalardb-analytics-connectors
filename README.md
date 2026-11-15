@@ -6,7 +6,8 @@ them, and the Query Engine adapters that call it. The shared Analytics type mode
 implemented. The shared connector planning and execution boundaries are also
 implemented, and the PostgreSQL connector
 ([crates/connectors/postgresql](crates/connectors/postgresql/README.md)), the
-Salesforce connector
+MySQL connector ([crates/connectors/mysql](crates/connectors/mysql/README.md)),
+the Salesforce connector
 ([crates/connectors/salesforce](crates/connectors/salesforce/README.md)), and
 the SQL Server through ODBC connector
 ([crates/connectors/sqlserver-odbc](crates/connectors/sqlserver-odbc/README.md))
@@ -73,10 +74,10 @@ direnv allow
 The workspace uses Rust 2024 and declares Rust 1.88 as its minimum supported
 version, which the ODBC crates that `connector-odbc` uses require. The `msrv` shell
 supplies exactly Rust 1.88.0. Run the same checks as CI through the flake. The
-PostgreSQL connector's tests, the library's tests with its `postgresql`
-feature, and `connector-odbc`'s tests also need Docker, which they use to start
-a PostgreSQL server, and the SQL Server through ODBC connector's tests use it
-to start a SQL Server:
+PostgreSQL and MySQL connectors' tests, the library's tests with their
+`postgresql` and `mysql` features, and `connector-odbc`'s tests also need
+Docker, which they use to start a PostgreSQL or MySQL server, and the SQL
+Server through ODBC connector's tests use it to start a SQL Server:
 
 ```sh
 nix develop --command cargo fmt --all -- --check

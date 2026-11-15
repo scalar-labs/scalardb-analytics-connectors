@@ -7,7 +7,7 @@ writes, and how it is tested are in
 | Connector | Data Source access |
 | --- | --- |
 | [postgresql](postgresql/README.md) | ADBC, through the Apache Arrow ADBC PostgreSQL driver |
-| mysql | Not implemented; the crate is a placeholder |
+| [mysql](mysql/README.md) | ADBC, through the ADBC Driver Foundry MySQL driver |
 | [salesforce](salesforce/README.md) | Direct access, through the Salesforce REST API client in [salesforce/client](salesforce/client) |
 | [sqlserver-odbc](sqlserver-odbc/README.md) | Direct access, through ODBC and the Microsoft ODBC Driver 18 for SQL Server |
 

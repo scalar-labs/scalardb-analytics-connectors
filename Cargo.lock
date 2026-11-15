@@ -533,7 +533,15 @@ dependencies = [
 name = "connector-mysql"
 version = "0.1.0"
 dependencies = [
+ "adbc_core",
+ "analytics-types",
+ "arrow-array",
+ "arrow-buffer",
+ "connector-adbc",
+ "connector-sdk",
  "connector-sql",
+ "serde",
+ "substrait",
 ]
 
 [[package]]
