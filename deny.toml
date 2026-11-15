@@ -47,6 +47,10 @@ deny = [
     { crate = "openssl-sys", reason = "links OpenSSL; use rustls" },
     { crate = "pkg-config", reason = "locates a system library to link" },
     { crate = "vcpkg", reason = "locates a native library to link" },
+    # The one accepted native dependency outside ADBC drivers is the ODBC
+    # driver manager (libodbc), which odbc-sys, under connector-odbc, links
+    # dynamically by name without building or locating it, so no crate rule
+    # names it (docs/design/reach-odbc-sources-through-direct-access.md).
     # Connectors load ADBC drivers through connector-adbc.
     { crate = "adbc_driver_manager", wrappers = ["connector-adbc"], reason = "use connector-adbc for ADBC access" },
 ]

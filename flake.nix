@@ -109,6 +109,19 @@
           # PostgreSQL ODBC driver that its tests reach a server through.
           odbcLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.unixodbc ];
           psqlOdbcDriver = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
+          # The Microsoft ODBC Driver 18 for SQL Server that the SQL Server
+          # through ODBC connector's tests use, registered under the name the
+          # connector connects with in an odbcinst.ini that `ODBCSYSINI`
+          # points the driver manager to.
+          msodbcsql = pkgs.unixodbcDrivers.msodbcsql18;
+          odbcSystemDirectory = pkgs.writeTextDir "odbcinst.ini" ''
+            [${msodbcsql.fancyName}]
+            Driver=${msodbcsql}/${msodbcsql.driver}
+          '';
+          # The driver loads OpenSSL at run time by its file name; on macOS it
+          # finds it only through `DYLD_LIBRARY_PATH`, which holds nothing but
+          # OpenSSL.
+          msodbcsqlLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
           # Libraries the workspace links: the ODBC driver manager, and on
           # macOS libiconv.
           libraryPath = pkgs.lib.makeLibraryPath (
@@ -142,6 +155,8 @@
                 });
               })
             ];
+            # The SQL Server ODBC driver is the only unfree package allowed.
+            config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "msodbcsql18";
           };
 
           devShells.default = pkgs.devshell.mkShell {
@@ -174,6 +189,10 @@
                 name = "PSQLODBC_DRIVER";
                 value = psqlOdbcDriver;
               }
+              {
+                name = "ODBCSYSINI";
+                value = "${odbcSystemDirectory}";
+              }
             ]
             # Linux libraries carry no install path, so the ODBC driver
             # manager is found at run time through the search path.
@@ -181,6 +200,12 @@
               {
                 name = "LD_LIBRARY_PATH";
                 value = odbcLibraryPath;
+              }
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              {
+                name = "DYLD_LIBRARY_PATH";
+                value = msodbcsqlLibraryPath;
               }
             ];
             packages = [
@@ -205,9 +230,13 @@
               export ADBC_DRIVER_DIRECTORY="${adbcDriverDirectory}"
               export LIBRARY_PATH="${libraryPath}"
               export PSQLODBC_DRIVER="${psqlOdbcDriver}"
+              export ODBCSYSINI="${odbcSystemDirectory}"
             ''
             + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export LD_LIBRARY_PATH="${odbcLibraryPath}"
+            ''
+            + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              export DYLD_LIBRARY_PATH="${msodbcsqlLibraryPath}"
             '';
             packages = [
               msrvToolchain

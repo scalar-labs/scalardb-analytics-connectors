@@ -523,6 +523,7 @@ dependencies = [
  "connector-postgresql",
  "connector-salesforce",
  "connector-sdk",
+ "connector-sqlserver-odbc",
  "prost",
  "serde_json",
  "substrait",
@@ -644,6 +645,23 @@ dependencies = [
  "serde_json",
  "substrait",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "connector-sqlserver-odbc"
+version = "0.1.0"
+dependencies = [
+ "analytics-types",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "connector-odbc",
+ "connector-sdk",
+ "connector-sql",
+ "futures-core",
+ "serde",
+ "serde_json",
+ "substrait",
 ]
 
 [[package]]

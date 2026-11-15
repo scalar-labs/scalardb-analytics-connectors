@@ -24,6 +24,8 @@ pub(crate) fn built_in_connectors() -> &'static [BuiltInConnector] {
             BuiltInConnector::of::<connector_postgresql::PostgresConnector>(),
             #[cfg(feature = "salesforce")]
             BuiltInConnector::of::<connector_salesforce::SalesforceConnector>(),
+            #[cfg(feature = "sqlserver-odbc")]
+            BuiltInConnector::of::<connector_sqlserver_odbc::SqlServerConnector>(),
         ]
     })
 }

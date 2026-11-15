@@ -5,10 +5,12 @@ connector SDK, Connectors, the C API library that assembles
 them, and the Query Engine adapters that call it. The shared Analytics type model and its Arrow schema conversion are
 implemented. The shared connector planning and execution boundaries are also
 implemented, and the PostgreSQL connector
-([crates/connectors/postgresql](crates/connectors/postgresql/README.md)) and the
+([crates/connectors/postgresql](crates/connectors/postgresql/README.md)), the
 Salesforce connector
-([crates/connectors/salesforce](crates/connectors/salesforce/README.md)) are
-implemented on them.
+([crates/connectors/salesforce](crates/connectors/salesforce/README.md)), and
+the SQL Server through ODBC connector
+([crates/connectors/sqlserver-odbc](crates/connectors/sqlserver-odbc/README.md))
+are implemented on them.
 The C API library includes a Connector when it is built with that Connector's
 feature, such as `cargo build -p connector-api --features postgresql`. The
 DuckDB adapter attaches Data Sources to DuckDB through that library
@@ -36,6 +38,8 @@ connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> anal
              +-> connector-mysql ------> connector-sql
              +-> connector-salesforce -> connector-salesforce-client
              |                        +------------------> connector-sdk
+             +-> connector-sqlserver-odbc -> connector-sql
+             |                         +-> connector-odbc -> connector-sdk
              +-> connector-sdk -----------------------------------> analytics-types
 connector-odbc -> connector-sdk
 ```
@@ -55,8 +59,9 @@ design, and implementation conventions.
 The Nix flake is the source of the development toolchain. Its default shell
 provides the lock-file-pinned stable Rust toolchain, Clang, Protobuf tooling,
 the DuckDB adapter's C++ build inputs and DuckDB CLI, unixODBC and the
-PostgreSQL ODBC driver for `connector-odbc` and its tests, and repository
-utilities.
+PostgreSQL ODBC driver for `connector-odbc` and its tests, the Microsoft ODBC
+Driver 18 for SQL Server for the SQL Server through ODBC connector's tests,
+which is the one unfree package the flake allows, and repository utilities.
 Enter it directly or let direnv load it:
 
 ```sh
@@ -70,7 +75,8 @@ version, which the ODBC crates that `connector-odbc` uses require. The `msrv` sh
 supplies exactly Rust 1.88.0. Run the same checks as CI through the flake. The
 PostgreSQL connector's tests, the library's tests with its `postgresql`
 feature, and `connector-odbc`'s tests also need Docker, which they use to start
-a PostgreSQL server:
+a PostgreSQL server, and the SQL Server through ODBC connector's tests use it
+to start a SQL Server:
 
 ```sh
 nix develop --command cargo fmt --all -- --check
