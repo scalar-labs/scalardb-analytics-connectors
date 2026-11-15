@@ -123,10 +123,10 @@ impl Observed {
 pub(super) fn filter_literals(plan: &Plan) -> Vec<String> {
     let mut literals = Vec::new();
     for relation in &plan.relations {
-        if let Some(plan_rel::RelType::Root(root)) = &relation.rel_type {
-            if let Some(input) = &root.input {
-                relation_literals(input, &mut literals);
-            }
+        if let Some(plan_rel::RelType::Root(root)) = &relation.rel_type
+            && let Some(input) = &root.input
+        {
+            relation_literals(input, &mut literals);
         }
     }
     literals

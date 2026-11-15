@@ -17,6 +17,7 @@ DuckDB adapter attaches Data Sources to DuckDB through that library
 crates/analytics-types/    Analytics types and Arrow type representation
 crates/connector-sdk/      Data Source-independent connector processing
 crates/connector-adbc/     ADBC access implementation
+crates/connector-odbc/     ODBC access implementation
 crates/connector-sql/      Shared SQL-family processing
 crates/connectors/         Connector implementations
 crates/connector-api/      C API implementation and connector assembly
@@ -30,10 +31,12 @@ connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> anal
              |                       +-> connector-adbc -> connector-sdk
              +-> connector-mysql ------> connector-sql
              +-> connector-sdk -----------------------------------> analytics-types
+connector-odbc -> connector-sdk
 ```
 
 Connector crates do not depend on one another. Native dependencies belong in
-ADBC driver artifacts, not in `connector-sdk` or a connector crate. Adapters
+ADBC driver artifacts, not in `connector-sdk` or a connector crate; the
+exception is the ODBC driver manager that `connector-odbc` links. Adapters
 call the C API that `connector-api` exports and depend on no crate.
 
 Developer documentation starts at [docs/architecture.md](docs/architecture.md).
@@ -45,7 +48,9 @@ design, and implementation conventions.
 
 The Nix flake is the source of the development toolchain. Its default shell
 provides the lock-file-pinned stable Rust toolchain, Clang, Protobuf tooling,
-the DuckDB adapter's C++ build inputs and DuckDB CLI, and repository utilities.
+the DuckDB adapter's C++ build inputs and DuckDB CLI, unixODBC and the
+PostgreSQL ODBC driver for `connector-odbc` and its tests, and repository
+utilities.
 Enter it directly or let direnv load it:
 
 ```sh
@@ -54,11 +59,12 @@ nix develop
 direnv allow
 ```
 
-The workspace uses Rust 2024 and declares Rust 1.85 as its minimum supported
-version. The `msrv` shell supplies exactly Rust 1.85.0. Run the same checks as
-CI through the flake. The PostgreSQL connector's tests, and the library's tests
-with its `postgresql` feature, also need Docker, which they use to start a
-PostgreSQL server:
+The workspace uses Rust 2024 and declares Rust 1.88 as its minimum supported
+version, which the ODBC crates that `connector-odbc` uses require. The `msrv` shell
+supplies exactly Rust 1.88.0. Run the same checks as CI through the flake. The
+PostgreSQL connector's tests, the library's tests with its `postgresql`
+feature, and `connector-odbc`'s tests also need Docker, which they use to start
+a PostgreSQL server:
 
 ```sh
 nix develop --command cargo fmt --all -- --check
@@ -86,6 +92,7 @@ Repository-authored source code and documentation are licensed under Apache
 License 2.0. Cargo packages declare `Apache-2.0` through workspace metadata.
 Third-party and native dependencies must retain their own license notices and
 be reviewed before distribution; native libraries must not be added to
-`connector-sdk` or Connector crates. `deny.toml` states this policy for the
+`connector-sdk` or Connector crates, apart from the ODBC driver manager that
+`connector-odbc` links. `deny.toml` states this policy for the
 dependencies that ship in the library, and CI enforces it
 ([Dependency policy check](docs/connector-implementation.md#dependency-policy-check)).

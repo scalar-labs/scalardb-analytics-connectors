@@ -198,10 +198,10 @@ impl Inner {
     /// another request already replaced it, the newer token is returned.
     async fn renew(&self, generation: u64) -> Result<Arc<Token>> {
         let mut current = self.token.lock().await;
-        if let Some(token) = current.as_ref() {
-            if token.generation != generation {
-                return Ok(token.clone());
-            }
+        if let Some(token) = current.as_ref()
+            && token.generation != generation
+        {
+            return Ok(token.clone());
         }
         let token = Arc::new(self.request_token(generation + 1).await?);
         *current = Some(token.clone());

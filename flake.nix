@@ -53,8 +53,8 @@
             "rustfmt"
           ];
           msrvToolchain = (fenix.packages.${system}.toolchainOf {
-            channel = "1.85.0";
-            sha256 = "sha256-AJ6LX/Q/Er9kS15bn9iflkUwcgYqRQxiOIL2ToVAXaU=";
+            channel = "1.88.0";
+            sha256 = "sha256-Qxt8XAuaUR2OMdKbN4u8dBJOhSHxS+uS06Wl9+flVEk=";
           }).withComponents [
             "cargo"
             "rustc"
@@ -111,6 +111,15 @@
           };
           # Directory of the ADBC drivers that connector tests load.
           adbcDriverDirectory = "${adbcDriverPostgresql}/lib";
+          # The ODBC driver manager that the ODBC ADBC driver links, and the
+          # PostgreSQL ODBC driver that its tests reach a server through.
+          odbcLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.unixodbc ];
+          psqlOdbcDriver = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
+          # Libraries the workspace links: the ODBC driver manager, and on
+          # macOS libiconv.
+          libraryPath = pkgs.lib.makeLibraryPath (
+            [ pkgs.unixodbc ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ]
+          );
           # The Substrait protobuf definitions of the specification version that
           # the Rust `substrait` crate pins; the DuckDB adapter generates its
           # C++ Substrait types from them.
@@ -149,11 +158,21 @@
                   pkgs.catch2_3
                 ];
               }
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               {
                 name = "LIBRARY_PATH";
-                value = pkgs.lib.makeLibraryPath [ pkgs.libiconv ];
+                value = libraryPath;
+              }
+              {
+                name = "PSQLODBC_DRIVER";
+                value = psqlOdbcDriver;
+              }
+            ]
+            # Linux libraries carry no install path, so the ODBC driver
+            # manager is found at run time through the search path.
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              {
+                name = "LD_LIBRARY_PATH";
+                value = odbcLibraryPath;
               }
             ];
             packages = [
@@ -164,6 +183,7 @@
               pkgs.ninja
               pkgs.pkg-config
               pkgs.duckdb
+              pkgs.unixodbc
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
 
@@ -171,13 +191,16 @@
             name = "scalardb-analytics-connectors-msrv";
             shellHook = ''
               export ADBC_DRIVER_DIRECTORY="${adbcDriverDirectory}"
+              export LIBRARY_PATH="${libraryPath}"
+              export PSQLODBC_DRIVER="${psqlOdbcDriver}"
             ''
-            + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              export LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.libiconv ]}"
+            + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export LD_LIBRARY_PATH="${odbcLibraryPath}"
             '';
             packages = [
               msrvToolchain
               pkgs.protobuf
+              pkgs.unixodbc
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
         };

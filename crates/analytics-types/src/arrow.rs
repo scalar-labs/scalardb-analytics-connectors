@@ -318,13 +318,13 @@ fn require_field_shape(
             reason: format!("field must be named {expected_name:?}"),
         });
     }
-    if let Some(expected) = expected_nullable {
-        if field.is_nullable() != expected {
-            return Err(TypeError::InvalidArrowShape {
-                container: role,
-                reason: format!("nullability must be {expected}"),
-            });
-        }
+    if let Some(expected) = expected_nullable
+        && field.is_nullable() != expected
+    {
+        return Err(TypeError::InvalidArrowShape {
+            container: role,
+            reason: format!("nullability must be {expected}"),
+        });
     }
     Ok(())
 }

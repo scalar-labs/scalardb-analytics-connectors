@@ -734,8 +734,10 @@ or the libraries they use,
 ([Choosing Data Source access and ADBC drivers](#choosing-data-source-access-and-adbc-drivers))
 is implemented as follows:
 
-- The three connector SDK crates, `connector-api`, and connector crates must
-  build without system libraries. Reader crates and clients used by
+- The connector SDK crates, `connector-api`, and connector crates must
+  build without system libraries, apart from the ODBC driver manager that
+  `connector-odbc` links
+  ([Reach ODBC sources through direct access](design/reach-odbc-sources-through-direct-access.md)). Reader crates and clients used by
   direct-access connectors are included, as dependencies of connector crates.
   CI enforces this with the [dependency policy check](#dependency-policy-check).
 - A crate that compiles C or assembly it vendors into a self-contained static

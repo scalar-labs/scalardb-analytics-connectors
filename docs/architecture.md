@@ -88,7 +88,7 @@ connector-api
     |                           |                      |
     |                           +--> connector-adbc ---+
     |                                                  v
-    +--> connector-mysql ------> connector-sql    connector-sdk
+    +--> connector-mysql ------> connector-sql    connector-sdk <-- connector-odbc
     |                                                  |
     +------------------------------------------------->|
                                                        v

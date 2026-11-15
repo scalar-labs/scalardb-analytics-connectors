@@ -93,10 +93,10 @@ impl SessionState {
             self.mark_unusable();
             Err(panic_error())
         });
-        if let Err(error) = &result {
-            if error.kind() == ErrorKind::Connection {
-                self.mark_unusable();
-            }
+        if let Err(error) = &result
+            && error.kind() == ErrorKind::Connection
+        {
+            self.mark_unusable();
         }
         result
     }

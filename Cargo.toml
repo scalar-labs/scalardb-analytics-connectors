@@ -4,6 +4,7 @@ members = [
     "crates/connector-sdk",
     "crates/connector-adbc",
     "crates/connector-sql",
+    "crates/connector-odbc",
     "crates/connectors/postgresql",
     "crates/connectors/mysql",
     "crates/connectors/salesforce/client",
@@ -13,7 +14,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/scalar-labs/scalardb-analytics-connectors"
 
@@ -30,6 +31,7 @@ analytics-types = { path = "crates/analytics-types", version = "0.1.0" }
 connector-sdk = { path = "crates/connector-sdk", version = "0.1.0" }
 connector-adbc = { path = "crates/connector-adbc", version = "0.1.0" }
 connector-sql = { path = "crates/connector-sql", version = "0.1.0" }
+connector-odbc = { path = "crates/connector-odbc", version = "0.1.0" }
 connector-postgresql = { path = "crates/connectors/postgresql", version = "0.1.0" }
 connector-mysql = { path = "crates/connectors/mysql", version = "0.1.0" }
 connector-salesforce-client = { path = "crates/connectors/salesforce/client", version = "0.1.0" }

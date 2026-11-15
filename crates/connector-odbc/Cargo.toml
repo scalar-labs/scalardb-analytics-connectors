@@ -1,0 +1,26 @@
+[package]
+name = "connector-odbc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ODBC access implementation for the connector SDK"
+
+[dependencies]
+# Keeps the arrow that arrow-odbc reads into on the workspace's arrow version.
+arrow = { version = "59.3.1", default-features = false }
+arrow-array.workspace = true
+# Reads ODBC result sets as Arrow; its odbc-api links the ODBC driver manager.
+arrow-odbc = "=27.0.0"
+arrow-schema.workspace = true
+connector-sdk.workspace = true
+futures-core.workspace = true
+
+[dev-dependencies]
+analytics-types.workspace = true
+connector-sdk = { workspace = true, features = ["test-connector"] }
+connector-sql.workspace = true
+
+[lib]
+path = "src/lib.rs"

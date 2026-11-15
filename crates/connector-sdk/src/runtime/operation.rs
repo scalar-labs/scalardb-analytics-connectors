@@ -125,11 +125,11 @@ impl Operation {
             self.finish(&mut read);
             return Err(self.record(error));
         }
-        if matches!(*read, OperationState::Pending(_)) {
-            if let Err(error) = self.start(&mut read) {
-                self.finish(&mut read);
-                return Err(self.record(error));
-            }
+        if matches!(*read, OperationState::Pending(_))
+            && let Err(error) = self.start(&mut read)
+        {
+            self.finish(&mut read);
+            return Err(self.record(error));
         }
         let OperationState::Running { stream, .. } = &mut *read else {
             return Ok(None);

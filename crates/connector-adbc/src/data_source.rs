@@ -135,10 +135,10 @@ fn info_strings(batch: &RecordBatch) -> Result<Vec<(u32, String)>, ConnectorErro
     let mut entries = Vec::new();
     for row in 0..batch.num_rows() {
         let value = values.value(row);
-        if let Some(text) = value.as_any().downcast_ref::<StringArray>() {
-            if text.is_valid(0) {
-                entries.push((codes.value(row), text.value(0).to_owned()));
-            }
+        if let Some(text) = value.as_any().downcast_ref::<StringArray>()
+            && text.is_valid(0)
+        {
+            entries.push((codes.value(row), text.value(0).to_owned()));
         }
     }
     Ok(entries)

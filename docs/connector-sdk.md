@@ -3,7 +3,7 @@
 ## Summary
 
 This document describes the design of the connector SDK (`connector-sdk`,
-`connector-adbc`, and `connector-sql`) and of `connector-api`, which assembles
+`connector-adbc`, `connector-odbc`, and `connector-sql`) and of `connector-api`, which assembles
 the SDK and the Connectors into the connector API library that satisfies the
 [connector contract](connector-contract.md). Read it to change those crates,
 or to look up the traits and flows a Connector implementation relies on. It
@@ -67,14 +67,15 @@ be evaluated before it is adopted.
 
 ### Crate responsibilities
 
-The connector SDK consists of three crates: `connector-sdk`, `connector-adbc`,
-and `connector-sql`.
+The connector SDK consists of four crates: `connector-sdk`, `connector-adbc`,
+`connector-odbc`, and `connector-sql`.
 
 | Crate | Responsibility | Does not hold |
 | --- | --- | --- |
 | `analytics-types` | The Rust representation of Analytics types and their conversion to and from Arrow schemas and extension types | Data source knowledge |
 | `connector-sdk` | The `Connector` trait, its component traits, and the flows it provides (pushdown planning, planned reads with the schema check and value conversion, and error classification), connector lifecycle, metadata and type-mapping contracts, the comparison of two observations of one table, Substrait validation, complete-request planning contracts, executable-query state, output-schema enforcement, cancellation, deadlines, error classification, and secret-safe errors. Its `runtime` module implements the contract's units and calling conventions for callers: dispatch by Connector name, option validation, unit lifetimes, the session lease and usability, lazy reads, synchronous metadata requests and the cancellations callers pass to them, cancellation, the timeout watcher, and panic containment. Its `conformance` module, behind the feature of that name, is the conformance suite that connector crates run through `runtime` with their fixtures ([Tests](connector-implementation.md#tests)) | The C ABI, ADBC, native Query Engine plans or residual evaluation, and knowledge of any particular Data Source |
 | `connector-adbc` | The ADBC access implementation provided by the connector SDK: the `AdbcConnector` trait and the `Adbc<C>` access component built from it (loading drivers through the ADBC driver manager and checking their versions, passing options, opening Data Sources and connecting sessions), running queries and receiving Arrow, cancellation, receiving ADBC errors, and classifying errors by ADBC status and SQL-standard SQLSTATE class where the Connector's error table does not match ([ADBC driver handling](#adbc-driver-handling)) | Deciding types, and knowledge of any particular Data Source |
+| `connector-odbc` | The ODBC access implementation provided by the connector SDK: the `OdbcConnector` trait and the `Odbc<C>` access component built from it (building the connection string with its credentials and connecting sessions through the ODBC driver manager), running a statement and reading its result as Arrow through `arrow-odbc`, cancellation with `SQLCancel`, and classifying ODBC diagnostics by SQLSTATE class where the Connector's error table does not match. It links the ODBC driver manager, the one native library in the SDK ([Reach ODBC sources through direct access](design/reach-odbc-sources-through-direct-access.md)) | Deciding types, and knowledge of any particular Data Source |
 | `connector-sql` | Processing common to SQL-speaking Data Sources, with either form of Data Source access: the `SqlConnector` trait and the catalog, planner, and executor components built from it, running catalog queries, the filter and projection rewrite rules over the Connector's semantic decisions, generating SQL from remote `LogicalPlan` values with the Connector's dialect, and sending the planned statement | Knowledge of any particular Data Source or native Query Engine plan |
 | `crates/connectors/<connector>` | One Connector: its `Connector` implementation and its declarations to the layer traits, written as Rust code and constant tables. An ADBC-access Connector also implements `AdbcConnector`, and a SQL-speaking one also `SqlConnector`; a direct-access Connector supplies its own components and reads the Data Source itself. | Knowledge of other Connectors |
 | `connector-api` | The connector API's C ABI and its header, the C structures of metadata and comparisons and their conversion to and from the SDK's types, registering Connectors by feature, the one library a process initializes, and the static information document. It builds the library. | Knowledge of any particular Data Source, and the contract's calling conventions, which it takes from `connector-sdk`'s runtime |
@@ -89,19 +90,21 @@ such as adapters and the Physical Catalog, use the typed connector API.
 ~~~text
 connector-api --> connectors/<connector> (SQL family) --> connector-sql --> connector-sdk --> analytics-types
 connector-api --> connectors/<connector> (ADBC access) --> connector-adbc --> connector-sdk
+connector-api --> connectors/<connector> (ODBC access) --> connector-odbc --> connector-sdk
 connector-api --> connectors/<connector> (direct access) --------------------> connector-sdk
 connector-api --> connector-sdk
 connector-api --> analytics-types   (Analytics types in metadata structures)
 connector-adbc --> ADBC driver manager --(loaded at run time)--> ADBC driver
 ~~~
 
-- The three connector SDK crates do not depend on connector crates.
+- The connector SDK crates do not depend on connector crates.
 - `connector-sdk` does not depend on ADBC. The ADBC driver manager appears only
   below `connector-adbc`.
 - Connectors do not depend on one another. Processing two connectors need
   belongs in a connector SDK crate.
-- Connector crates do not depend on native libraries. Native dependencies stay
-  inside ADBC drivers
+- Connector crates and the connector SDK crates do not depend on native
+  libraries, except that `connector-odbc` links the ODBC driver manager.
+  Other native dependencies stay inside ADBC drivers
   ([Isolating native dependencies](connector-implementation.md#isolating-native-dependencies)).
 - `connector-sql` does not depend on `connector-adbc`. A SQL-speaking
   connector depends on `connector-sql` with either form of access and declares
@@ -135,7 +138,8 @@ ships inside the application distribution, that release is a product release.
 Version and assembly rules:
 
 - Built-in connectors use only the public API of the connector SDK crates
-  (`connector-sdk`, `connector-adbc`, and `connector-sql`), the same API an
+  (`connector-sdk`, `connector-adbc`, `connector-odbc`, and `connector-sql`),
+  the same API an
   external connector uses. Version rules for the SDK are decided when external
   connectors are accepted.
 - Each connector crate has its own version and raises it whenever its mapping
