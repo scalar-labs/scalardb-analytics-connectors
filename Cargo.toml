@@ -13,6 +13,9 @@ members = [
 resolver = "3"
 
 [workspace.package]
+# The one version of the repository: every crate, the connector API library,
+# and the DuckDB adapter release together under it.
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -27,14 +30,14 @@ arrow-array = "59.3.1"
 arrow-buffer = "59.3.1"
 arrow-data = "59.3.1"
 cbindgen = { version = "=0.29.4", default-features = false }
-analytics-types = { path = "crates/analytics-types", version = "0.1.0" }
-connector-sdk = { path = "crates/connector-sdk", version = "0.1.0" }
-connector-adbc = { path = "crates/connector-adbc", version = "0.1.0" }
-connector-sql = { path = "crates/connector-sql", version = "0.1.0" }
-connector-odbc = { path = "crates/connector-odbc", version = "0.1.0" }
-connector-postgresql = { path = "crates/connectors/postgresql", version = "0.1.0" }
-connector-mysql = { path = "crates/connectors/mysql", version = "0.1.0" }
-connector-salesforce-client = { path = "crates/connectors/salesforce/client", version = "0.1.0" }
+analytics-types = { path = "crates/analytics-types" }
+connector-sdk = { path = "crates/connector-sdk" }
+connector-adbc = { path = "crates/connector-adbc" }
+connector-sql = { path = "crates/connector-sql" }
+connector-odbc = { path = "crates/connector-odbc" }
+connector-postgresql = { path = "crates/connectors/postgresql" }
+connector-mysql = { path = "crates/connectors/mysql" }
+connector-salesforce-client = { path = "crates/connectors/salesforce/client" }
 base64 = "0.22"
 bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

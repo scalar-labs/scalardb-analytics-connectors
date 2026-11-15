@@ -101,8 +101,13 @@ connector API library: it initializes the library when DuckDB loads it and
 never shuts it down, because DuckDB does not unload extensions. It reads the
 ADBC driver directory from the environment variable
 `SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY`, because DuckDB applies an
-extension's own settings only after loading it. The extension is unsigned, so
-DuckDB loads it only with unsigned extensions allowed.
+extension's own settings only after loading it. Without the variable, it uses
+the `adbc-drivers` directory of the
+[distribution package](../../README.md#distribution-package) it is in, beside
+its own directory. A DuckDB setting cannot name the directory, because any SQL
+user who can set it could make the process load a native library. The
+extension is unsigned, so DuckDB loads it only with unsigned extensions
+allowed.
 
 An application that embeds DuckDB and owns an initialized library uses
 [`scalardb_analytics_duckdb.hpp`](include/scalardb_analytics_duckdb.hpp)
@@ -232,6 +237,14 @@ loads the built extension, which initializes the library itself, and queries
 PostgreSQL as a user would: complete and partial pushdown with their plans, an
 aggregate, a join with a DuckDB table, a rejected write, and the bulk-attach
 pragma with the query log checked for the password.
+
+The extension of the distribution package is built with
+`-DSCALARDB_ANALYTICS_DISTRIBUTION=ON` by `packaging/package.sh`: CMake then
+builds only the extension, finds the connector API library in `../lib` beside
+its own directory, links protobuf and abseil statically, and takes them,
+DuckDB's headers, and the Substrait specification from pinned source archives
+instead of the development shell. The adapter has no version of its own;
+CMake reads the workspace version from Cargo.
 
 The integration tests embed DuckDB through the embedding entry. Against the
 items of [Integration tests](../../docs/adapter-implementation.md#integration-tests):

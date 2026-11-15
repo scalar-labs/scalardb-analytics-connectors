@@ -142,8 +142,9 @@ Version and assembly rules:
   the same API an
   external connector uses. Version rules for the SDK are decided when external
   connectors are accepted.
-- Each connector crate has its own version and raises it whenever its mapping
-  or coverage changes
+- Connector crates take the repository's one version
+  ([Versioning](../README.md#versioning)), so a change to a connector's mapping
+  or coverage ships under a new repository version
   ([Type mappings and coverage](connector-contract.md#type-mappings-and-coverage)).
   That version is published as the connector's name and version in the
   static information, so retrieval info records which connector version
@@ -1009,7 +1010,10 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
   driver name the connector declares, when the first data source is opened. A
   driver is loaded through its ADBC driver manifest, `<driver name>.toml` in
   that location, which names the shared library and declares the driver's
-  version. ADBC reports a driver's version through a connection function
+  version. A relative library path given as a string `Driver.shared` is
+  relative to that location, so a
+  directory of drivers, such as the one in the distribution package, works
+  wherever it is placed. ADBC reports a driver's version through a connection function
   (`AdbcConnectionGetInfo`), so the version is checked against the supported
   range when the first session opens, returning `invalid settings` if it
   is outside

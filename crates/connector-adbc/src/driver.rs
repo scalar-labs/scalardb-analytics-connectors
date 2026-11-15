@@ -1,6 +1,10 @@
 //! The ADBC driver a Connector declares, and loading it through its manifest.
 
-use std::{fmt, fs, str::FromStr};
+use std::{
+    fmt, fs,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use adbc_core::{LOAD_FLAG_DEFAULT, options::AdbcVersion};
 use adbc_driver_manager::ManagedDriver;
@@ -80,52 +84,119 @@ impl DriverRequirement {
     /// driver directory.
     ///
     /// The manifest names the shared library and may declare the driver's
-    /// version. A missing directory, manifest, or library is `invalid
-    /// settings`, because the directory is a library setting.
+    /// version. A relative library path given as a string `Driver.shared` is
+    /// relative to the driver directory, so a directory of drivers can be
+    /// moved as a whole; the per-platform table form is left to the driver
+    /// manager. A missing directory,
+    /// manifest, or library is `invalid settings`, because the directory is a
+    /// library setting.
     pub(crate) fn load(&self, settings: &LibrarySettings) -> Result<AdbcDriver, ConnectorError> {
         let Some(directory) = &settings.adbc_driver_directory else {
             return Err(invalid_settings(
                 "no ADBC driver directory is configured for the library",
             ));
         };
-        let manifest = directory.join(format!("{}.toml", self.library));
+        let manifest_path = directory.join(format!("{}.toml", self.library));
         let not_loaded = || {
             invalid_settings(format!(
                 "the ADBC driver `{}` could not be loaded from its manifest in the driver directory",
                 self.library
             ))
         };
-        let contents = fs::read_to_string(&manifest).map_err(|_| not_loaded())?;
-        let manifest_version = manifest_version(&contents).ok_or_else(not_loaded)?;
-        let driver = ManagedDriver::load_from_name(
-            &manifest,
-            None,
-            AdbcVersion::V110,
-            LOAD_FLAG_DEFAULT,
-            None,
-        )
+        let contents = fs::read_to_string(&manifest_path).map_err(|_| not_loaded())?;
+        let manifest = DriverManifest::parse(&contents).ok_or_else(not_loaded)?;
+        // The driver manager resolves a relative library path against the
+        // working directory, so such a path is resolved here instead.
+        let driver = match &manifest.relative_library {
+            Some(library) => ManagedDriver::load_dynamic_from_filename(
+                directory.join(&library.path),
+                library.entrypoint.as_deref().map(str::as_bytes),
+                AdbcVersion::V110,
+            ),
+            None => ManagedDriver::load_from_name(
+                &manifest_path,
+                None,
+                AdbcVersion::V110,
+                LOAD_FLAG_DEFAULT,
+                None,
+            ),
+        }
         .map_err(|_| not_loaded())?;
         Ok(AdbcDriver {
             driver,
             requirement: *self,
-            manifest_version,
+            manifest_version: manifest.version,
         })
     }
 }
 
-/// Returns the top-level `version` of an ADBC driver manifest, if it has one.
-///
-/// An absent key is `Some(None)`; text that is not a manifest is `None`.
-fn manifest_version(contents: &str) -> Option<Option<String>> {
-    let manifest = DeTable::parse(contents).ok()?;
-    match manifest
-        .get_ref()
-        .get("version")
-        .map(|value| value.get_ref())
-    {
-        Some(DeValue::String(version)) => Some(Some(version.to_string())),
-        Some(_) => None,
-        None => Some(None),
+/// What this crate reads from an ADBC driver manifest itself; the driver
+/// manager reads the rest.
+#[derive(Debug, PartialEq, Eq)]
+struct DriverManifest {
+    /// The top-level `version`, if the manifest declares one.
+    version: Option<String>,
+    /// `Driver.shared`, when it is a relative path.
+    relative_library: Option<RelativeLibrary>,
+}
+
+/// A driver's shared library named by a path relative to its manifest.
+#[derive(Debug, PartialEq, Eq)]
+struct RelativeLibrary {
+    path: PathBuf,
+    /// `Driver.entrypoint`, which the driver manager otherwise derives from
+    /// the library's file name.
+    entrypoint: Option<String>,
+}
+
+impl DriverManifest {
+    /// Parses a manifest; text that is not a manifest, or a `version` or
+    /// `entrypoint` that is not a string, is `None`.
+    fn parse(contents: &str) -> Option<Self> {
+        let manifest = DeTable::parse(contents).ok()?;
+        let manifest = manifest.get_ref();
+        // The one manifest version the driver manager reads, which it checks
+        // itself only when it reads the manifest.
+        match manifest
+            .get("manifest_version")
+            .map(|value| value.get_ref())
+        {
+            Some(DeValue::Integer(number)) if number.as_str() == "1" => {}
+            None => {}
+            Some(_) => return None,
+        }
+        let version = match manifest.get("version").map(|value| value.get_ref()) {
+            Some(DeValue::String(version)) => Some(version.to_string()),
+            Some(_) => return None,
+            None => None,
+        };
+        let driver = manifest
+            .get("Driver")
+            .and_then(|driver| driver.get_ref().as_table());
+        let relative_library = match driver
+            .and_then(|driver| driver.get("shared"))
+            .map(|shared| shared.get_ref())
+        {
+            Some(DeValue::String(path)) if Path::new(path.as_ref()).is_relative() => {
+                let entrypoint = match driver
+                    .and_then(|driver| driver.get("entrypoint"))
+                    .map(|entrypoint| entrypoint.get_ref())
+                {
+                    Some(DeValue::String(entrypoint)) => Some(entrypoint.to_string()),
+                    Some(_) => return None,
+                    None => None,
+                };
+                Some(RelativeLibrary {
+                    path: PathBuf::from(path.as_ref()),
+                    entrypoint,
+                })
+            }
+            _ => None,
+        };
+        Some(Self {
+            version,
+            relative_library,
+        })
     }
 }
 
@@ -178,12 +249,35 @@ mod tests {
 
     #[test]
     fn manifest_versions_are_read_from_the_top_level_key() {
+        let version = |contents: &str| DriverManifest::parse(contents).map(|m| m.version);
         let manifest =
             "manifest_version = 1\nversion = \"1.13.0\"\n[Driver]\nshared = \"/lib.so\"\n";
-        assert_eq!(manifest_version(manifest), Some(Some("1.13.0".to_owned())));
-        assert_eq!(manifest_version("manifest_version = 1\n"), Some(None));
-        assert_eq!(manifest_version("version = 1"), None);
-        assert_eq!(manifest_version("not toml ="), None);
+        assert_eq!(version(manifest), Some(Some("1.13.0".to_owned())));
+        assert_eq!(version("manifest_version = 1\n"), Some(None));
+        assert_eq!(version("version = 1"), None);
+        assert_eq!(version("not toml ="), None);
+    }
+
+    #[test]
+    fn only_a_relative_shared_library_is_resolved_by_the_manifest() {
+        let library = |contents: &str| DriverManifest::parse(contents).map(|m| m.relative_library);
+        assert_eq!(library("[Driver]\nshared = \"/lib.so\"\n"), Some(None));
+        assert_eq!(
+            library("[Driver]\nshared = \"lib/driver.so\"\nentrypoint = \"Init\"\n"),
+            Some(Some(RelativeLibrary {
+                path: PathBuf::from("lib/driver.so"),
+                entrypoint: Some("Init".to_owned()),
+            }))
+        );
+        assert_eq!(
+            library("[Driver]\nshared = \"lib/driver.so\"\nentrypoint = 1\n"),
+            None
+        );
+        // An unsupported manifest version is rejected whichever path loads it.
+        assert_eq!(
+            library("manifest_version = 2\n[Driver]\nshared = \"lib/driver.so\"\n"),
+            None
+        );
     }
 
     #[test]

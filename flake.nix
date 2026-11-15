@@ -61,29 +61,21 @@
           ];
           # The Apache Arrow ADBC PostgreSQL driver that the PostgreSQL
           # connector's tests load. The PyPI wheel ships one self-contained
-          # shared library with libpq and OpenSSL linked statically.
-          adbcDriverPostgresqlWheels = {
-            "aarch64-darwin" = {
-              url = "https://files.pythonhosted.org/packages/04/2f/79e0e9b471293320a79805a6dd77199ceaf8d73789dce35af5959b2db778/adbc_driver_postgresql-1.13.0-py3-none-macosx_11_0_arm64.whl";
-              hash = "sha256-eYGufF7Ne6TGSc0AqW6Bzw45R10/pHKQHF/Rm06d5Kg=";
-            };
-            "x86_64-darwin" = {
-              url = "https://files.pythonhosted.org/packages/25/3c/9f62b28e0a61e0af885e5e7271a78fc899dac3e9641c42aab01f7fe716bb/adbc_driver_postgresql-1.13.0-py3-none-macosx_10_15_x86_64.whl";
-              hash = "sha256-Ev1kv27BZwXTDSbDisLMR/6McAasKQLEMjTWHLauikM=";
-            };
-            "aarch64-linux" = {
-              url = "https://files.pythonhosted.org/packages/a8/07/3c6c59a60fb423df8e5912f6442c1c2a0a966d5a0b8dc82de0807b8256d2/adbc_driver_postgresql-1.13.0-py3-none-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl";
-              hash = "sha256-8vPFEHb8J7p2i60txMw4iGVaxxlHOqfZM7KBOGBJEBQ=";
-            };
-            "x86_64-linux" = {
-              url = "https://files.pythonhosted.org/packages/37/6b/dd22c016305e84b8b9959784e77bbd20c454bd82463dc8de5a839abde206/adbc_driver_postgresql-1.13.0-py3-none-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl";
-              hash = "sha256-qGgZunx5sdBnxKU0Q1i000a6tY6IjXh57Ssl2XzFm6E=";
-            };
-          };
+          # shared library with libpq and OpenSSL linked statically; the
+          # distribution package ships the same wheels (packaging/dependencies.json).
+          adbcDriverPostgresqlPin =
+            (builtins.fromJSON (builtins.readFile ./packaging/dependencies.json))
+            .dependencies.adbc_driver_postgresql;
+          duckdbPlatform = {
+            "aarch64-darwin" = "osx_arm64";
+            "x86_64-darwin" = "osx_amd64";
+            "aarch64-linux" = "linux_arm64";
+            "x86_64-linux" = "linux_amd64";
+          }.${system};
           adbcDriverPostgresql = pkgs.stdenv.mkDerivation {
             pname = "adbc-driver-postgresql";
-            version = "1.13.0";
-            src = pkgs.fetchurl adbcDriverPostgresqlWheels.${system};
+            version = adbcDriverPostgresqlPin.version;
+            src = pkgs.fetchurl adbcDriverPostgresqlPin.wheels.${duckdbPlatform};
             # The manylinux library needs libstdc++ but carries no RUNPATH, and
             # Nix-built processes do not search the host's library directories.
             nativeBuildInputs = [
@@ -95,17 +87,19 @@
             # The macOS library is used as shipped.
             dontFixup = pkgs.stdenv.isDarwin;
             # Install the library with an ADBC driver manifest, through which
-            # connectors load the driver and learn its version.
+            # connectors load the driver and learn its version. The manifest
+            # names the library relative to itself, as in the distribution
+            # package.
             installPhase = ''
               install -Dm755 adbc_driver_postgresql/libadbc_driver_postgresql.so \
                 $out/lib/libadbc_driver_postgresql.so
               cat > $out/lib/adbc_driver_postgresql.toml <<EOF
               manifest_version = 1
-              name = "ADBC PostgreSQL Driver"
-              version = "1.13.0"
+              name = "${adbcDriverPostgresqlPin.name}"
+              version = "${adbcDriverPostgresqlPin.version}"
 
               [Driver]
-              shared = "$out/lib/libadbc_driver_postgresql.so"
+              shared = "libadbc_driver_postgresql.so"
               EOF
             '';
           };
@@ -184,6 +178,10 @@
               pkgs.pkg-config
               pkgs.duckdb
               pkgs.unixodbc
+              # The distribution package script (packaging/package.sh).
+              pkgs.cargo-about
+              pkgs.jq
+              pkgs.unzip
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
 

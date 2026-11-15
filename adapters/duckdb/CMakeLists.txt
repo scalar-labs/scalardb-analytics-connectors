@@ -1,5 +1,25 @@
 cmake_minimum_required(VERSION 3.24)
-project(scalardb_analytics_duckdb VERSION 0.1.0 LANGUAGES CXX)
+
+# The adapter has no version of its own: it releases under the repository's
+# one version, which the Cargo workspace holds.
+execute_process(
+  COMMAND cargo metadata --no-deps --format-version 1
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+  OUTPUT_VARIABLE CARGO_METADATA
+  COMMAND_ERROR_IS_FATAL ANY)
+string(JSON CARGO_PACKAGE_COUNT LENGTH "${CARGO_METADATA}" packages)
+math(EXPR CARGO_LAST_PACKAGE "${CARGO_PACKAGE_COUNT} - 1")
+foreach(index RANGE ${CARGO_LAST_PACKAGE})
+  string(JSON package_name GET "${CARGO_METADATA}" packages ${index} name)
+  if(package_name STREQUAL "connector-api")
+    string(JSON SCALARDB_ANALYTICS_VERSION GET "${CARGO_METADATA}" packages ${index} version)
+  endif()
+endforeach()
+if(NOT SCALARDB_ANALYTICS_VERSION)
+  message(FATAL_ERROR "the Cargo workspace has no connector-api package")
+endif()
+
+project(scalardb_analytics_duckdb VERSION ${SCALARDB_ANALYTICS_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,19 +33,61 @@ set(SCALARDB_ANALYTICS_CONNECTOR_LIBRARY
 if(NOT EXISTS "${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
   message(FATAL_ERROR "build the connector API library first: ${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
 endif()
-set(SUBSTRAIT_PROTO_DIR "$ENV{SUBSTRAIT_PROTO_DIR}" CACHE PATH
-    "The proto directory of the Substrait specification the connector API pins")
+option(SCALARDB_ANALYTICS_DISTRIBUTION
+  "Build only the loadable extension for the distribution package: it finds the connector API library in ../lib, carries protobuf and abseil inside, and builds them and takes DuckDB's headers from pinned sources instead of the development environment"
+  OFF)
 
-# The adapter's C++ API use is tied to one DuckDB version; DuckDB's package
-# reports it as "v1.5.2", which find_package cannot compare.
-find_package(DuckDB REQUIRED CONFIG)
-if(NOT DuckDB_VERSION STREQUAL "v1.5.2")
-  message(FATAL_ERROR "the DuckDB adapter requires DuckDB v1.5.2, found ${DuckDB_VERSION}")
-endif()
-find_package(Protobuf CONFIG REQUIRED)
-
-if(NOT SUBSTRAIT_PROTO_DIR)
-  message(FATAL_ERROR "SUBSTRAIT_PROTO_DIR must name the Substrait proto directory")
+if(SCALARDB_ANALYTICS_DISTRIBUTION)
+  include(FetchContent)
+  # A SOURCE_SUBDIR without a CMakeLists.txt makes FetchContent download a
+  # source without building it.
+  # DuckDB's headers only: the host process provides DuckDB itself.
+  FetchContent_Declare(duckdb
+    URL https://github.com/duckdb/duckdb/archive/refs/tags/v1.5.2.tar.gz
+    URL_HASH SHA256=6d8612fc87115cf4d3512a934ada5d1669db29378b4cc8e226fdfa8f5c537385
+    SOURCE_SUBDIR headers-only)
+  # The Substrait specification version flake.nix pins for development.
+  FetchContent_Declare(substrait
+    URL https://github.com/substrait-io/substrait/archive/refs/tags/v0.69.0.tar.gz
+    URL_HASH SHA256=7995cd3c63cb4eed9b68f1d2bef9ab5a6688aadd1846d525be3b5518749691d1
+    SOURCE_SUBDIR proto-only)
+  # The protobuf and abseil versions of the development environment, built
+  # as static libraries that link into the extension.
+  set(BUILD_SHARED_LIBS OFF)
+  set(ABSL_PROPAGATE_CXX_STD ON)
+  set(ABSL_ENABLE_INSTALL OFF)
+  set(protobuf_BUILD_SHARED_LIBS OFF)
+  set(protobuf_BUILD_TESTS OFF)
+  set(protobuf_INSTALL OFF)
+  set(protobuf_WITH_ZLIB OFF)
+  set(protobuf_LOCAL_DEPENDENCIES_ONLY ON)
+  FetchContent_Declare(absl
+    URL https://github.com/abseil/abseil-cpp/releases/download/20260107.1/abseil-cpp-20260107.1.tar.gz
+    URL_HASH SHA256=4314e2a7cbac89cac25a2f2322870f343d81579756ceff7f431803c2c9090195)
+  FetchContent_Declare(protobuf
+    URL https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protobuf-34.1.tar.gz
+    URL_HASH SHA256=e4e6ff10760cf747a2decd1867741f561b216bd60cc4038c87564713a6da1848)
+  FetchContent_MakeAvailable(duckdb substrait absl protobuf)
+  include("${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake")
+  set(DuckDB_VERSION v1.5.2)
+  set(DuckDB_INCLUDE_DIRS "${duckdb_SOURCE_DIR}/src/include")
+  set(SUBSTRAIT_PROTO_DIR "${substrait_SOURCE_DIR}/proto")
+  # An installed protoc finds the well-known types by itself; one built here
+  # finds them in its source tree.
+  set(PROTOBUF_IMPORT_DIRS "${protobuf_SOURCE_DIR}/src")
+else()
+  set(SUBSTRAIT_PROTO_DIR "$ENV{SUBSTRAIT_PROTO_DIR}" CACHE PATH
+      "The proto directory of the Substrait specification the connector API pins")
+  # The adapter's C++ API use is tied to one DuckDB version; DuckDB's package
+  # reports it as "v1.5.2", which find_package cannot compare.
+  find_package(DuckDB REQUIRED CONFIG)
+  if(NOT DuckDB_VERSION STREQUAL "v1.5.2")
+    message(FATAL_ERROR "the DuckDB adapter requires DuckDB v1.5.2, found ${DuckDB_VERSION}")
+  endif()
+  find_package(Protobuf CONFIG REQUIRED)
+  if(NOT SUBSTRAIT_PROTO_DIR)
+    message(FATAL_ERROR "SUBSTRAIT_PROTO_DIR must name the Substrait proto directory")
+  endif()
 endif()
 
 set(CONNECTOR_API_INCLUDE_DIR
@@ -41,7 +103,7 @@ file(MAKE_DIRECTORY "${SUBSTRAIT_GENERATED_DIR}")
 protobuf_generate(
   TARGET substrait_proto
   LANGUAGE cpp
-  IMPORT_DIRS "${SUBSTRAIT_PROTO_DIR}"
+  IMPORT_DIRS "${SUBSTRAIT_PROTO_DIR}" ${PROTOBUF_IMPORT_DIRS}
   PROTOC_OUT_DIR "${SUBSTRAIT_GENERATED_DIR}")
 target_include_directories(substrait_proto PUBLIC "${SUBSTRAIT_GENERATED_DIR}")
 
@@ -73,8 +135,16 @@ set_target_properties(scalardb_analytics_extension PROPERTIES
 if(APPLE)
   target_link_options(scalardb_analytics_extension PRIVATE -undefined dynamic_lookup)
   set(DUCKDB_PLATFORM_OS osx)
+  set(PACKAGE_LIBRARY_RPATH "@loader_path/../lib")
 else()
   set(DUCKDB_PLATFORM_OS linux)
+  set(PACKAGE_LIBRARY_RPATH "$ORIGIN/../lib")
+endif()
+if(SCALARDB_ANALYTICS_DISTRIBUTION)
+  # The package's lib directory, and not the directory it was built in.
+  set_target_properties(scalardb_analytics_extension PROPERTIES
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "${PACKAGE_LIBRARY_RPATH}")
 endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
   set(DUCKDB_PLATFORM "${DUCKDB_PLATFORM_OS}_arm64")
@@ -88,6 +158,11 @@ add_custom_command(TARGET scalardb_analytics_extension POST_BUILD
   COMMAND append_metadata $<TARGET_FILE:scalardb_analytics_extension>
     ${DUCKDB_PLATFORM} ${DuckDB_VERSION} ${PROJECT_VERSION}
   VERBATIM)
+
+if(SCALARDB_ANALYTICS_DISTRIBUTION)
+  # The package is tested by unpacking it (packaging/check-package.sh).
+  return()
+endif()
 
 find_package(Catch2 3 CONFIG REQUIRED)
 enable_testing()

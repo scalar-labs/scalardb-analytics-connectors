@@ -1,0 +1,105 @@
+name: Package
+
+# Builds and checks the distribution package of every platform, keeps it as a
+# workflow artifact, and publishes it as a GitHub Release when a `v<version>`
+# tag matching the workspace version is pushed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  DUCKDB_CLI_URL: https://github.com/duckdb/duckdb/releases/download/v1.5.2
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux_amd64
+            runner: ubuntu-24.04
+            cli: duckdb_cli-linux-amd64.zip
+            cli_sha256: fc9145affabca627431e73ddaf6b8117e5c192692480c13886f227be202d5d15
+          - platform: linux_arm64
+            runner: ubuntu-24.04-arm
+            cli: duckdb_cli-linux-arm64.zip
+            cli_sha256: 28b15a8d78e6df62f6ec43da6b0e6397dcd28e25ab93d847df3c5c97f59375f5
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build package
+        run: packaging/linux/package.sh
+      - name: Check package
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cli.zip" "$DUCKDB_CLI_URL/${{ matrix.cli }}"
+          echo "${{ matrix.cli_sha256 }}  $RUNNER_TEMP/cli.zip" | sha256sum -c -
+          unzip -q -d "$RUNNER_TEMP/duckdb" "$RUNNER_TEMP/cli.zip"
+          packaging/check-package.sh target/dist/*-${{ matrix.platform }}.tgz "$RUNNER_TEMP/duckdb/duckdb"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-${{ matrix.platform }}
+          path: target/dist/*.tgz
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
+      - name: Build package
+        run: nix develop --command packaging/package.sh
+      # Docker is unavailable on macOS runners, so the e2e uses a local server.
+      - name: Start PostgreSQL
+        run: |
+          brew install -q postgresql@18
+          pg=$(brew --prefix postgresql@18)/bin
+          echo "$pg" >> "$GITHUB_PATH"
+          printf '%s\n' connector-test-secret > "$RUNNER_TEMP/password"
+          "$pg/initdb" -D "$RUNNER_TEMP/pg" -U postgres --pwfile="$RUNNER_TEMP/password" -A scram-sha-256
+          "$pg/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 5432 -k $RUNNER_TEMP" -l "$RUNNER_TEMP/pg.log" -w start
+      # Outside the Nix development shell, as a user runs it.
+      - name: Check package
+        env:
+          POSTGRESQL_TEST_PORT: "5432"
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cli.zip" "$DUCKDB_CLI_URL/duckdb_cli-osx-universal.zip"
+          echo "de789904e1b0b5f305d31b88a6fd8bd4f6ed3f63a00d95f8c7a2559a0995a2f1  $RUNNER_TEMP/cli.zip" | shasum -a 256 -c -
+          unzip -q -d "$RUNNER_TEMP/duckdb" "$RUNNER_TEMP/cli.zip"
+          packaging/check-package.sh target/dist/*-osx_arm64.tgz "$RUNNER_TEMP/duckdb/duckdb"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-osx_arm64
+          path: target/dist/*.tgz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check the tag against the workspace version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "connector-api") | .version')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tgz --title "$GITHUB_REF_NAME" --generate-notes

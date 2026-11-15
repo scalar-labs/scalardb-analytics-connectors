@@ -728,8 +728,14 @@ dependency with:
 - A dependency whose license or vendor does not permit that, as with some
   vendor client libraries and ODBC drivers, is installed by the user. The
   connector's README states its requirements and installation.
-- Where shipped dependencies are placed and how they are bundled is owned by
-  the product application's distribution, not by this repository.
+- Shipped dependencies are bundled into this repository's distribution
+  package, one per platform, which the product application's distribution
+  takes as a whole ([Distribution package](../README.md#distribution-package)).
+  A connector declares the dependencies it ships in
+  `packaging/dependencies.json`, and each kind of dependency has its place in
+  the package ([Packaging](../packaging/README.md)): ADBC drivers in
+  `adbc-drivers/` with their manifests, and native libraries the library links
+  in `lib/`.
 
 ## Isolating native dependencies
 
@@ -754,9 +760,8 @@ is implemented as follows:
   above, such as `ring`.
 - The licenses and origins of the dependencies that ship are managed in
   distribution metadata. Which dependencies ship is declared by each connector
-  ([Shipping and installing dependencies](#shipping-and-installing-dependencies));
-  where they are placed and how they are bundled is owned by the product
-  application's distribution, not by this repository.
+  ([Shipping and installing dependencies](#shipping-and-installing-dependencies)),
+  and the distribution package carries their license texts in `LICENSES/`.
 
 ### Dependency policy check
 

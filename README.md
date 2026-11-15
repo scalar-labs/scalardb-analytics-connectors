@@ -22,6 +22,7 @@ crates/connector-sql/      Shared SQL-family processing
 crates/connectors/         Connector implementations
 crates/connector-api/      C API implementation and connector assembly
 adapters/duckdb/           DuckDB Query Engine adapter (C++, CMake), outside the Cargo workspace
+packaging/                 Distribution package build and check
 ```
 
 Dependencies point inward in this order:
@@ -85,6 +86,54 @@ nix develop --command cmake -S adapters/duckdb -B target/duckdb-adapter -G Ninja
 nix develop --command cmake --build target/duckdb-adapter
 nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
 ```
+
+## Distribution package
+
+Each release ships one self-contained package per platform, `osx_arm64`,
+`linux_amd64`, and `linux_arm64`:
+`scalardb-analytics-connectors-<version>-<platform>.tgz`. It works wherever it
+is unpacked and needs only system libraries; the Linux packages need glibc 2.28
+or later.
+
+```text
+lib/           The connector API library, with the connectors whose dependencies ship,
+               and the native libraries it links that ship
+duckdb/        The DuckDB v1.5.2 loadable extension, which finds ../lib
+adbc-drivers/  The ADBC drivers that ship, with their manifests
+include/       The C header of the connector API library
+LICENSES/      The license texts of everything in the package
+```
+
+The extension uses the package's `adbc-drivers` unless
+`SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY` names another directory
+([Entry points](adapters/duckdb/README.md#entry-points)).
+
+CI builds and checks the package of every platform for each pull request and
+`main` push and keeps it as a workflow artifact
+(`.github/workflows/package.yml`). Pushing a tag `v<version>` that equals the
+workspace version publishes the packages as a GitHub Release. Which connectors
+and dependencies ship is declared in `packaging/dependencies.json`
+([Packaging](packaging/README.md)). The packages are built with
+`packaging/package.sh`: on macOS in the Nix shell, and for Linux in
+a manylinux_2_28 container that `packaging/linux/package.sh` starts with
+Docker, for the Docker engine's architecture. Each is checked unpacked with
+`packaging/check-package.sh` on its own platform:
+
+```sh
+# macOS arm64
+nix develop --command packaging/package.sh
+# Linux, on a host whose Docker engine runs Linux containers
+packaging/linux/package.sh
+packaging/check-package.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz <DuckDB v1.5.2 CLI>
+```
+
+### Versioning
+
+The repository has one [semantic version](https://semver.org), held by
+`[workspace.package]` in `Cargo.toml`. Every crate, the connector API library,
+and the DuckDB adapter release under it, because the connectors are built into
+one library and ship together. Before 1.0, a breaking change increases the
+minor version.
 
 ## License and dependency policy
 

@@ -6,15 +6,17 @@
 # Usage: e2e.sh <duckdb CLI> <extension file>
 #
 # The server runs in the container the PostgreSQL connector's own tests use;
-# POSTGRESQL_TEST_IMAGE selects its image (default postgres:18). The ADBC
-# driver comes from ADBC_DRIVER_DIRECTORY, which the Nix development shell sets.
+# POSTGRESQL_TEST_IMAGE selects its image (default postgres:18). Where Docker
+# is unavailable, as on macOS CI runners, POSTGRESQL_TEST_PORT names a running
+# local server instead, whose `postgres` user has the test password and which
+# the local psql reaches. The ADBC driver comes from ADBC_DRIVER_DIRECTORY,
+# which the Nix development shell sets, or, when it is unset, from the
+# distribution package the extension is in.
 set -eu
 
 duckdb=$1
 extension=$2
 password=connector-test-secret
-image=${POSTGRESQL_TEST_IMAGE:-postgres:18}
-container=scalardb-analytics-connector-test-$(printf '%s' "$image" | tr ':/.' '---')
 failures=0
 
 case "$("$duckdb" --version)" in
@@ -22,15 +24,24 @@ v1.5.2*) ;;
 *) echo "the DuckDB CLI is not v1.5.2: $("$duckdb" --version)" >&2; exit 1 ;;
 esac
 
-# The server, started if needed.
-if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != true ]; then
-	docker start "$container" >/dev/null 2>&1 ||
-		docker run -d --name "$container" -e POSTGRES_PASSWORD="$password" -p 127.0.0.1::5432 "$image" >/dev/null
+if [ -n "${POSTGRESQL_TEST_PORT:-}" ]; then
+	port=$POSTGRESQL_TEST_PORT
+	psql() {
+		PGPASSWORD=$password command psql -h 127.0.0.1 -p "$port" -U postgres -v ON_ERROR_STOP=1 -qAt "$@"
+	}
+else
+	image=${POSTGRESQL_TEST_IMAGE:-postgres:18}
+	container=scalardb-analytics-connector-test-$(printf '%s' "$image" | tr ':/.' '---')
+	# The server, started if needed.
+	if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != true ]; then
+		docker start "$container" >/dev/null 2>&1 ||
+			docker run -d --name "$container" -e POSTGRES_PASSWORD="$password" -p 127.0.0.1::5432 "$image" >/dev/null
+	fi
+	port=$(docker port "$container" 5432/tcp | head -n 1 | sed 's/.*://')
+	psql() {
+		docker exec -i "$container" psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -qAt "$@"
+	}
 fi
-port=$(docker port "$container" 5432/tcp | head -n 1 | sed 's/.*://')
-psql() {
-	docker exec -i "$container" psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -qAt "$@"
-}
 attempts=0
 until psql -c 'SELECT 1' >/dev/null 2>&1; do
 	attempts=$((attempts + 1))
@@ -48,7 +59,13 @@ SQL
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-export SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY="$ADBC_DRIVER_DIRECTORY"
+# Without ADBC_DRIVER_DIRECTORY, as when testing an unpacked distribution
+# package, the extension uses the package's own drivers.
+if [ -n "${ADBC_DRIVER_DIRECTORY:-}" ]; then
+	export SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY="$ADBC_DRIVER_DIRECTORY"
+else
+	unset SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY
+fi
 attach="ATTACH 'postgresql' AS pg (TYPE scalardb_analytics, host '127.0.0.1', port $port,
     database 'postgres', user 'postgres', password '$password', sslmode 'disable');"
 
