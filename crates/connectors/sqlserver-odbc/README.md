@@ -13,7 +13,7 @@ types come from SQL Server's own catalog, and its values from the ODBC driver.
 | Reader crates | `odbc-api` 30.1.0 and `arrow-odbc` 27.0.0, through `connector-odbc` |
 | Connection options | `server` (`host`, `host,port`, or `host\instance`), `database`, `user`, `password` (secret), `encrypt` (`yes`, `no`, or `strict`; default `yes`), and `trust_server_certificate` (`yes` or `no`; default `no`) |
 | Fixed session settings | None |
-| Fixed driver options | `Driver={ODBC Driver 18 for SQL Server}` and `ConnectRetryCount=0`, so that a broken connection is not reopened behind the session; text is fetched as UTF-16; each column is read as the [value conversion](#coverage) expects |
+| Fixed driver options | The driver `msodbcsql18/lib/msodbcsql18` in the library's ODBC driver directory and `ConnectRetryCount=0`, so that a broken connection is not reopened behind the session; text is fetched as UTF-16; each column is read as the [value conversion](#coverage) expects |
 
 The connector authenticates with SQL Server authentication only. SQL Server
 has no session time zone: `datetimeoffset` values carry their own offset,
@@ -23,7 +23,7 @@ and the other date and time types none.
 
 | Dependency | Used for | Ships with the connector | Tested versions |
 | --- | --- | --- | --- |
-| Microsoft ODBC Driver 18 for SQL Server (Microsoft license, not free) | Data Source access | No: installed by the user, because its license does not allow us to redistribute it | 18.1.1.1 |
+| Microsoft ODBC Driver 18 for SQL Server (Microsoft license, not free) | Data Source access | No: installed by the user in the ODBC driver directory, because its license does not allow us to redistribute it | 18.1.1.1 |
 | ODBC driver manager: unixODBC on Linux and macOS (LGPL-2.1) | Loading the ODBC driver | No: installed by the user, and linked dynamically | 2.3.14 |
 | OpenSSL 1.0, 1.1, or 3 | The ODBC driver's encryption, loaded by the driver at run time | No: installed by the user | 3.6.5 |
 
@@ -32,9 +32,12 @@ dynamically, which the guideline of keeping native dependencies in ADBC drivers
 does not cover
 ([Reach ODBC sources through direct access](../../../docs/design/reach-odbc-sources-through-direct-access.md)).
 
-The ODBC driver must be registered with the driver manager as
-`ODBC Driver 18 for SQL Server`, which Microsoft's installers do. The driver
-loads OpenSSL by its file name, so OpenSSL must be on the library search path.
+The connector loads the ODBC driver from the library's ODBC driver directory
+as `msodbcsql18/lib/msodbcsql18`, the driver's shared library or a link to it;
+the driver manager's registered drivers are not used. The driver finds its
+resources relative to that path, so the driver's `share` directory is
+`msodbcsql18/share` beside it. The driver loads OpenSSL by its file name, so
+OpenSSL must be on the library search path.
 
 ## Source metadata
 
@@ -254,7 +257,8 @@ Only combinations that passed this crate's tests are listed.
 
 The integration tests start a SQL Server container with Docker as
 `linux/amd64`, which runs under emulation on arm64 hosts, and reach it through
-the ODBC driver the Nix development shell registers through `ODBCSYSINI`.
+the ODBC driver in `ODBC_DRIVER_DIRECTORY`, which the Nix development shell
+sets.
 `tests/conformance` runs the SDK's connector conformance suite with this
 connector's fixture:
 

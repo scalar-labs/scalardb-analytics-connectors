@@ -10,7 +10,8 @@
 //! `SqlConnector::query`.
 //!
 //! The ODBC driver manager is a native library this crate links dynamically;
-//! the source's ODBC driver is loaded by the driver manager at run time.
+//! the source's ODBC driver is loaded by the driver manager at run time from
+//! the library's ODBC driver directory, at the path the Connector names.
 
 mod connection;
 mod connector;

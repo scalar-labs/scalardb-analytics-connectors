@@ -17,7 +17,8 @@ const ScalardbAnalyticsConnectorApi &Api() {
 	static std::once_flag initialized;
 	auto &api = *scalardb_analytics_connector_api();
 	std::call_once(initialized, [&api]() {
-		ScalardbAnalyticsConnectorLibrarySettings settings {std::getenv("ADBC_DRIVER_DIRECTORY")};
+		ScalardbAnalyticsConnectorLibrarySettings settings {std::getenv("ADBC_DRIVER_DIRECTORY"),
+		                                                    std::getenv("ODBC_DRIVER_DIRECTORY")};
 		auto error = api.library_initialize(&settings);
 		REQUIRE(error == nullptr);
 	});

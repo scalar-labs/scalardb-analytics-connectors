@@ -44,10 +44,6 @@ use connector_sql::{
 /// The Connector name callers pass when opening a Data Source.
 pub const CONNECTOR: &str = "sqlserver-odbc";
 
-/// The ODBC driver the connector connects with, by the name it is registered
-/// under with the ODBC driver manager.
-const DRIVER: &str = "ODBC Driver 18 for SQL Server";
-
 /// Driver attributes fixed by the connector: a broken connection is not
 /// reconnected. The driver's connection resiliency would otherwise reopen it
 /// and run the next statement on a new server session, so that a session
@@ -146,8 +142,12 @@ impl Connector for SqlServerConnector {
 }
 
 impl OdbcConnector for SqlServerConnector {
+    /// The Microsoft ODBC Driver 18 for SQL Server, whose `share` beside its
+    /// `lib` holds the resources it loads relative to itself.
+    const DRIVER: &'static str = "msodbcsql18/lib/msodbcsql18";
+
     /// Builds the connection string from the validated options, with the
-    /// driver and its fixed attributes.
+    /// driver's fixed attributes.
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError> {
         let plain = |key: &str| match options.get(key) {
             Some(OptionValue::Plain(value)) => Some(value.clone()),
@@ -168,7 +168,7 @@ impl OdbcConnector for SqlServerConnector {
         };
         let encrypt = choice("encrypt", &ENCRYPT_VALUES, "yes")?;
         let trust = choice("trust_server_certificate", &TRUST_VALUES, "no")?;
-        let mut attributes = format!("Driver={{{DRIVER}}};{FIXED_ATTRIBUTES}");
+        let mut attributes = FIXED_ATTRIBUTES.to_owned();
         for (keyword, value) in [
             ("Server", plain("server")),
             ("Database", plain("database")),

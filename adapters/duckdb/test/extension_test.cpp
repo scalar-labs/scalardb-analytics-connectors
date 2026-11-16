@@ -29,7 +29,8 @@ duckdb::unique_ptr<duckdb::MaterializedQueryResult> Run(duckdb::Connection &conn
 TEST_CASE("the loadable extension uses a library another caller initialized") {
 	// The test process owns the library.
 	auto &api = *scalardb_analytics_connector_api();
-	ScalardbAnalyticsConnectorLibrarySettings settings {std::getenv("ADBC_DRIVER_DIRECTORY")};
+	ScalardbAnalyticsConnectorLibrarySettings settings {std::getenv("ADBC_DRIVER_DIRECTORY"),
+	                                                    std::getenv("ODBC_DRIVER_DIRECTORY")};
 	REQUIRE(api.library_initialize(&settings) == nullptr);
 
 	duckdb::DBConfig config;

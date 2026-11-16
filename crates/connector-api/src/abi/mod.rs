@@ -100,6 +100,9 @@ pub struct ScalardbAnalyticsConnectorLibrarySettings {
     /// Directory from which ADBC drivers are loaded; null or empty when none is
     /// configured.
     pub adbc_driver_directory: *const c_char,
+    /// Directory from which ODBC drivers are loaded; null or empty when none is
+    /// configured.
+    pub odbc_driver_directory: *const c_char,
 }
 
 /// One connection option passed when opening a Data Source.
@@ -588,12 +591,17 @@ unsafe extern "C" fn library_initialize(
     contain(|| {
         // SAFETY: the caller passes a valid settings pointer or null.
         let settings = unsafe { reference(settings, "settings") }?;
-        // SAFETY: the caller passes a NUL-terminated string or null.
-        let directory = unsafe {
+        // SAFETY: the caller passes NUL-terminated strings or null.
+        let adbc_driver_directory = unsafe {
             read_optional_text(settings.adbc_driver_directory, "the ADBC driver directory")
         }?;
+        // SAFETY: as above.
+        let odbc_driver_directory = unsafe {
+            read_optional_text(settings.odbc_driver_directory, "the ODBC driver directory")
+        }?;
         library::initialize(LibrarySettings {
-            adbc_driver_directory: directory.map(PathBuf::from),
+            adbc_driver_directory: adbc_driver_directory.map(PathBuf::from),
+            odbc_driver_directory: odbc_driver_directory.map(PathBuf::from),
         })
     })
 }

@@ -4,14 +4,15 @@
 //! The server container is the one the PostgreSQL connector's tests use,
 //! named after the image and left running between runs.
 //! `POSTGRESQL_TEST_IMAGE` selects the server image (default `postgres:18`),
-//! and `PSQLODBC_DRIVER`, which the Nix development shell sets, locates the
-//! PostgreSQL ODBC driver.
+//! and `ODBC_DRIVER_DIRECTORY`, which the Nix development shell sets, holds
+//! the PostgreSQL ODBC driver as `psqlodbcw`.
 
 #![allow(dead_code)]
 
 use std::{
     env,
     io::Write,
+    path::PathBuf,
     process::{Command, Stdio},
     sync::{Arc, OnceLock},
     thread,
@@ -86,6 +87,8 @@ impl Connector for OdbcTestConnector {
 }
 
 impl OdbcConnector for OdbcTestConnector {
+    const DRIVER: &'static str = "psqlodbcw";
+
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError> {
         let value = |key| match options.get(key) {
             Some(OptionValue::Plain(value)) => Some(SecretString::new(value.clone())),
@@ -285,14 +288,22 @@ impl Server {
     }
 
     /// The ODBC connection string of the server's `postgres` database,
-    /// without credentials, followed by `extra` attributes.
+    /// without the driver and credentials, followed by `extra` attributes.
     pub fn connection_string(&self, extra: &str) -> String {
-        let driver = env::var("PSQLODBC_DRIVER")
-            .expect("PSQLODBC_DRIVER locates the PostgreSQL ODBC driver; run inside `nix develop`");
         format!(
-            "Driver={{{driver}}};Server=127.0.0.1;Port={};Database=postgres;SSLmode=disable;{extra}",
+            "Server=127.0.0.1;Port={};Database=postgres;SSLmode=disable;{extra}",
             self.port
         )
+    }
+}
+
+/// The library settings with the development shell's ODBC driver directory.
+pub fn library_settings() -> LibrarySettings {
+    let directory = env::var_os("ODBC_DRIVER_DIRECTORY")
+        .expect("ODBC_DRIVER_DIRECTORY locates the ODBC drivers; run inside `nix develop`");
+    LibrarySettings {
+        odbc_driver_directory: Some(PathBuf::from(directory)),
+        ..LibrarySettings::default()
     }
 }
 
@@ -303,7 +314,18 @@ pub fn session_as(
     password: &str,
     extra: &str,
 ) -> Result<Session<OdbcTestConnector>, ConnectorError> {
-    let library = TestAccess::open_library(&LibrarySettings::default())?;
+    open_session(&library_settings(), user, password, extra)
+}
+
+/// Opens a session of a library with `settings` as `user` with `password`
+/// and `extra` connection string attributes.
+pub fn open_session(
+    settings: &LibrarySettings,
+    user: &str,
+    password: &str,
+    extra: &str,
+) -> Result<Session<OdbcTestConnector>, ConnectorError> {
+    let library = TestAccess::open_library(settings)?;
     let options = ConnectionOptions::parse(
         &OdbcTestConnector::descriptor(),
         [

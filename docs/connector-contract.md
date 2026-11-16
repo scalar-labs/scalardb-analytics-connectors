@@ -100,7 +100,7 @@ functions name their target by handle.
 
 | Unit | Meaning |
 | --- | --- |
-| Library | Initialized once per process by the one component that owns it there, as described below. Receives the location of ADBC drivers and logging settings. |
+| Library | Initialized once per process by the one component that owns it there, as described below. Receives the locations of ADBC drivers and ODBC drivers, and logging settings. |
 | Data source | Holds one data source's connection settings and credentials. One is opened per registered data source and reopened when connection settings change. |
 | Session | One connection to that data source. For a direct-access source without connections, the unit that runs one request at a time. Callers open as many as they want concurrent requests. |
 | Operation | One read request. Owns cancellation and error retrieval. Source resources are created at the first pull. |

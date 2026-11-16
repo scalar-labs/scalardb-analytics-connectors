@@ -3,11 +3,12 @@
 // process. It never shuts the library down, because DuckDB does not unload
 // extensions.
 //
-// The ADBC driver directory comes from the environment variable
-// SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY, because DuckDB applies an
-// extension's own settings only after loading it. Without it, the directory is
-// the distribution package's `adbc-drivers`, beside the extension's own
-// directory.
+// The ADBC and ODBC driver directories come from the environment variables
+// SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY and
+// SCALARDB_ANALYTICS_ODBC_DRIVER_DIRECTORY, because DuckDB applies an
+// extension's own settings only after loading it. Without one, its directory
+// is the distribution package's `adbc-drivers` or `odbc-drivers`, beside the
+// extension's own directory.
 #include <dlfcn.h>
 
 #include <cstdlib>
@@ -24,15 +25,27 @@
 
 namespace {
 
-// The `adbc-drivers` directory of the package this extension file is in, or
-// an empty string when the file cannot be located.
-std::string PackagedDriverDirectory() {
+// The directory `name` of the package this extension file is in, or an empty
+// string when the file cannot be located.
+std::string PackagedDirectory(const char *name) {
 	Dl_info info;
-	if (dladdr(reinterpret_cast<const void *>(&PackagedDriverDirectory), &info) == 0 || !info.dli_fname) {
+	if (dladdr(reinterpret_cast<const void *>(&PackagedDirectory), &info) == 0 || !info.dli_fname) {
 		return {};
 	}
 	auto extension = std::filesystem::absolute(info.dli_fname);
-	return (extension.parent_path().parent_path() / "adbc-drivers").string();
+	return (extension.parent_path().parent_path() / name).string();
+}
+
+// The directory the environment variable `variable` names, or else the
+// package's directory `name`.
+std::string DriverDirectory(const char *variable, const char *name) {
+	const char *configured = std::getenv(variable);
+	return configured ? configured : PackagedDirectory(name);
+}
+
+// A directory as a library setting: null when it is empty.
+const char *Setting(const std::string &directory) {
+	return directory.empty() ? nullptr : directory.c_str();
 }
 
 // Initializes the library for the process, unless another caller in the
@@ -43,16 +56,16 @@ std::string PackagedDriverDirectory() {
 // driver, and so cannot use the embedding entry (`Register`). The application
 // initializes the library with its own settings before loading the extension,
 // shares it with its other callers, and shuts it down after closing DuckDB; the
-// extension then only uses it. Its own driver directory is not used, and it
+// extension then only uses it. Its own driver directories are not used, and it
 // does not shut the library down in either case, so the owner keeps both the
 // settings and the shutdown.
 void InitializeLibrary(const ScalardbAnalyticsConnectorApi &api) {
 	if (api.library_is_initialized()) {
 		return;
 	}
-	const char *configured = std::getenv("SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY");
-	std::string directory = configured ? configured : PackagedDriverDirectory();
-	ScalardbAnalyticsConnectorLibrarySettings settings {directory.empty() ? nullptr : directory.c_str()};
+	auto adbc = DriverDirectory("SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY", "adbc-drivers");
+	auto odbc = DriverDirectory("SCALARDB_ANALYTICS_ODBC_DRIVER_DIRECTORY", "odbc-drivers");
+	ScalardbAnalyticsConnectorLibrarySettings settings {Setting(adbc), Setting(odbc)};
 	scalardb_analytics_duckdb::Check(api, api.library_initialize(&settings), "initialize the connector library");
 }
 

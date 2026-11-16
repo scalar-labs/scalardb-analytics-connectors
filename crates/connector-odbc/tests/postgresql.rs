@@ -14,9 +14,11 @@ use arrow_array::{
     StringArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, TimeUnit};
-use connector_sdk::{ConnectorError, ErrorKind, ExecutionOutput, Executor, Session};
+use connector_sdk::{
+    ConnectorError, ErrorKind, ExecutionOutput, Executor, LibrarySettings, Session,
+};
 use connector_sql::{SqlExecutor, SqlRead, catalog::catalog_read};
-use support::{OdbcTestConnector, PASSWORD, server, session, session_as};
+use support::{OdbcTestConnector, PASSWORD, open_session, server, session, session_as};
 
 /// Runs `sql` through the Connector's executor and reads its whole result.
 fn run(
@@ -199,6 +201,18 @@ fn a_value_longer_than_its_column_size_is_a_data_error() {
     let error = run(&session, "SELECT repeat('x', 100)::varchar")
         .expect_err("the value does not fit its reported size");
     assert_eq!(error.kind(), ErrorKind::Data, "unexpected error: {error}");
+}
+
+#[test]
+fn a_library_without_an_odbc_driver_directory_opens_no_data_source() {
+    let Err(error) = open_session(&LibrarySettings::default(), "postgres", PASSWORD, "") else {
+        panic!("a data source opened without an ODBC driver directory");
+    };
+    assert_eq!(
+        error.kind(),
+        ErrorKind::InvalidSettings,
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

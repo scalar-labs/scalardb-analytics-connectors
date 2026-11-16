@@ -13,6 +13,7 @@ fn initialize_library() -> Result<(), Error> {
     let directory = text("/opt/adbc");
     let settings = ScalardbAnalyticsConnectorLibrarySettings {
         adbc_driver_directory: directory.as_ptr(),
+        odbc_driver_directory: std::ptr::null(),
     };
     // SAFETY: the settings are valid for the call.
     check(unsafe { (api().library_initialize)(&settings) })

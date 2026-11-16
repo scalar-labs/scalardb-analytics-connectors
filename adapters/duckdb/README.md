@@ -126,12 +126,13 @@ The loadable extension, `scalardb_analytics_connectors.duckdb_extension`, owns t
 connector API library unless another caller in the process already does: it
 initializes the library when DuckDB loads it and never shuts it down, because
 DuckDB does not unload extensions. It reads the
-ADBC driver directory from the environment variable
-`SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY`, because DuckDB applies an
-extension's own settings only after loading it. Without the variable, it uses
-the `adbc-drivers` directory of the
+ADBC and ODBC driver directories from the environment variables
+`SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY` and
+`SCALARDB_ANALYTICS_ODBC_DRIVER_DIRECTORY`, because DuckDB applies an
+extension's own settings only after loading it. Without a variable, it uses
+the `adbc-drivers` or `odbc-drivers` directory of the
 [distribution package](../../README.md#distribution-package) it is in, beside
-its own directory. A DuckDB setting cannot name the directory, because any SQL
+its own directory. A DuckDB setting cannot name a directory, because any SQL
 user who can set it could make the process load a native library. The
 extension is unsigned, so DuckDB loads it only with unsigned extensions
 allowed.
@@ -141,7 +142,7 @@ extension uses it as it is. This serves an application that owns the library
 but runs DuckDB through a binding that can only load extensions, such as a
 JDBC or Python driver: the application initializes the library with its own
 settings, shares it with its other callers, and loads the extension into
-DuckDB. The extension's driver directory is then not used, and the application
+DuckDB. The extension's driver directories are then not used, and the application
 shuts the library down only after DuckDB has closed the catalogs the extension
 attached.
 

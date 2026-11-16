@@ -4,9 +4,8 @@
 //! running between runs so that later runs start quickly.
 //! `SQLSERVER_TEST_IMAGE` selects the server image (default
 //! `mcr.microsoft.com/mssql/server:2022-latest`), which runs as `linux/amd64`.
-//! The connector reaches the server through the ODBC driver the driver
-//! manager finds under the connector's driver name, which the Nix development
-//! shell registers through `ODBCSYSINI`.
+//! The connector reaches the server through the ODBC driver in
+//! `ODBC_DRIVER_DIRECTORY`, which the Nix development shell sets.
 
 #![allow(dead_code)]
 

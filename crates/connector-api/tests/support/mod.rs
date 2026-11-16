@@ -97,6 +97,7 @@ pub fn initialize() {
     INITIALIZED.call_once(|| {
         let settings = ScalardbAnalyticsConnectorLibrarySettings {
             adbc_driver_directory: ptr::null(),
+            odbc_driver_directory: std::ptr::null(),
         };
         // SAFETY: the settings are valid for the call.
         check(unsafe { (api().library_initialize)(&settings) }).unwrap();

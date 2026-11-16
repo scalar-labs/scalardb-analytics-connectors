@@ -149,6 +149,7 @@ fn initialize_with_drivers() {
         let directory = text(&directory);
         let settings = ScalardbAnalyticsConnectorLibrarySettings {
             adbc_driver_directory: directory.as_ptr(),
+            odbc_driver_directory: std::ptr::null(),
         };
         // SAFETY: the settings are valid for the call.
         check(unsafe { (api().library_initialize)(&settings) }).unwrap();

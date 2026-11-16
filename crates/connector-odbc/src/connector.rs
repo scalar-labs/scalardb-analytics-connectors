@@ -1,7 +1,7 @@
 //! ODBC access: what a Connector using it declares, and the access built from
 //! that declaration.
 
-use std::{marker::PhantomData, sync::OnceLock, time::Duration};
+use std::{marker::PhantomData, path::PathBuf, sync::OnceLock, time::Duration};
 
 use arrow_odbc::odbc_api::{
     ConnectionOptions as OdbcConnectionOptions, DataType as OdbcDataType, Environment, Shared,
@@ -20,12 +20,20 @@ use crate::{
 /// A Connector that reaches its Data Source through the ODBC driver manager.
 ///
 /// Its access is [`Odbc`], which opens one ODBC connection per session from
-/// the connection string the Connector builds. The Connector's error handler
-/// sees [`OdbcDiagnostic`]s.
+/// the connection string the Connector builds, with the Connector's
+/// [`DRIVER`](Self::DRIVER) in the library's ODBC driver directory as its
+/// driver. The Connector's error handler sees [`OdbcDiagnostic`]s.
 pub trait OdbcConnector: Connector<Access = Odbc<Self>> {
+    /// The path of the Connector's ODBC driver relative to the library's ODBC
+    /// driver directory, the same on every platform.
+    ///
+    /// A driver that finds its own files relative to its location keeps them
+    /// beside it, under a directory of its own.
+    const DRIVER: &'static str;
+
     /// Turns validated connection options into the ODBC connection string and
     /// the credentials added to it, including the Connector's fixed
-    /// attributes.
+    /// attributes. The driver is not part of it.
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError>;
 
     /// The Arrow type a result column of `data_type`, as the ODBC driver
@@ -45,8 +53,8 @@ pub trait OdbcConnector: Connector<Access = Odbc<Self>> {
 
 /// What an ODBC connection opens with.
 pub struct ConnectionString {
-    /// The connection string without credentials, such as the driver, the
-    /// server, and the Connector's fixed attributes.
+    /// The connection string without the driver and credentials, such as the
+    /// server and the Connector's fixed attributes.
     pub attributes: String,
     /// The user, added as `UID`.
     pub user: Option<SecretString>,
@@ -55,10 +63,16 @@ pub struct ConnectionString {
 }
 
 impl ConnectionString {
-    /// The complete connection string, with the credentials added so that
-    /// they are taken literally.
-    fn complete(&self) -> SecretString {
-        let mut complete = self.attributes.trim_end_matches(';').to_owned();
+    /// The complete connection string: the driver at `driver`, the
+    /// attributes, and the credentials, each value written so that it is taken
+    /// literally.
+    fn complete(&self, driver: &str) -> SecretString {
+        let mut complete = format!("Driver={}", attribute_value(driver));
+        let attributes = self.attributes.trim_end_matches(';');
+        if !attributes.is_empty() {
+            complete.push(';');
+            complete.push_str(attributes);
+        }
         for (attribute, value) in [("UID", &self.user), ("PWD", &self.password)] {
             if let Some(value) = value {
                 complete.push(';');
@@ -102,19 +116,26 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
         DataSourceAccess::Direct
     }
 
-    fn open_library(_settings: &LibrarySettings) -> Result<OdbcLibrary, ConnectorError> {
-        Ok(OdbcLibrary)
+    fn open_library(settings: &LibrarySettings) -> Result<OdbcLibrary, ConnectorError> {
+        Ok(OdbcLibrary {
+            driver_directory: settings.odbc_driver_directory.clone(),
+        })
     }
 
-    /// Builds the connection string; nothing connects before a session opens.
+    /// Builds the connection string with the Connector's driver in the
+    /// library's ODBC driver directory; nothing connects before a session
+    /// opens. Without a driver directory it is `invalid settings`, because
+    /// the directory is a library setting; a driver missing from the
+    /// directory is reported by the driver manager when a session connects.
     fn open_data_source(
-        _library: &OdbcLibrary,
+        library: &OdbcLibrary,
         _connector: &str,
         options: ConnectionOptions,
         connection_timeout: Option<Duration>,
     ) -> Result<OdbcDataSource, ConnectorError> {
+        let driver = library.driver::<C>()?;
         Ok(OdbcDataSource {
-            connection_string: C::connection_string(options)?.complete(),
+            connection_string: C::connection_string(options)?.complete(&driver),
             connection_timeout,
         })
     }
@@ -147,9 +168,34 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
     }
 }
 
-/// ODBC access's process-level state. The ODBC environment it uses is created
-/// when the first session connects.
-pub struct OdbcLibrary;
+/// ODBC access's process-level state: the library's ODBC driver directory.
+/// The ODBC environment it uses is created when the first session connects.
+pub struct OdbcLibrary {
+    driver_directory: Option<PathBuf>,
+}
+
+impl OdbcLibrary {
+    /// The path of Connector `C`'s driver in the driver directory, as the
+    /// connection string names it.
+    fn driver<C: OdbcConnector>(&self) -> Result<String, ConnectorError> {
+        let Some(directory) = &self.driver_directory else {
+            return Err(invalid_settings(
+                "no ODBC driver directory is configured for the library",
+            ));
+        };
+        // A connection string is text, so a path that is not UTF-8 cannot be
+        // written in one.
+        directory
+            .join(C::DRIVER)
+            .into_os_string()
+            .into_string()
+            .map_err(|_| invalid_settings("the ODBC driver directory is not a UTF-8 path"))
+    }
+}
+
+fn invalid_settings(message: &str) -> ConnectorError {
+    ConnectorError::new(ErrorKind::InvalidSettings, false, message)
+}
 
 /// One opened ODBC Data Source: the connection string its sessions connect
 /// with, credentials included.

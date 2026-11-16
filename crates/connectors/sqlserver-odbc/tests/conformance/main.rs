@@ -12,6 +12,8 @@ mod metadata;
 mod reads;
 
 use std::{
+    env,
+    path::PathBuf,
     process::Child,
     thread,
     time::{Duration, Instant},
@@ -102,8 +104,11 @@ impl Fixture for SqlServerFixture {
     }
 
     fn library_settings(&self) -> LibrarySettings {
+        let directory = env::var_os("ODBC_DRIVER_DIRECTORY")
+            .expect("ODBC_DRIVER_DIRECTORY locates the ODBC drivers; run inside `nix develop`");
         LibrarySettings {
             adbc_driver_directory: None,
+            odbc_driver_directory: Some(PathBuf::from(directory)),
         }
     }
 

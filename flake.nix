@@ -153,19 +153,20 @@
               ++ pkgs.lib.optionals (adbcDriverMysqlTarballs ? ${system}) [ adbcDriverMysql ];
             }
           }/lib";
-          # The ODBC driver manager that the ODBC ADBC driver links, and the
-          # PostgreSQL ODBC driver that its tests reach a server through.
+          # The ODBC driver manager that connector-odbc links.
           odbcLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.unixodbc ];
-          psqlOdbcDriver = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
-          # The Microsoft ODBC Driver 18 for SQL Server that the SQL Server
-          # through ODBC connector's tests use, registered under the name the
-          # connector connects with in an odbcinst.ini that `ODBCSYSINI`
-          # points the driver manager to.
+          # Directory of the ODBC drivers that connector tests load, each at
+          # the path its Connector names: the PostgreSQL ODBC driver that
+          # connector-odbc's tests reach a server through, and the Microsoft
+          # ODBC Driver 18 for SQL Server that the SQL Server through ODBC
+          # connector's tests use, with its `share` beside its `lib` because
+          # it loads its resources relative to its own path.
           msodbcsql = pkgs.unixodbcDrivers.msodbcsql18;
-          odbcSystemDirectory = pkgs.writeTextDir "odbcinst.ini" ''
-            [${msodbcsql.fancyName}]
-            Driver=${msodbcsql}/${msodbcsql.driver}
-          '';
+          odbcDriverDirectory = pkgs.linkFarm "odbc-drivers" {
+            psqlodbcw = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
+            "msodbcsql18/lib/msodbcsql18" = "${msodbcsql}/${msodbcsql.driver}";
+            "msodbcsql18/share" = "${msodbcsql}/share";
+          };
           # The driver loads OpenSSL at run time by its file name; on macOS it
           # finds it only through `DYLD_LIBRARY_PATH`, which holds nothing but
           # OpenSSL.
@@ -239,12 +240,8 @@
                 value = libraryPath;
               }
               {
-                name = "PSQLODBC_DRIVER";
-                value = psqlOdbcDriver;
-              }
-              {
-                name = "ODBCSYSINI";
-                value = "${odbcSystemDirectory}";
+                name = "ODBC_DRIVER_DIRECTORY";
+                value = "${odbcDriverDirectory}";
               }
             ]
             # Linux libraries carry no install path, so the ODBC driver
@@ -282,8 +279,7 @@
             shellHook = ''
               export ADBC_DRIVER_DIRECTORY="${adbcDriverDirectory}"
               export LIBRARY_PATH="${libraryPath}"
-              export PSQLODBC_DRIVER="${psqlOdbcDriver}"
-              export ODBCSYSINI="${odbcSystemDirectory}"
+              export ODBC_DRIVER_DIRECTORY="${odbcDriverDirectory}"
             ''
             + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export LD_LIBRARY_PATH="${odbcLibraryPath}"

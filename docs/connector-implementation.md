@@ -92,7 +92,9 @@ A connector for a new Connector is built in this order:
    same name in its `Cargo.toml`, and one entry behind that feature in
    `registry::built_in_connectors`. With ADBC access, also make the driver
    available to the development shell's `ADBC_DRIVER_DIRECTORY` in
-   `flake.nix`, where the tests load it. Build it into the artifact and run the
+   `flake.nix`, where the tests load it. With ODBC access, put the ODBC driver
+   in the development shell's `ODBC_DRIVER_DIRECTORY` at the path the
+   connector's `OdbcConnector::DRIVER` names. Build it into the artifact and run the
    [dependency policy check](#dependency-policy-check) to confirm that
    the connector brings in no native dependency, no ADBC driver loading of its own,
    and no license that prevents distribution.

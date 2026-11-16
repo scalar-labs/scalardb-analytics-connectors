@@ -196,6 +196,7 @@ pub fn library() -> AdbcLibrary {
         .expect("ADBC_DRIVER_DIRECTORY locates the ADBC drivers; run inside `nix develop`");
     PostgresAccess::open_library(&LibrarySettings {
         adbc_driver_directory: Some(PathBuf::from(directory)),
+        odbc_driver_directory: None,
     })
     .expect("the library initializes")
 }

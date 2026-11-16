@@ -16,6 +16,8 @@ use std::path::PathBuf;
 pub struct LibrarySettings {
     /// Directory from which ADBC drivers are loaded; absent when none is configured.
     pub adbc_driver_directory: Option<PathBuf>,
+    /// Directory from which ODBC drivers are loaded; absent when none is configured.
+    pub odbc_driver_directory: Option<PathBuf>,
 }
 
 /// The name and version of one component that produced table metadata.

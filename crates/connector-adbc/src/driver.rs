@@ -308,6 +308,7 @@ mod tests {
             LibrarySettings::default(),
             LibrarySettings {
                 adbc_driver_directory: Some(empty_directory),
+                odbc_driver_directory: None,
             },
         ] {
             let Err(error) = requirement().load(&settings) else {
