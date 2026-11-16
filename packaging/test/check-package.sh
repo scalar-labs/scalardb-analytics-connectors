@@ -3,7 +3,8 @@
 # directory, outside the development environment.
 #
 # 1. Every shipped binary loads only system libraries and the libraries in
-#    the package's lib/, and searches for them only relative to itself; on
+#    the package's lib/, searches for them only relative to itself, and is
+#    named either relative to its search path or without a path; on
 #    Linux, no glibc symbol is newer than the 2.28 baseline. A native library
 #    that is neither is a dependency packaging/dependencies.json does not ship.
 # 2. The extension carries DuckDB: it leaves no DuckDB symbol for the host
@@ -44,11 +45,13 @@ shipped() { [ -f "$home/lib/$1" ]; }
 case "$(uname -s)" in
 Darwin)
 	for binary in $binaries; do
-		# A library's own install name is listed among its references.
+		# A library's own install name is listed among its references. A name
+		# without a path, as an ADBC driver that is only loaded by its path may
+		# carry, points nowhere outside the package.
 		id=$(otool -D "$binary" | tail -n 1)
 		case "$id" in
 		@rpath/*) ;;
-		*) echo "$binary is named $id" ;;
+		*/*) echo "$binary is named $id" ;;
 		esac
 		otool -L "$binary" | tail -n +2 | awk '{ print $1 }' | while read -r reference; do
 			case "$reference" in

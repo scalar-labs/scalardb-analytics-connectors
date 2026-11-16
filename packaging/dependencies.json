@@ -1,10 +1,36 @@
 {
   "connectors": {
+    "mysql": {
+      "dependencies": ["adbc_driver_mysql"]
+    },
     "postgresql": {
       "dependencies": ["adbc_driver_postgresql"]
     }
   },
   "dependencies": {
+    "adbc_driver_mysql": {
+      "kind": "adbc-driver-archive",
+      "name": "ADBC Driver Foundry Driver for MySQL",
+      "version": "0.8.0",
+      "licenses": ["LICENSE", "NOTICE"],
+      "archives": {
+        "osx_arm64": {
+          "url": "https://dbc-cdn.columnar.tech/mysql/v0.8.0/mysql_macos_arm64_v0.8.0.tar.gz",
+          "hash": "sha256-Lt9uyMQilEbrbV7Zi6ugOe0N3rLllBsx7rKAgWCI9PM=",
+          "library": "libadbc_driver_mysql.dylib"
+        },
+        "linux_arm64": {
+          "url": "https://dbc-cdn.columnar.tech/mysql/v0.8.0/mysql_linux_arm64_v0.8.0.tar.gz",
+          "hash": "sha256-AQGrc+zFjzxAEW5egx4Jwce8ugU1XYbc9xYDSZTD9Us=",
+          "library": "libadbc_driver_mysql.so"
+        },
+        "linux_amd64": {
+          "url": "https://dbc-cdn.columnar.tech/mysql/v0.8.0/mysql_linux_amd64_v0.8.0.tar.gz",
+          "hash": "sha256-uL72uaQxskbpLB+ed7R94y2/quh9vAjhSmIwiNqkY48=",
+          "library": "libadbc_driver_mysql.so"
+        }
+      }
+    },
     "adbc_driver_postgresql": {
       "kind": "adbc-driver",
       "name": "ADBC PostgreSQL Driver",

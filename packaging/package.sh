@@ -67,17 +67,12 @@ fetch() {
 	[ "$actual" = "$2" ] || { echo "$dependency: $1 does not match its hash: $actual" >&2; exit 1; }
 }
 
-# An ADBC driver from its pinned Python wheel: the library goes to
-# adbc-drivers/ with a manifest that names it relative to the manifest, and the
-# wheel's license texts go to LICENSES/<dependency>/.
-ship_adbc_driver() {
-	wheel=$work/$dependency.whl
-	fetch "$(field '.wheels[$platform].url')" "$(field '.wheels[$platform].hash')" "$wheel"
-	rm -rf "${work:?}/${dependency:?}"
-	unzip -q -d "$work/$dependency" "$wheel"
-	file=$(basename "$(field '.library')")
+# Places an ADBC driver library, given its path, in adbc-drivers/ with a
+# manifest that names it relative to the manifest.
+place_adbc_driver() {
+	file=$(basename "$1")
 	mkdir -p "$stage/adbc-drivers" "$stage/LICENSES/$dependency"
-	cp "$work/$dependency/$(field '.library')" "$stage/adbc-drivers/$file"
+	cp "$1" "$stage/adbc-drivers/$file"
 	cat >"$stage/adbc-drivers/$dependency.toml" <<EOF
 manifest_version = 1
 name = "$(field '.name')"
@@ -86,7 +81,32 @@ version = "$(field '.version')"
 [Driver]
 shared = "$file"
 EOF
+}
+
+# An ADBC driver from its pinned Python wheel: the library goes to
+# adbc-drivers/, and the wheel's license texts go to LICENSES/<dependency>/.
+ship_adbc_driver() {
+	wheel=$work/$dependency.whl
+	fetch "$(field '.wheels[$platform].url')" "$(field '.wheels[$platform].hash')" "$wheel"
+	rm -rf "${work:?}/${dependency:?}"
+	unzip -q -d "$work/$dependency" "$wheel"
+	place_adbc_driver "$work/$dependency/$(field '.library')"
 	cp "$work/$dependency/$(field '.licenses')"/* "$stage/LICENSES/$dependency/"
+}
+
+# An ADBC driver from its pinned per-platform tar.gz archive, such as an ADBC
+# Driver Foundry release: the library goes to adbc-drivers/, and the license
+# files the archive holds go to LICENSES/<dependency>/.
+ship_adbc_driver_archive() {
+	archive=$work/$dependency.tar.gz
+	fetch "$(field '.archives[$platform].url')" "$(field '.archives[$platform].hash')" "$archive"
+	rm -rf "${work:?}/${dependency:?}"
+	mkdir -p "$work/$dependency"
+	tar -C "$work/$dependency" -xzf "$archive"
+	place_adbc_driver "$work/$dependency/$(field '.archives[$platform].library')"
+	for license in $(field '.licenses[]'); do
+		cp "$work/$dependency/$license" "$stage/LICENSES/$dependency/"
+	done
 }
 
 # The connector API library.
