@@ -2,16 +2,14 @@
 // caller already initialized, as an application that owns the library does
 // when it runs DuckDB through a binding that can only load extensions.
 //
-// This test is its own executable that links neither the adapter nor its
-// Substrait messages: the extension of the development build carries the
-// same messages with the shared protobuf, which aborts when one process
-// registers them twice.
-#include <cstdlib>
+// The test process also carries the adapter and its Substrait messages: the
+// extension keeps its own protobuf, so loading it registers its messages
+// only there.
 #include <string>
 
 #include "catch2/catch_test_macros.hpp"
 #include "duckdb.hpp"
-#include "scalardb_analytics_connector.h"
+#include "support.hpp"
 
 namespace {
 
@@ -28,10 +26,7 @@ duckdb::unique_ptr<duckdb::MaterializedQueryResult> Run(duckdb::Connection &conn
 
 TEST_CASE("the loadable extension uses a library another caller initialized") {
 	// The test process owns the library.
-	auto &api = *scalardb_analytics_connector_api();
-	ScalardbAnalyticsConnectorLibrarySettings settings {std::getenv("ADBC_DRIVER_DIRECTORY"),
-	                                                    std::getenv("ODBC_DRIVER_DIRECTORY")};
-	REQUIRE(api.library_initialize(&settings) == nullptr);
+	test_support::Api();
 
 	duckdb::DBConfig config;
 	config.SetOptionByName("allow_unsigned_extensions", duckdb::Value::BOOLEAN(true));

@@ -269,10 +269,10 @@ nix develop --command cmake --build target/duckdb-adapter
 nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
 ```
 
-`ctest` runs three suites. The integration tests embed DuckDB through
-`Register`, with a library the test process initialized. The extension test
-initializes the library first and then loads the built extension, as an
-application that owns the library does. The end-to-end test,
+`ctest` runs two suites. The integration tests embed DuckDB through
+`Register`, with a library the test process initialized; the same process
+also loads the built extension, as an application that owns the library does.
+The end-to-end test,
 [`test/e2e.sh`](test/e2e.sh), runs the DuckDB CLI of the development shell,
 loads the built extension, which initializes the library itself, and queries
 PostgreSQL as a user would: complete and partial pushdown with their plans, an
@@ -293,6 +293,17 @@ links the static library of the development shell's DuckDB the same way, so
 the end-to-end test loads the extension as a user's process does. The
 adapter has no version of its own; CMake reads the workspace version from
 Cargo.
+
+The extension must carry its own static protobuf behind that export
+restriction, not share protobuf with the process.
+The generated Substrait code registers its descriptors in the protobuf it
+links when the extension is loaded, and a second registration of the same
+files in one protobuf aborts the process. With a shared protobuf, that
+happens when one process loads the extension from two paths, or loads it
+beside other code with the same Substrait messages, such as the adapter
+embedded through `Register`. The development shell therefore provides
+protobuf and abseil as static libraries too, and the extension of the
+development build carries its own copy as well.
 
 The integration tests embed DuckDB through the embedding entry. Against the
 items of [Integration tests](../../docs/adapter-implementation.md#integration-tests):

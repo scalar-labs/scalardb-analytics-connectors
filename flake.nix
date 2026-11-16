@@ -183,6 +183,22 @@
             url = "https://github.com/substrait-io/substrait/archive/refs/tags/v0.69.0.tar.gz";
             sha256 = "0ga2frvw9w22d8axamlb08b01piy44p3lphbnk9102vrymh5mgn6";
           };
+          # Static protobuf and abseil for the DuckDB adapter's CMake build. The
+          # loadable extension carries its own copy behind its export
+          # restriction, as the distribution build's does: generated Substrait
+          # code registers its descriptors in the protobuf it links when it is
+          # loaded, and a second registration in one shared protobuf aborts.
+          # `abseil-cpp` only names `abseil-cpp_202601`, which takes the option.
+          abseilStatic = pkgs.abseil-cpp_202601.override { static = true; };
+          # protobuf's own tests are not run: no binary cache holds this
+          # variant, and one of them fails to write its temporary file in the
+          # macOS Nix builder.
+          protobufStatic =
+            (pkgs.protobuf.override {
+              enableShared = false;
+              abseil-cpp = abseilStatic;
+            }).overrideAttrs
+              { doCheck = false; };
         in
         {
           packages = {
@@ -230,8 +246,8 @@
                 value = pkgs.lib.makeSearchPath "" [
                   pkgs.duckdb.dev
                   pkgs.duckdb.lib
-                  pkgs.protobuf
-                  (pkgs.lib.getDev pkgs.abseil-cpp)
+                  protobufStatic
+                  (pkgs.lib.getDev abseilStatic)
                   pkgs.catch2_3
                 ];
               }
