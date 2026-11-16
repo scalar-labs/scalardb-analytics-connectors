@@ -763,7 +763,7 @@ impl Drop for TestStream {
 pub struct TestCatalog;
 
 /// The test source metadata: which fixture table was read.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TestTable {
     pub table: Vec<String>,
     pub fixture: TestFixture,
@@ -777,7 +777,9 @@ pub struct TestTable {
 /// The `orders` variants are later observations of `orders` for comparison:
 /// a renamed column, the table dropped and re-created with the same column
 /// identifiers, and a read that could not see every item.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TestFixture {
     Orders,

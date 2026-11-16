@@ -5,6 +5,7 @@ use connector_sdk::{
     Column, ColumnType, Constraint, ConstraintKind, Reported, TableKind, TableMetadata,
     TableReference, UniqueKind,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::type_mapping::map_type;
@@ -21,7 +22,7 @@ use crate::MysqlSettings;
 /// facts table metadata derives from, it carries what states a table's
 /// meaning, such as comments and view definitions, for the Semantic Catalog
 /// to interpret.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlTable {
     /// `TABLES.TABLE_SCHEMA`, the database.
     pub schema: String,
@@ -48,7 +49,7 @@ pub struct MysqlTable {
 }
 
 /// `TABLES.TABLE_TYPE`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum MysqlTableKind {
     #[serde(rename = "BASE TABLE")]
     BaseTable,
@@ -56,7 +57,7 @@ pub enum MysqlTableKind {
     View,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlColumn {
     pub name: String,
     /// `ORDINAL_POSITION`, from 1.
@@ -83,7 +84,7 @@ pub struct MysqlColumn {
 
 /// Where MySQL takes a column's value from, other than the row itself, from
 /// `COLUMN_DEFAULT`, `EXTRA`, and `GENERATION_EXPRESSION`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MysqlValueSource {
     /// A literal `DEFAULT` value, as `COLUMN_DEFAULT` prints it.
@@ -100,7 +101,7 @@ pub enum MysqlValueSource {
 }
 
 /// How a generated column is kept.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MysqlGeneration {
     Stored,
@@ -108,14 +109,14 @@ pub enum MysqlGeneration {
 }
 
 /// The primary key, which MySQL always names `PRIMARY`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlPrimaryKey {
     pub columns: Vec<String>,
 }
 
 /// A unique index. MySQL implements every unique constraint as one and
 /// always enforces it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlUniqueKey {
     pub name: String,
     /// The key parts in order.
@@ -123,7 +124,7 @@ pub struct MysqlUniqueKey {
 }
 
 /// One key part of a unique index, from `STATISTICS`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MysqlKey {
     /// A column, or its leading `prefix_length` characters or bytes.
@@ -135,7 +136,7 @@ pub enum MysqlKey {
     Expression { expression: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlForeignKey {
     pub name: String,
     pub columns: Vec<String>,
@@ -143,7 +144,7 @@ pub struct MysqlForeignKey {
 }
 
 /// The table and columns a foreign key references.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlReferencedTable {
     pub schema: String,
     pub table: String,
@@ -151,7 +152,7 @@ pub struct MysqlReferencedTable {
 }
 
 /// A CHECK constraint of the table.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MysqlCheck {
     pub name: String,
     /// `CHECK_CONSTRAINTS.CHECK_CLAUSE`.

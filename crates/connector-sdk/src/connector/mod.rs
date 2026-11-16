@@ -38,6 +38,7 @@ use crate::{
     NamespacePath, PlanningError, PortableQuery, PushdownRequest, PushdownResult, RemoteExecution,
     RewriteRuleSet, TableEntry, TableMetadata, TableRecord, TableReference,
 };
+use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 
 /// The diagnostic a Connector's access reports for a Data Source error.
@@ -193,7 +194,11 @@ pub trait Catalog<C: Connector>: 'static {
     /// travels beside it in [`TableRecord::Read`]. Only the connector knows
     /// this shape, so a stored document is restored to this type to compare
     /// it.
-    type Table: Serialize + DeserializeOwned + Send + 'static;
+    ///
+    /// Its JSON Schema, derived from this type, is published in the static
+    /// information so that readers can interpret the document; the rustdoc of
+    /// its fields becomes their descriptions.
+    type Table: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     /// Session-level facts the catalog reads once when a session opens, such
     /// as the server version that decides which catalog columns exist.
     type Context: Send + Sync + 'static;

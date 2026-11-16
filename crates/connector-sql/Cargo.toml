@@ -14,6 +14,7 @@ arrow-array.workspace = true
 arrow-schema = { workspace = true, features = ["serde"] }
 connector-sdk.workspace = true
 futures-core.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 substrait.workspace = true

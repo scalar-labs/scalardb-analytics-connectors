@@ -25,8 +25,10 @@
 //!
 //! In this order, each part panicking with the name of the failing case:
 //!
-//! 1. Metadata: every [`MetadataCase`], with exact name filters and the
-//!    determinism of table metadata.
+//! 1. Metadata: every [`MetadataCase`], with exact name filters, the
+//!    determinism of table metadata, and every source metadata document
+//!    conforming to the schema the static information publishes
+//!    ([`BuiltInConnector::source_metadata_schema`]).
 //! 2. Reads: every [`ReadCase`], its planning outcome and remote result.
 //! 3. Schema drift: every [`DriftCase`], a source change between planning
 //!    and reading.

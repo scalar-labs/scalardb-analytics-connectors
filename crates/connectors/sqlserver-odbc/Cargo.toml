@@ -14,6 +14,7 @@ arrow-schema.workspace = true
 connector-odbc.workspace = true
 connector-sdk.workspace = true
 connector-sql.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

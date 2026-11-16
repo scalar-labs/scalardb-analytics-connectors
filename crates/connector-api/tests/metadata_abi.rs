@@ -313,3 +313,35 @@ fn a_running_read_rejects_metadata_requests_until_its_stream_is_released() {
     read.operation.close();
     assert!(session.namespace_list(None, 0, None).is_ok());
 }
+
+#[test]
+fn source_metadata_conforms_to_the_schema_the_static_information_states() {
+    let information: serde_json::Value =
+        serde_json::from_str(&read_string((api().static_information)()).unwrap()).unwrap();
+    let schema = &information["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|connector| connector["name"] == "test")
+        .unwrap()["source_metadata_schema"];
+    assert_eq!(
+        schema["properties"]["note"]["description"],
+        "A source attribute that table metadata does not hold, such as a\ncomment; the catalog reads none.",
+        "field descriptions come from the source metadata type's rustdoc"
+    );
+    let validator = jsonschema::validator_for(schema).unwrap();
+
+    initialize();
+    let session = DataSource::open_probed().0.session().unwrap();
+    for table in ["orders", "order_view", "events"] {
+        let result = session.read_table(table);
+        let document: serde_json::Value =
+            serde_json::from_str(&read_string(result.source_metadata().document.text).unwrap())
+                .unwrap();
+        assert!(validator.is_valid(&document), "{table}: {document}");
+    }
+    let unknown_fixture = serde_json::json!(
+        {"table": ["test", "public", "orders"], "fixture": "unknown", "note": null}
+    );
+    assert!(!validator.is_valid(&unknown_fixture));
+}

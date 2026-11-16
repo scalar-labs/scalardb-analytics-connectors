@@ -68,9 +68,10 @@ No other exception. No dependency is installed by the user.
 ## Source metadata
 
 The source metadata of an object is the JSON document of `SalesforceObject`,
-whose rustdoc, with that of `SalesforceField`, defines each field. It holds the
-attributes of the object's describe result that state what the object and its
-fields mean:
+whose rustdoc, with that of `SalesforceField`, defines each field. The static
+information publishes the document's JSON Schema, derived from these types,
+with that rustdoc as its descriptions. It holds the attributes of the object's
+describe result that state what the object and its fields mean:
 
 | Item | From |
 | --- | --- |

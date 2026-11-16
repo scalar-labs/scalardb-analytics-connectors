@@ -334,7 +334,9 @@ The library has a version. It names the release and is returned in the
 [static information](#static-information). Type mappings have no version of
 their own; a change in how a source is mapped appears as a change in the
 connector's version, apart from the choices a data source's mapping options
-make ([Type mappings and coverage](#type-mappings-and-coverage)).
+make ([Type mappings and coverage](#type-mappings-and-coverage)). A source
+metadata schema has no version of its own either; it describes the documents
+the connectors of the same library return.
 
 Exchanging Analytics types between distributions, such as between nodes of a
 data mesh, is outside this contract.
@@ -428,7 +430,10 @@ Each table read is returned in two layers:
 - **Source metadata** is what the connector read about the table, in a shape
   the connector defines, such as PostgreSQL `pg_catalog` facts. It is returned
   as a JSON document. The Semantic Catalog receives it as material for meaning,
-  and an LLM interprets it, so it has no fixed schema across Connectors.
+  and an LLM interprets it, so it has no fixed schema across Connectors. Each
+  connector instead publishes the JSON Schema of its own documents, with a
+  description of each item, in the [static information](#static-information),
+  so a reader can interpret a document without knowing the connector.
 - **Table metadata** is the source-independent subset that this section
   defines. The connector derives it from the source metadata and the data
   source's mapping options, which choose how a Data Source type maps
@@ -1528,10 +1533,15 @@ even before initialization:
   - its form of Data Source access ([Connector API and Data Source access](#connector-api-and-data-source-access));
     and
   - with ADBC access, the ADBC driver name and the supported driver version
-    range ([Data Source access rules](#data-source-access-rules)).
+    range ([Data Source access rules](#data-source-access-rules)); and
+  - the JSON Schema (draft 2020-12) of its source metadata documents
+    ([Table metadata](#table-metadata)), whose descriptions state what each
+    item means. Every source metadata document the connector returns conforms
+    to it.
 
 The application uses this information to build registration settings and to
-decide which values to hide from display and logs. It holds no per-source
+decide which values to hide from display and logs. The Semantic Catalog uses a
+connector's source metadata schema to interpret its documents. It holds no per-source
 settings of its own, so adding a Connector does not change the application
 ([Compatibility and versions](#compatibility-and-versions)).
 

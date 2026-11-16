@@ -32,6 +32,8 @@ serde_json.workspace = true
 [dev-dependencies]
 cbindgen.workspace = true
 connector-api = { path = ".", features = ["test-connector"] }
+# Tests check source metadata against the schema the static information states.
+jsonschema.workspace = true
 prost.workspace = true
 substrait.workspace = true
 

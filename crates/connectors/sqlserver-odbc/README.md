@@ -46,6 +46,8 @@ holds what the `sys` catalog views state about the table or view: the facts
 its table metadata derives from, and what states its meaning for the Semantic
 Catalog, such as comments, view definitions, and column expressions. The
 rustdoc of `SqlServerTable` and the types it contains defines each field.
+The static information publishes the document's JSON Schema, derived from
+these types, with that rustdoc as its descriptions.
 
 | Item | From |
 | --- | --- |

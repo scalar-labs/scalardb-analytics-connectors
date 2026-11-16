@@ -47,6 +47,7 @@ bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ring = "0.17"
 rustls-pki-types = "1"
+schemars = "1.2"
 serde = "1.0"
 serde_json = "1.0"
 futures-core = "0.3"
@@ -57,6 +58,7 @@ wiremock = "0.6"
 prost = "0.13.5"
 prost-types = "0.13.5"
 regress = "=0.10.4"
+jsonschema = { version = "0.61", default-features = false }
 substrait = "=0.55.0"
 thiserror = "2.0"
 toml = { version = "1.0.7", default-features = false, features = ["parse"] }

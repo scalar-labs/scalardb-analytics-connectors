@@ -59,7 +59,8 @@ holds what `information_schema` shows the reading account about the table:
 the facts its table metadata derives from, and what states the table's
 meaning for the Semantic Catalog, such as comments, view definitions, and
 how columns are filled. The rustdoc of `MysqlTable` and the types it
-contains defines each field.
+contains defines each field. The static information publishes the document's
+JSON Schema, derived from these types, with that rustdoc as its descriptions.
 
 A document describes one table, so its top level is the table. Each fact
 appears once, with the table or column it belongs to.

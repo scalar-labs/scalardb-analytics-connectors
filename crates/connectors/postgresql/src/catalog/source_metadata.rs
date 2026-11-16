@@ -6,6 +6,7 @@ use connector_sdk::{
     Column, ColumnType, Constraint, ConstraintKind, Reported, TableKind, TableMetadata,
     TableReference, UniqueKind,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::type_mapping::{BaseType, map_type};
@@ -25,7 +26,7 @@ use super::type_mapping::{BaseType, map_type};
 /// Restoring a document checks that every type it refers to is listed and
 /// that domains reach a type that is not a domain, so a restored document
 /// derives table metadata as one this connector read does.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "UncheckedTable")]
 pub struct PostgresTable {
     pub namespace: String,
@@ -54,7 +55,7 @@ pub struct PostgresTable {
 }
 
 /// The kind of relation, from `pg_class.relkind`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum PostgresTableKind {
     #[serde(rename = "table")]
     Table,
@@ -68,9 +69,11 @@ pub enum PostgresTableKind {
     ForeignTable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresColumn {
     pub name: String,
+    /// `pg_attribute.attnum`: the column's number within its table, which
+    /// identifies it across renames.
     pub attnum: i16,
     /// The column's own `NOT NULL`, if it declares one; a `NOT NULL` domain
     /// is stated on its type.
@@ -91,7 +94,7 @@ pub struct PostgresColumn {
 }
 
 /// A column's declared `NOT NULL`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresNotNull {
     /// False for a `NOT NULL ... NOT VALID` constraint, which PostgreSQL 18
     /// allows and which existing rows may violate; always true before it.
@@ -100,7 +103,7 @@ pub struct PostgresNotNull {
 
 /// Where PostgreSQL takes a column's value from, other than the row itself;
 /// the three are exclusive for one column.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PostgresValueSource {
     /// A `DEFAULT` expression as `pg_get_expr` prints it, used when a row
@@ -117,7 +120,7 @@ pub enum PostgresValueSource {
 }
 
 /// `pg_attribute.attidentity`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum PostgresIdentity {
     /// `GENERATED ALWAYS`: a row states a value only with
     /// `OVERRIDING SYSTEM VALUE`.
@@ -129,7 +132,7 @@ pub enum PostgresIdentity {
 }
 
 /// `pg_attribute.attgenerated`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum PostgresGeneratedStorage {
     #[serde(rename = "stored")]
     Stored,
@@ -139,11 +142,12 @@ pub enum PostgresGeneratedStorage {
 }
 
 /// One `pg_type` row the table's columns lead to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresType {
     /// `format_type(oid, NULL)`, which qualifies a type off the `search_path`
     /// with its schema; columns and other types refer to the type by it.
     pub name: String,
+    /// The schema the type is defined in, such as `pg_catalog`.
     pub schema: String,
     /// `pg_type.typname`, such as `int4` for `integer` or `_int4` for
     /// `integer[]`.
@@ -156,7 +160,7 @@ pub struct PostgresType {
 }
 
 /// What a type is, from `pg_type.typtype` and, for arrays, `typcategory`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PostgresTypeForm {
     /// A base type, built in or from an extension.
@@ -186,7 +190,7 @@ pub enum PostgresTypeForm {
 }
 
 /// A CHECK constraint of a domain. Domain constraints are always enforced.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresDomainCheck {
     pub name: String,
     /// The expression over `VALUE` as `pg_get_expr` prints it.
@@ -197,7 +201,7 @@ pub struct PostgresDomainCheck {
 }
 
 /// A primary key, which PostgreSQL always enforces and validates.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresPrimaryKey {
     pub name: String,
     pub columns: Vec<String>,
@@ -205,7 +209,7 @@ pub struct PostgresPrimaryKey {
 
 /// A unique constraint or a unique index that backs no constraint, which
 /// PostgreSQL always enforces and validates.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresUniqueKey {
     pub name: String,
     pub kind: PostgresUniqueKind,
@@ -215,7 +219,7 @@ pub struct PostgresUniqueKey {
     pub condition: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PostgresUniqueKind {
     Constraint,
@@ -223,7 +227,7 @@ pub enum PostgresUniqueKind {
 }
 
 /// One key of a unique key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PostgresKey {
     Column(String),
@@ -231,7 +235,7 @@ pub enum PostgresKey {
     Expression(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresForeignKey {
     pub name: String,
     pub columns: Vec<String>,
@@ -245,7 +249,7 @@ pub struct PostgresForeignKey {
 }
 
 /// The table and columns a foreign key references.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresReferencedTable {
     pub namespace: String,
     pub table: String,
@@ -253,7 +257,7 @@ pub struct PostgresReferencedTable {
 }
 
 /// A CHECK constraint of the table.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PostgresCheck {
     pub name: String,
     /// The expression as `pg_get_expr` prints it.
@@ -271,8 +275,11 @@ pub struct PostgresCheck {
 ///
 /// It mirrors [`PostgresTable`] only so that serde can restore the fields and
 /// then check them: no existing type expresses a document whose references
-/// are not yet known to resolve.
-#[derive(Deserialize)]
+/// are not yet known to resolve. It derives `JsonSchema` only because the
+/// derive of [`PostgresTable`] describes deserialization through it; the
+/// published schema describes the serialized document, which is
+/// [`PostgresTable`] itself.
+#[derive(Deserialize, JsonSchema)]
 struct UncheckedTable {
     namespace: String,
     name: String,

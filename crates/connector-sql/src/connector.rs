@@ -7,6 +7,7 @@ use connector_sdk::{
     LogicalPlan, NameFilter, NamespacePath, PlanningError, Session, TableEntry, TableMetadata,
     TableRecord, TableReference,
 };
+use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -41,7 +42,7 @@ pub trait SqlConnector:
     type Connection: Clone + Send + 'static;
     /// The Connector's source metadata for one table
     /// ([`Catalog::Table`]).
-    type Table: Serialize + DeserializeOwned + Send + 'static;
+    type Table: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     /// Session-level facts read once when a session opens, such as the
     /// server version that decides which catalog columns exist.
     type Context: Clone + Send + Sync + 'static;

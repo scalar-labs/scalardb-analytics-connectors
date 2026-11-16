@@ -6,6 +6,7 @@ use connector_sdk::{
     Column, Constraint, ConstraintKind, Reported, TableKind, TableMetadata, TableReference,
     UniqueKind,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::NAMESPACE;
@@ -15,21 +16,24 @@ use super::NAMESPACE;
 ///
 /// It is the source metadata document. Fields are in describe order, which
 /// is the object's column order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SalesforceObject {
     /// The object's API name, such as `Account` or `Invoice__c`.
     pub name: String,
+    /// The object's display label in the Salesforce UI.
     pub label: String,
     /// Whether the object is a custom object.
     pub custom: bool,
+    /// The object's fields in describe order.
     pub fields: Vec<SalesforceField>,
 }
 
 /// One field of a [`SalesforceObject`], as describe reports it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SalesforceField {
     /// The field's API name.
     pub name: String,
+    /// The field's display label in the Salesforce UI.
     pub label: String,
     /// The describe `type`, such as `currency`.
     pub field_type: String,
@@ -43,18 +47,25 @@ pub struct SalesforceField {
     pub scale: i64,
     /// The maximum number of digits of an `int` field.
     pub digits: i64,
+    /// Whether the field can be null.
     pub nillable: bool,
+    /// Whether the field is a custom field.
     pub custom: bool,
     /// Whether the field is a formula field.
     pub calculated: bool,
+    /// Whether comparisons of the field's values are case-sensitive.
     pub case_sensitive: bool,
     /// Whether the field can appear in a SOQL `WHERE` clause.
     pub filterable: bool,
     /// Whether Salesforce keeps the field's values unique.
     pub unique: bool,
+    /// Whether the field is an external ID: an identifier of the record in
+    /// another system.
     pub external_id: bool,
     /// The objects a reference field can point to.
     pub reference_to: Vec<String>,
+    /// The name a reference field's relationship is traversed by in SOQL,
+    /// such as `Account` for `AccountId`.
     pub relationship_name: Option<String>,
     /// The compound field this field is a component of, such as
     /// `BillingAddress`.

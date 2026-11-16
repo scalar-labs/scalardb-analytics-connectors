@@ -12,13 +12,15 @@ default = []
 # An in-memory Connector that tests of the runtime and the connector API use.
 test-connector = ["serde/derive"]
 # The connector conformance suite that connector crates run from their tests.
-conformance = ["dep:arrow-data"]
+conformance = ["dep:arrow-data", "dep:jsonschema"]
 
 [dependencies]
 analytics-types.workspace = true
 arrow-array.workspace = true
 # The conformance suite joins the batches of a read.
 arrow-data = { workspace = true, optional = true }
+# The conformance suite checks source metadata against its schema.
+jsonschema = { workspace = true, optional = true }
 # 256-bit decimals, and the nested Arrow arrays the test Connector builds.
 arrow-buffer.workspace = true
 # Remote executions carry their output schema as Arrow JSON across processes.
@@ -30,6 +32,8 @@ prost-types.workspace = true
 regress.workspace = true
 # Source metadata is a connector-defined type serialized for the Semantic Catalog.
 serde.workspace = true
+# The JSON Schema of each connector's source metadata, derived from its type.
+schemars.workspace = true
 serde_json.workspace = true
 substrait.workspace = true
 thiserror.workspace = true

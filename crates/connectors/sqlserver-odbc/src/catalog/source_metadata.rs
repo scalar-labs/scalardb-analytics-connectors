@@ -4,6 +4,7 @@ use connector_sdk::{
     Column, ColumnType, Constraint, ConstraintKind, Reported, TableKind, TableMetadata,
     TableReference, UniqueKind,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// What the `sys` catalog views state about one table or view.
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// derives from, it carries what states a table's meaning, such as comments,
 /// view definitions, and column expressions, for the Semantic Catalog to
 /// interpret. Expressions and definitions are as SQL Server stores them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerTable {
     pub namespace: String,
     pub name: String,
@@ -43,16 +44,18 @@ pub struct SqlServerTable {
 }
 
 /// The kind of object, from `sys.objects.type`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SqlServerTableKind {
     Table,
     View,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerColumn {
     pub name: String,
+    /// `sys.columns.column_id`: the column's number within its table, which
+    /// identifies it across renames.
     pub column_id: i32,
     /// `sys.columns.is_nullable`.
     pub nullable: bool,
@@ -62,7 +65,12 @@ pub struct SqlServerColumn {
     pub ty: Option<SqlServerType>,
     /// `sys.columns.max_length`: the length in bytes, or `-1` for `(max)`.
     pub max_length: i16,
+    /// `sys.columns.precision`: the precision of a numeric or date and time
+    /// type, such as the total number of digits of a `decimal`; otherwise
+    /// `0`.
     pub precision: u8,
+    /// `sys.columns.scale`: the scale of a numeric or date and time type, such
+    /// as the digits after the decimal point of a `decimal`; otherwise `0`.
     pub scale: u8,
     /// The `MS_Description` extended property of the column.
     pub comment: Option<String>,
@@ -72,9 +80,10 @@ pub struct SqlServerColumn {
 }
 
 /// A column's declared type, from `sys.types`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerType {
     pub name: String,
+    /// The schema the type is defined in, such as `sys`.
     pub schema: String,
     /// `sys.types.is_user_defined`: an alias type or CLR type a user created.
     pub user_defined: bool,
@@ -86,7 +95,7 @@ pub struct SqlServerType {
 
 /// Where SQL Server takes a column's value from, other than the row itself;
 /// the three are exclusive for one column.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SqlServerValueSource {
     /// A default constraint, used when a row omits the column.
@@ -102,7 +111,7 @@ pub enum SqlServerValueSource {
 }
 
 /// A primary key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerKey {
     pub name: String,
     /// The key's columns in order.
@@ -112,7 +121,7 @@ pub struct SqlServerKey {
 }
 
 /// A unique constraint, or a unique index that backs no constraint.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerUniqueKey {
     pub name: String,
     pub kind: SqlServerUniqueKind,
@@ -127,14 +136,14 @@ pub struct SqlServerUniqueKey {
     pub enforced: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SqlServerUniqueKind {
     Constraint,
     Index,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerForeignKey {
     pub name: String,
     pub columns: Vec<String>,
@@ -149,14 +158,14 @@ pub struct SqlServerForeignKey {
 }
 
 /// The table and columns a foreign key references.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerReferencedTable {
     pub namespace: String,
     pub table: String,
     pub columns: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SqlServerCheck {
     pub name: String,
     /// The expression as SQL Server stores it; `None` when it is not visible.

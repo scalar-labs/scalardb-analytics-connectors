@@ -54,7 +54,8 @@ each dependency the user installs, its requirements and installation.>
 ## Source metadata
 
 <What the source metadata document holds and the type whose rustdoc defines
-its fields. A table of each item and the catalog, metadata, or reader output
+its fields and becomes the descriptions of the JSON Schema the static
+information publishes. A table of each item and the catalog, metadata, or reader output
 it comes from. What is not read. How table metadata derives from the document,
 such as nullability, and which mapping options change that derivation, or
 "None". One example table and its document, with the source

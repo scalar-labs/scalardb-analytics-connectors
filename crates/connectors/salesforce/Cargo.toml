@@ -16,6 +16,7 @@ connector-sdk.workspace = true
 connector-salesforce-client.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # The client's futures run on a runtime the connector holds; its I/O and

@@ -8,6 +8,8 @@ use std::{
     time::Duration,
 };
 
+use schemars::{Schema, generate::SchemaSettings};
+
 use super::{
     DataSourceState, SourceMetadata,
     connector::{DynConnectorLibrary, create_library},
@@ -15,14 +17,18 @@ use super::{
     watcher::Watcher,
 };
 use crate::{
-    Component, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ErrorKind,
-    JsonDifference, LibrarySettings, SecretString,
+    Catalog, Component, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError,
+    ErrorKind, JsonDifference, LibrarySettings, SecretString,
 };
 
 /// One connector built into a library, registered before initialization.
 pub struct BuiltInConnector {
     /// What the connector declares; available before initialization.
     pub descriptor: ConnectorDescriptor,
+    /// The JSON Schema (draft 2020-12) of the source metadata documents the
+    /// connector produces, derived from how its [`Catalog::Table`]
+    /// serializes; available before initialization.
+    pub source_metadata_schema: Schema,
     create: fn(&LibrarySettings) -> Result<Box<dyn DynConnectorLibrary>, ConnectorError>,
 }
 
@@ -31,6 +37,10 @@ impl BuiltInConnector {
     pub fn of<C: Connector>() -> Self {
         Self {
             descriptor: C::descriptor(),
+            source_metadata_schema: SchemaSettings::draft2020_12()
+                .for_serialize()
+                .into_generator()
+                .into_root_schema_for::<<C::Catalog as Catalog<C>>::Table>(),
             create: create_library::<C>,
         }
     }

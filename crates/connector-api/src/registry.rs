@@ -2,9 +2,7 @@
 
 use std::sync::OnceLock;
 
-use connector_sdk::{
-    ConnectorDescriptor, DataSourceAccess, OptionValueType, runtime::BuiltInConnector,
-};
+use connector_sdk::{DataSourceAccess, OptionValueType, runtime::BuiltInConnector};
 use serde_json::{Value, json};
 
 /// The version of the static information document's layout.
@@ -38,10 +36,7 @@ pub(crate) fn built_in_connectors() -> &'static [BuiltInConnector] {
 pub(crate) fn static_information() -> &'static str {
     static DOCUMENT: OnceLock<String> = OnceLock::new();
     DOCUMENT.get_or_init(|| {
-        let connectors: Vec<Value> = built_in_connectors()
-            .iter()
-            .map(|connector| describe(&connector.descriptor))
-            .collect();
+        let connectors: Vec<Value> = built_in_connectors().iter().map(describe).collect();
         json!({
             "static_information_version": STATIC_INFORMATION_VERSION,
             "library_version": env!("CARGO_PKG_VERSION"),
@@ -51,7 +46,9 @@ pub(crate) fn static_information() -> &'static str {
     })
 }
 
-fn describe(descriptor: &ConnectorDescriptor) -> Value {
+/// Describes one built-in connector for the static information.
+fn describe(connector: &BuiltInConnector) -> Value {
+    let descriptor = &connector.descriptor;
     let options: Vec<Value> = descriptor
         .options
         .iter()
@@ -87,5 +84,6 @@ fn describe(descriptor: &ConnectorDescriptor) -> Value {
         "connectors": descriptor.connectors,
         "options": options,
         "data_source_access": access,
+        "source_metadata_schema": connector.source_metadata_schema,
     })
 }

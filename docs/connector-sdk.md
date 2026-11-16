@@ -597,7 +597,8 @@ pub trait Catalog<C: Connector>: 'static {
     /// What the catalog observed of one table, such as `pg_catalog` facts.
     /// Serialized as the source metadata JSON document; the connector decides
     /// its shape. A stored document is restored to this type to compare it.
-    type Table: Serialize + DeserializeOwned + Send + 'static;
+    /// Its JSON Schema, with the rustdoc as descriptions, is derived from it.
+    type Table: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     /// Session-level facts read once when a session opens.
     type Context: Send + Sync + 'static;
 
@@ -773,7 +774,11 @@ The runtime owns the contract's semantics:
   Data Source details unchanged.
 
 A Connector's units carry types that differ per connector. A library
-registers each Connector with `BuiltInConnector::of::<C>()`, and the runtime
+registers each Connector with `BuiltInConnector::of::<C>()`, which also
+derives the JSON Schema of the Connector's source metadata from how its
+`Catalog::Table` serializes (with `schemars`), so the schema the static
+information publishes cannot drift from the documents; the conformance suite
+checks every document it retrieves against it. The runtime
 implements one object-safe counterpart of each unit for every `Connector` and
 holds connectors only through those, so dispatch by Connector name needs no
 knowledge of a particular connector. A remote

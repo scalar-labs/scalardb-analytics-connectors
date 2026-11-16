@@ -1,13 +1,19 @@
 //! Metadata retrieval: lists and table metadata against the fixture's
-//! expectations, and the determinism of table metadata.
+//! expectations, the determinism of table metadata, and source metadata
+//! against its published schema.
+
+use jsonschema::Validator;
 
 use super::{ExpectedRecord, Fixture, MetadataCase, MetadataRequest, Probe};
 use crate::{
     TableRecord,
-    runtime::{TableMetadataResult, TableRead},
+    runtime::{BuiltInConnector, TableMetadataResult, TableRead},
 };
 
 pub(super) fn check<F: Fixture>(probe: &Probe<'_, F>) {
+    let schema = BuiltInConnector::of::<F::Connector>().source_metadata_schema;
+    let source_metadata = jsonschema::validator_for(schema.as_value())
+        .expect("the source metadata schema is a valid JSON Schema");
     for MetadataCase {
         name,
         options,
@@ -46,12 +52,29 @@ pub(super) fn check<F: Fixture>(probe: &Probe<'_, F>) {
                     session.table_metadata(&tables, None, None),
                 ));
                 assert_eq!(second, first, "{name}: a second retrieval differs");
+                for document in first.iter().filter_map(|(_, document)| document.as_deref()) {
+                    conforms(&source_metadata, name, document);
+                }
                 let derived: Vec<_> = first.into_iter().map(|(record, _)| record).collect();
                 assert_eq!(derived, expected, "{name}");
             }
         }
         session.close();
     }
+}
+
+/// Fails the case unless `document` conforms to the source metadata schema.
+fn conforms(schema: &Validator, case: &str, document: &str) {
+    let value: serde_json::Value = serde_json::from_str(document)
+        .unwrap_or_else(|error| panic!("{case}: the source metadata is not JSON: {error}"));
+    let errors: Vec<String> = schema
+        .iter_errors(&value)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{case}: the source metadata does not conform to its schema: {errors:?}"
+    );
 }
 
 /// Records the request's error and fails the case with it.
