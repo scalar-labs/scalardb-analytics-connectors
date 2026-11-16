@@ -274,7 +274,8 @@ protobuf, abseil, and the Substrait specification from pinned source archives,
 instead of the development shell. The extension exports only its entry point,
 so a process that embeds DuckDB v1.5.6 loads it even when it exports none of
 DuckDB's C++ symbols, as DuckDB's JDBC driver does. The development build
-takes DuckDB from the process that loads it, as the DuckDB CLI provides. The
+links the static library of the development shell's DuckDB the same way, so
+the end-to-end test loads the extension as a user's process does. The
 adapter has no version of its own; CMake reads the workspace version from
 Cargo.
 

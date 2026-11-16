@@ -135,8 +135,7 @@ add_library(scalardb_analytics_duckdb STATIC
   src/offered_plan.cpp
   src/scan.cpp
   src/types.cpp)
-# DuckDB itself is linked by the final binary: the distribution extension
-# carries it, the development extension takes it from the host process, and
+# DuckDB itself is linked by the final binary: the extension carries it, and
 # an embedding application links it.
 target_include_directories(scalardb_analytics_duckdb
   PUBLIC include "${CONNECTOR_API_INCLUDE_DIR}" ${DuckDB_INCLUDE_DIRS}
@@ -158,45 +157,52 @@ else()
   set(DUCKDB_PLATFORM_OS linux)
   set(PACKAGE_LIBRARY_RPATH "$ORIGIN/../lib")
 endif()
+# The extension resolves DuckDB in its own copy and exports only the entry
+# point DuckDB calls, so neither its DuckDB nor its protobuf and abseil meet
+# the host's. Neither the DuckDB CLI of the development shell nor DuckDB's
+# JDBC driver exports DuckDB's C++ symbols. Unused code is stripped.
+#
+# The static library leaves DuckDB's built-in extension loader
+# (ExtensionHelper::LoadAllExtensions and LoadExtension) to a separate
+# library, which would pull in every built-in extension. Despite its name,
+# dummy_static_extension_loader is DuckDB's own loader for this case: it
+# loads no built-in extension, and DuckDB links it with libduckdb_static.a
+# for its own loadable extensions (extension/extension_build_tools.cmake,
+# EXTENSION_STATIC_BUILD). Its LoadAllExtensions runs only when a DuckDB
+# database is opened, which the host does, and its LoadExtension makes DuckDB
+# load an extension from disk instead of from the binary.
+find_package(Threads REQUIRED)
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
-  # The extension resolves DuckDB in its own copy and exports only the entry
-  # point DuckDB calls, so neither its DuckDB nor its protobuf and abseil
-  # meet the host's. Unused code is stripped.
-  #
-  # The static library leaves DuckDB's built-in extension loader
-  # (ExtensionHelper::LoadAllExtensions and LoadExtension) to a separate
-  # library, which would pull in every built-in extension. Despite its name,
-  # dummy_static_extension_loader.cpp is DuckDB's own loader for this case:
-  # it loads no built-in extension, and DuckDB links it with
-  # libduckdb_static.a for its own loadable extensions
-  # (extension/extension_build_tools.cmake, EXTENSION_STATIC_BUILD). Its
-  # LoadAllExtensions runs only when a DuckDB database is opened, which the
-  # host does, and its LoadExtension makes DuckDB load an extension from
-  # disk instead of from the binary.
-  find_package(Threads REQUIRED)
+  # The DuckDB release ships the static library without the loader, which
+  # the source archive holds.
   target_sources(scalardb_analytics_connectors_extension PRIVATE
     "${duckdb_SOURCE_DIR}/extension/loader/dummy_static_extension_loader.cpp")
   target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
-    "${duckdb_static_SOURCE_DIR}/libduckdb_static.a" Threads::Threads ${CMAKE_DL_LIBS})
-  if(APPLE)
-    target_link_options(scalardb_analytics_connectors_extension PRIVATE
-      "LINKER:-dead_strip"
-      "LINKER:-exported_symbol,_scalardb_analytics_connectors_duckdb_cpp_init")
-  else()
-    # GNU ld links a shared library with undefined symbols, which then fail
-    # only when DuckDB loads it; --no-undefined fails the link instead, as
-    # Apple's linker does by default.
-    target_link_options(scalardb_analytics_connectors_extension PRIVATE
-      "LINKER:--gc-sections"
-      "LINKER:--no-undefined"
-      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/extension.map")
-  endif()
+    "${duckdb_static_SOURCE_DIR}/libduckdb_static.a")
+else()
+  target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
+    duckdb_static dummy_static_extension_loader)
+endif()
+target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
+  Threads::Threads ${CMAKE_DL_LIBS})
+if(APPLE)
+  target_link_options(scalardb_analytics_connectors_extension PRIVATE
+    "LINKER:-dead_strip"
+    "LINKER:-exported_symbol,_scalardb_analytics_connectors_duckdb_cpp_init")
+else()
+  # GNU ld links a shared library with undefined symbols, which then fail
+  # only when DuckDB loads it; --no-undefined fails the link instead, as
+  # Apple's linker does by default.
+  target_link_options(scalardb_analytics_connectors_extension PRIVATE
+    "LINKER:--gc-sections"
+    "LINKER:--no-undefined"
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/extension.map")
+endif()
+if(SCALARDB_ANALYTICS_DISTRIBUTION)
   # The package's lib directory, and not the directory it was built in.
   set_target_properties(scalardb_analytics_connectors_extension PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
     INSTALL_RPATH "${PACKAGE_LIBRARY_RPATH}")
-elseif(APPLE)
-  target_link_options(scalardb_analytics_connectors_extension PRIVATE -undefined dynamic_lookup)
 endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
   set(DUCKDB_PLATFORM "${DUCKDB_PLATFORM_OS}_arm64")
