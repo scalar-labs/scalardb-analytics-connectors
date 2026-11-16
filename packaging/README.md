@@ -10,6 +10,9 @@ platform that works wherever it is unpacked.
 | `package.sh` | Builds the package of the running platform from that declaration |
 | `linux/package.sh` | Runs `package.sh` for Linux in the pinned manylinux_2_28 image with Docker |
 | `linux/build.sh` | Prepares the manylinux container and runs `package.sh` in it |
+| `linux/check.sh` | Runs `test/run-check.sh` on a Linux package from a host that is not Linux, in the same image with Docker, beside a PostgreSQL container for the e2e |
+| `linux/engine.sh` | Pins the manylinux_2_28 image for the Docker engine's architecture, for `linux/package.sh` and `linux/check.sh` |
+| `test/run-check.sh` | Checks a package on its platform, as CI does: downloads the pinned DuckDB CLI and JDBC driver and runs `test/check-package.sh` |
 | `test/check-package.sh` | Checks an unpacked package: binary references, the extension loaded through DuckDB's JDBC driver, and the DuckDB e2e |
 | `test/LoadExtension.java` | Loads the packaged extension through DuckDB's JDBC driver, for `test/check-package.sh` |
 | `about.toml`, `about.hbs` | cargo-about configuration and template for the Rust crates' license texts |

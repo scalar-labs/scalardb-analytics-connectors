@@ -130,16 +130,20 @@ dependencies they ship are declared in `packaging/dependencies.json`
 ([Packaging](packaging/README.md)). The packages are built with
 `packaging/package.sh`: on macOS in the Nix shell, and for Linux in
 a manylinux_2_28 container that `packaging/linux/package.sh` starts with
-Docker, for the Docker engine's architecture. Each is checked unpacked with
-`packaging/test/check-package.sh` on its own platform:
+Docker, for the Docker engine's architecture. Each is checked unpacked on its
+own platform with `packaging/test/run-check.sh`, as CI does; from a host that
+is not Linux, `packaging/linux/check.sh` runs that check on a Linux package in
+the same manylinux_2_28 image with Docker:
 
 ```sh
 # macOS arm64
 nix develop --command packaging/package.sh
+packaging/test/run-check.sh target/dist/scalardb-analytics-connectors-<version>-osx_arm64.tgz
 # Linux, on a host whose Docker engine runs Linux containers
 packaging/linux/package.sh
-packaging/test/check-package.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz \
-  <DuckDB v1.5.6 CLI> <DuckDB JDBC 1.5.6.0 jar>
+packaging/test/run-check.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz
+# A Linux package from macOS, through Docker
+packaging/linux/check.sh target/dist/scalardb-analytics-connectors-<version>-<platform>.tgz
 ```
 
 ### Versioning
