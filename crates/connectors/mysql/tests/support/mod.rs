@@ -43,7 +43,7 @@ fn start() -> Server {
         }
         Err(_) => {
             // Another test binary may create the same container concurrently.
-            if docker(&[
+            if let Err(run) = docker(&[
                 "run",
                 "-d",
                 "--name",
@@ -53,10 +53,9 @@ fn start() -> Server {
                 "-p",
                 "127.0.0.1::3306",
                 &image,
-            ])
-            .is_err()
+            ]) && let Err(start) = docker(&["start", &container])
             {
-                docker(&["start", &container]).expect("the test container starts");
+                panic!("the test container starts: run failed with {run:?}, start with {start:?}");
             }
         }
     }
