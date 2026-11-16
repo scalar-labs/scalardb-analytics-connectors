@@ -176,6 +176,85 @@
           libraryPath = pkgs.lib.makeLibraryPath (
             [ pkgs.unixodbc ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ]
           );
+          # DuckDB v1.5.6, the version the DuckDB adapter targets, from its
+          # release files instead of a source build: nixpkgs does not provide
+          # this version, so no binary cache holds a build of it. The layout
+          # gives the adapter's CMake build what the distribution build takes:
+          #
+          #   source/  the C++ headers and the extension loader source from the
+          #            source archive
+          #   static/  the static libraries the loadable extension carries
+          #   lib/     the shared library the adapter's tests link
+          #   bin/     the CLI the end-to-end test loads the extension into
+          duckdbAssets = {
+            "aarch64-darwin" = {
+              static = "osx-arm64";
+              library = "osx-universal";
+              cli = "osx-arm64";
+            };
+            "x86_64-darwin" = {
+              static = "osx-amd64";
+              library = "osx-universal";
+              cli = "osx-amd64";
+            };
+            "aarch64-linux" = {
+              static = "linux-arm64";
+              library = "linux-arm64";
+              cli = "linux-arm64";
+            };
+            "x86_64-linux" = {
+              static = "linux-amd64";
+              library = "linux-amd64";
+              cli = "linux-amd64";
+            };
+          }.${system};
+          duckdbSha256 = {
+            "static-libs-osx-arm64.zip" = "e77c382fba15e3f5c0b3265d12e3a4de534699fdb91bcc9d10d4a857a58103d5";
+            "static-libs-osx-amd64.zip" = "ff1d5092d4a495e9da831c3a2de5f2ee37b5f87ae23ec7e9aa7adb434bd8a134";
+            "static-libs-linux-arm64.zip" = "56249751117a4c04289764e06eb431352ce33fb3f8e2f30401122d4d0e184139";
+            "static-libs-linux-amd64.zip" = "ab3d1d33951b8cb8bdcae740d8e06adf66bfb7ee880a3f7052d7a35088e16d2d";
+            "libduckdb-osx-universal.zip" = "e0bc007d9b0094c0970ac1847a8601d10aad07cbd2910ce586ec810f77b638d6";
+            "libduckdb-linux-arm64.zip" = "b72ed9f05003f5e9d2015f7ceada6416b377d9dd33169cdde3c9e33897856eee";
+            "libduckdb-linux-amd64.zip" = "b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b";
+            "duckdb_cli-osx-arm64.zip" = "8e0f6825653f8d057922e6147db920bebf072cb41f4b041fd35521c18d7d126e";
+            "duckdb_cli-osx-amd64.zip" = "ae74c8cd74304bde1d92d941aca37bc72084ee8daa5660913819d8a9e9d29331";
+            "duckdb_cli-linux-arm64.zip" = "c544e92c9b7c31fc53c2139802cabd8e2d1b2b3e3f933117f31611239c1402db";
+            "duckdb_cli-linux-amd64.zip" = "6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f";
+          };
+          duckdbAsset =
+            name:
+            pkgs.fetchurl {
+              url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/${name}";
+              sha256 = duckdbSha256.${name};
+            };
+          duckdbSource = pkgs.fetchurl {
+            url = "https://github.com/duckdb/duckdb/archive/refs/tags/v1.5.6.tar.gz";
+            sha256 = "1fadcbe9e69e1470f9093b6bcde08daf477d729c449e59a807f45c346622099b";
+          };
+          duckdb = pkgs.stdenv.mkDerivation {
+            pname = "duckdb-release";
+            version = "1.5.6";
+            dontUnpack = true;
+            # The manylinux binaries need libstdc++ but carry no RUNPATH, and
+            # the CLI names the host's dynamic loader.
+            nativeBuildInputs = [
+              pkgs.unzip
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
+            # The release files are used as shipped, apart from the Linux
+            # binaries' library lookup.
+            dontStrip = true;
+            dontFixup = pkgs.stdenv.isDarwin;
+            installPhase = ''
+              mkdir -p $out/source $out/static $out/lib $out/bin
+              tar -xzf ${duckdbSource} -C $out/source --strip-components=1 \
+                duckdb-1.5.6/src/include \
+                duckdb-1.5.6/extension/loader/dummy_static_extension_loader.cpp
+              unzip -q ${duckdbAsset "static-libs-${duckdbAssets.static}.zip"} -d $out/static
+              unzip -q ${duckdbAsset "libduckdb-${duckdbAssets.library}.zip"} 'libduckdb.*' -d $out/lib
+              unzip -q ${duckdbAsset "duckdb_cli-${duckdbAssets.cli}.zip"} -d $out/bin
+            '';
+          };
           # The Substrait protobuf definitions of the specification version that
           # the Rust `substrait` crate pins; the DuckDB adapter generates its
           # C++ Substrait types from them.
@@ -189,16 +268,27 @@
           # code registers its descriptors in the protobuf it links when it is
           # loaded, and a second registration in one shared protobuf aborts.
           # `abseil-cpp` only names `abseil-cpp_202601`, which takes the option.
+          #
+          # Unlike DuckDB, these are built from source. No binary cache holds
+          # the static variants, and neither project publishes static
+          # libraries: protobuf releases only protoc, and conda-forge's static
+          # protobuf links a shared abseil. CI keeps the build in its Nix store
+          # cache, and a build without the cache takes a few minutes.
           abseilStatic = pkgs.abseil-cpp_202601.override { static = true; };
           # protobuf's own tests are not run: no binary cache holds this
           # variant, and one of them fails to write its temporary file in the
-          # macOS Nix builder.
+          # macOS Nix builder. It is built without zlib, as the distribution
+          # build's is: the static library would otherwise require consumers
+          # to find a zlib, which the development shell does not provide.
           protobufStatic =
             (pkgs.protobuf.override {
               enableShared = false;
               abseil-cpp = abseilStatic;
             }).overrideAttrs
-              { doCheck = false; };
+              (previousAttrs: {
+                cmakeFlags = previousAttrs.cmakeFlags ++ [ "-Dprotobuf_WITH_ZLIB=OFF" ];
+                doCheck = false;
+              });
         in
         {
           packages = {
@@ -212,18 +302,6 @@
             inherit system;
             overlays = [
               devshell.overlays.default
-              # The DuckDB version the adapter targets, which nixpkgs does not
-              # provide yet.
-              (final: prev: {
-                duckdb = prev.duckdb.overrideAttrs (finalAttrs: previousAttrs: {
-                  version = "1.5.6";
-                  rev = "069cc9f9b5be802405797faecc284961b07c70ef";
-                  src = previousAttrs.src.override {
-                    tag = "v${finalAttrs.version}";
-                    hash = "sha256-xHcucJA+2nTD9oeoZxDQzGS6QNnzjHQ7t9sz0OHA+zo=";
-                  };
-                });
-              })
             ];
             # The SQL Server ODBC driver is the only unfree package allowed.
             config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "msodbcsql18";
@@ -242,10 +320,12 @@
                 value = "${substraitProto}/proto";
               }
               {
+                name = "DUCKDB_DIR";
+                value = "${duckdb}";
+              }
+              {
                 name = "CMAKE_PREFIX_PATH";
                 value = pkgs.lib.makeSearchPath "" [
-                  pkgs.duckdb.dev
-                  pkgs.duckdb.lib
                   protobufStatic
                   (pkgs.lib.getDev abseilStatic)
                   pkgs.catch2_3
@@ -281,9 +361,29 @@
               pkgs.cmake
               pkgs.ninja
               pkgs.pkg-config
-              pkgs.duckdb
+              duckdb
               pkgs.unixodbc
               # The distribution package script (packaging/package.sh).
+              pkgs.cargo-about
+              pkgs.jq
+              pkgs.unzip
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          };
+
+          # What the distribution package script (packaging/package.sh) needs
+          # on macOS, without the DuckDB adapter's development inputs: the
+          # distribution build takes DuckDB, protobuf, and abseil from pinned
+          # release files and sources itself.
+          devShells.package = pkgs.mkShellNoCC {
+            name = "scalardb-analytics-connectors-package";
+            shellHook = ''
+              export LIBRARY_PATH="${libraryPath}"
+            '';
+            packages = [
+              rustToolchain
+              pkgs.clang
+              pkgs.protobuf
+              pkgs.cmake
               pkgs.cargo-about
               pkgs.jq
               pkgs.unzip

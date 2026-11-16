@@ -59,7 +59,8 @@ design, and implementation conventions.
 
 The Nix flake is the source of the development toolchain. Its default shell
 provides the lock-file-pinned stable Rust toolchain, Clang, Protobuf tooling,
-the DuckDB adapter's C++ build inputs and DuckDB CLI, unixODBC and the
+the DuckDB adapter's C++ build inputs and DuckDB CLI (DuckDB from its release
+files), unixODBC and the
 PostgreSQL ODBC driver for `connector-odbc` and its tests, the Microsoft ODBC
 Driver 18 for SQL Server for the SQL Server through ODBC connector's tests,
 which is the one unfree package the flake allows, and repository utilities.
@@ -128,7 +129,8 @@ workspace version publishes the packages as a GitHub Release. The library
 ships the connectors that `connector-api` has features for, and the
 dependencies they ship are declared in `packaging/dependencies.json`
 ([Packaging](packaging/README.md)). The packages are built with
-`packaging/package.sh`: on macOS in the Nix shell, and for Linux in
+`packaging/package.sh`: on macOS in the flake's `package` shell, which holds
+only what that script needs, and for Linux in
 a manylinux_2_28 container that `packaging/linux/package.sh` starts with
 Docker, for the Docker engine's architecture. Each is checked unpacked on its
 own platform with `packaging/test/run-check.sh`, as CI does; from a host that
@@ -137,7 +139,7 @@ the same manylinux_2_28 image with Docker:
 
 ```sh
 # macOS arm64
-nix develop --command packaging/package.sh
+nix develop .#package --command packaging/package.sh
 packaging/test/run-check.sh target/dist/scalardb-analytics-connectors-<version>-osx_arm64.tgz
 # Linux, on a host whose Docker engine runs Linux containers
 packaging/linux/package.sh

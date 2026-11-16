@@ -289,8 +289,10 @@ protobuf, abseil, and the Substrait specification from pinned source archives,
 instead of the development shell. The extension exports only its entry point,
 so a process that embeds DuckDB v1.5.6 loads it even when it exports none of
 DuckDB's C++ symbols, as DuckDB's JDBC driver does. The development build
-links the static library of the development shell's DuckDB the same way, so
-the end-to-end test loads the extension as a user's process does. The
+links the same DuckDB release files the same way, which the development shell
+unpacks and names in `DUCKDB_DIR`, so the end-to-end test loads the extension
+as a user's process does; its tests link DuckDB's shared library from that
+release, and the end-to-end test uses the release's CLI. The
 adapter has no version of its own; CMake reads the workspace version from
 Cargo.
 
@@ -303,7 +305,9 @@ happens when one process loads the extension from two paths, or loads it
 beside other code with the same Substrait messages, such as the adapter
 embedded through `Register`. The development shell therefore provides
 protobuf and abseil as static libraries too, and the extension of the
-development build carries its own copy as well.
+development build carries its own copy as well. Unlike DuckDB, no binary cache
+or release provides them as static libraries, so the development shell builds
+them from source (`flake.nix`).
 
 The integration tests embed DuckDB through the embedding entry. Against the
 items of [Integration tests](../../docs/adapter-implementation.md#integration-tests):

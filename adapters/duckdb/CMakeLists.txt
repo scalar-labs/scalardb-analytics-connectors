@@ -87,26 +87,32 @@ if(SCALARDB_ANALYTICS_DISTRIBUTION)
     URL_HASH SHA256=e4e6ff10760cf747a2decd1867741f561b216bd60cc4038c87564713a6da1848)
   FetchContent_MakeAvailable(duckdb duckdb_static substrait absl protobuf)
   include("${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake")
-  set(DuckDB_VERSION v1.5.6)
-  set(DuckDB_INCLUDE_DIRS "${duckdb_SOURCE_DIR}/src/include")
+  set(DUCKDB_SOURCE_DIR "${duckdb_SOURCE_DIR}")
+  set(DUCKDB_STATIC_DIR "${duckdb_static_SOURCE_DIR}")
   set(SUBSTRAIT_PROTO_DIR "${substrait_SOURCE_DIR}/proto")
   # An installed protoc finds the well-known types by itself; one built here
   # finds them in its source tree.
   set(PROTOBUF_IMPORT_DIRS "${protobuf_SOURCE_DIR}/src")
 else()
+  # The same DuckDB v1.5.6 release files, unpacked by the development shell
+  # (flake.nix), with the shared library and CLI the tests use beside them.
+  set(DUCKDB_DIR "$ENV{DUCKDB_DIR}" CACHE PATH
+      "The DuckDB v1.5.6 release files the development shell unpacks")
+  if(NOT DUCKDB_DIR)
+    message(FATAL_ERROR "DUCKDB_DIR must name the DuckDB release files of the development shell")
+  endif()
+  set(DUCKDB_SOURCE_DIR "${DUCKDB_DIR}/source")
+  set(DUCKDB_STATIC_DIR "${DUCKDB_DIR}/static")
   set(SUBSTRAIT_PROTO_DIR "$ENV{SUBSTRAIT_PROTO_DIR}" CACHE PATH
       "The proto directory of the Substrait specification the connector API pins")
-  # The adapter's C++ API use is tied to one DuckDB version; DuckDB's package
-  # reports it as "v1.5.6", which find_package cannot compare.
-  find_package(DuckDB REQUIRED CONFIG)
-  if(NOT DuckDB_VERSION STREQUAL "v1.5.6")
-    message(FATAL_ERROR "the DuckDB adapter requires DuckDB v1.5.6, found ${DuckDB_VERSION}")
-  endif()
   find_package(Protobuf CONFIG REQUIRED)
   if(NOT SUBSTRAIT_PROTO_DIR)
     message(FATAL_ERROR "SUBSTRAIT_PROTO_DIR must name the Substrait proto directory")
   endif()
 endif()
+# The adapter's C++ API use is tied to this DuckDB version.
+set(DuckDB_VERSION v1.5.6)
+set(DuckDB_INCLUDE_DIRS "${DUCKDB_SOURCE_DIR}/src/include")
 
 set(CONNECTOR_API_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../crates/connector-api/include")
@@ -171,20 +177,14 @@ endif()
 # EXTENSION_STATIC_BUILD). Its LoadAllExtensions runs only when a DuckDB
 # database is opened, which the host does, and its LoadExtension makes DuckDB
 # load an extension from disk instead of from the binary.
+#
+# The DuckDB release ships the static library without the loader, which the
+# source archive holds.
 find_package(Threads REQUIRED)
-if(SCALARDB_ANALYTICS_DISTRIBUTION)
-  # The DuckDB release ships the static library without the loader, which
-  # the source archive holds.
-  target_sources(scalardb_analytics_connectors_extension PRIVATE
-    "${duckdb_SOURCE_DIR}/extension/loader/dummy_static_extension_loader.cpp")
-  target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
-    "${duckdb_static_SOURCE_DIR}/libduckdb_static.a")
-else()
-  target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
-    duckdb_static dummy_static_extension_loader)
-endif()
+target_sources(scalardb_analytics_connectors_extension PRIVATE
+  "${DUCKDB_SOURCE_DIR}/extension/loader/dummy_static_extension_loader.cpp")
 target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
-  Threads::Threads ${CMAKE_DL_LIBS})
+  "${DUCKDB_STATIC_DIR}/libduckdb_static.a" Threads::Threads ${CMAKE_DL_LIBS})
 if(APPLE)
   target_link_options(scalardb_analytics_connectors_extension PRIVATE
     "LINKER:-dead_strip"
@@ -224,6 +224,10 @@ endif()
 
 find_package(Catch2 3 CONFIG REQUIRED)
 enable_testing()
+# The tests embed DuckDB through its shared library from the release.
+add_library(duckdb SHARED IMPORTED)
+set_target_properties(duckdb PROPERTIES
+  IMPORTED_LOCATION "${DUCKDB_DIR}/lib/libduckdb${CMAKE_SHARED_LIBRARY_SUFFIX}")
 add_executable(scalardb_analytics_duckdb_tests
   test/arrow_schema_test.cpp
   test/attach_test.cpp
