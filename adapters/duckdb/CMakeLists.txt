@@ -161,10 +161,21 @@ endif()
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
   # The extension resolves DuckDB in its own copy and exports only the entry
   # point DuckDB calls, so neither its DuckDB nor its protobuf and abseil
-  # meet the host's. Unused code is stripped: the parts of DuckDB the
-  # extension never runs reference DuckDB's built-in extensions, which the
-  # static library leaves to libraries the extension does not carry.
+  # meet the host's. Unused code is stripped.
+  #
+  # The static library leaves DuckDB's built-in extension loader
+  # (ExtensionHelper::LoadAllExtensions and LoadExtension) to a separate
+  # library, which would pull in every built-in extension. Despite its name,
+  # dummy_static_extension_loader.cpp is DuckDB's own loader for this case:
+  # it loads no built-in extension, and DuckDB links it with
+  # libduckdb_static.a for its own loadable extensions
+  # (extension/extension_build_tools.cmake, EXTENSION_STATIC_BUILD). Its
+  # LoadAllExtensions runs only when a DuckDB database is opened, which the
+  # host does, and its LoadExtension makes DuckDB load an extension from
+  # disk instead of from the binary.
   find_package(Threads REQUIRED)
+  target_sources(scalardb_analytics_connectors_extension PRIVATE
+    "${duckdb_SOURCE_DIR}/extension/loader/dummy_static_extension_loader.cpp")
   target_link_libraries(scalardb_analytics_connectors_extension PRIVATE
     "${duckdb_static_SOURCE_DIR}/libduckdb_static.a" Threads::Threads ${CMAKE_DL_LIBS})
   if(APPLE)
@@ -172,8 +183,12 @@ if(SCALARDB_ANALYTICS_DISTRIBUTION)
       "LINKER:-dead_strip"
       "LINKER:-exported_symbol,_scalardb_analytics_connectors_duckdb_cpp_init")
   else()
+    # GNU ld links a shared library with undefined symbols, which then fail
+    # only when DuckDB loads it; --no-undefined fails the link instead, as
+    # Apple's linker does by default.
     target_link_options(scalardb_analytics_connectors_extension PRIVATE
       "LINKER:--gc-sections"
+      "LINKER:--no-undefined"
       "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/extension.map")
   endif()
   # The package's lib directory, and not the directory it was built in.

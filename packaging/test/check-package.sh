@@ -101,9 +101,11 @@ for file in lib/libconnector_api.* duckdb/scalardb_analytics_connectors.duckdb_e
 done
 
 extension=$home/duckdb/scalardb_analytics_connectors.duckdb_extension
+# A weak reference (w) needs no definition: DuckDB's zstd leaves its tracing
+# hooks weak and runs without them.
 case "$(uname -s)" in
 Darwin) undefined=$(nm -u "$extension" | grep duckdb || true) ;;
-Linux) undefined=$(nm -D --undefined-only "$extension" | grep duckdb || true) ;;
+Linux) undefined=$(nm -D --undefined-only "$extension" | awk '$1 == "U"' | grep duckdb || true) ;;
 esac
 if [ -n "$undefined" ]; then
 	fail "the extension leaves no DuckDB symbol to the host process"
