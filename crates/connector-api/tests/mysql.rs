@@ -13,7 +13,7 @@ mod support;
 use std::{
     io::Write,
     process::{Command, Stdio},
-    sync::Once,
+    sync::{Once, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -32,6 +32,15 @@ struct Server {
 }
 
 impl Server {
+    /// Returns the server every test in this process shares. Tests that
+    /// started it concurrently would race on a new container: one creates it
+    /// while it pulls the image, and another finds the name in use before the
+    /// container exists.
+    fn shared() -> &'static Self {
+        static SERVER: OnceLock<Server> = OnceLock::new();
+        SERVER.get_or_init(Self::start)
+    }
+
     /// Returns the running server, starting its container if needed.
     fn start() -> Self {
         let image = std::env::var("MYSQL_TEST_IMAGE").unwrap_or_else(|_| "mysql:8.4".to_owned());
@@ -181,7 +190,7 @@ fn a_mysql_data_source_is_read_through_the_c_abi() {
         .unwrap();
     assert_eq!(password["secret"], true);
 
-    let server = Server::start();
+    let server = Server::shared();
     server
         .mysql(&format!(
             "DROP DATABASE IF EXISTS {SCHEMA}; CREATE DATABASE {SCHEMA}; \
@@ -190,7 +199,7 @@ fn a_mysql_data_source_is_read_through_the_c_abi() {
         .unwrap();
 
     initialize_with_drivers();
-    let data_source = open_mysql(&server, &[]);
+    let data_source = open_mysql(server, &[]);
     let session = data_source.session().unwrap();
 
     let namespaces = session.namespace_list(Some(&[SCHEMA]), 0, None).unwrap();
@@ -221,7 +230,7 @@ fn a_mysql_data_source_is_read_through_the_c_abi() {
 #[test]
 fn the_tinyint1_option_changes_the_table_metadata_and_not_the_source_metadata() {
     const OPTION_SCHEMA: &str = "connector_api_tinyint1";
-    let server = Server::start();
+    let server = Server::shared();
     server
         .mysql(&format!(
             "DROP DATABASE IF EXISTS {OPTION_SCHEMA}; CREATE DATABASE {OPTION_SCHEMA}; \
@@ -230,7 +239,7 @@ fn the_tinyint1_option_changes_the_table_metadata_and_not_the_source_metadata() 
         .unwrap();
     initialize_with_drivers();
     let read = |extra: &[(&str, &str)]| {
-        let data_source = open_mysql(&server, extra);
+        let data_source = open_mysql(server, extra);
         let session = data_source.session().unwrap();
         let result = session
             .table_metadata_of(&[&[OPTION_SCHEMA, "flags"]], 0, None)
