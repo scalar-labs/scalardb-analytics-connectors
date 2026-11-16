@@ -73,7 +73,7 @@ Linux)
 	for binary in $binaries; do
 		readelf -d "$binary" | awk '/\(NEEDED\)/ { gsub(/[][]/, "", $5); print $5 }' | while read -r needed; do
 			case "$needed" in
-			libc.so.6 | libm.so.6 | libdl.so.2 | libpthread.so.0 | librt.so.1 | libgcc_s.so.1 | libstdc++.so.6 | ld-linux-*.so.*) ;;
+			libc.so.6 | libm.so.6 | libdl.so.2 | libpthread.so.0 | librt.so.1 | libresolv.so.2 | libgcc_s.so.1 | libstdc++.so.6 | ld-linux-*.so.*) ;;
 			*) shipped "$needed" || echo "$binary needs $needed" ;;
 			esac
 		done
