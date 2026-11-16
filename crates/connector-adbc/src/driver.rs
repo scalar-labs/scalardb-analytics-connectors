@@ -125,6 +125,7 @@ impl DriverRequirement {
         Ok(AdbcDriver {
             driver,
             requirement: *self,
+            manifest_name: manifest.name,
             manifest_version: manifest.version,
         })
     }
@@ -134,6 +135,8 @@ impl DriverRequirement {
 /// manager reads the rest.
 #[derive(Debug, PartialEq, Eq)]
 struct DriverManifest {
+    /// The top-level `name`, if the manifest declares one.
+    name: Option<String>,
     /// The top-level `version`, if the manifest declares one.
     version: Option<String>,
     /// `Driver.shared`, when it is a relative path.
@@ -150,8 +153,8 @@ struct RelativeLibrary {
 }
 
 impl DriverManifest {
-    /// Parses a manifest; text that is not a manifest, or a `version` or
-    /// `entrypoint` that is not a string, is `None`.
+    /// Parses a manifest; text that is not a manifest, or a `name`,
+    /// `version`, or `entrypoint` that is not a string, is `None`.
     fn parse(contents: &str) -> Option<Self> {
         let manifest = DeTable::parse(contents).ok()?;
         let manifest = manifest.get_ref();
@@ -165,11 +168,13 @@ impl DriverManifest {
             None => {}
             Some(_) => return None,
         }
-        let version = match manifest.get("version").map(|value| value.get_ref()) {
-            Some(DeValue::String(version)) => Some(version.to_string()),
-            Some(_) => return None,
-            None => None,
+        let text = |key: &str| match manifest.get(key).map(|value| value.get_ref()) {
+            Some(DeValue::String(text)) => Ok(Some(text.to_string())),
+            Some(_) => Err(()),
+            None => Ok(None),
         };
+        let name = text("name").ok()?;
+        let version = text("version").ok()?;
         let driver = manifest
             .get("Driver")
             .and_then(|driver| driver.get_ref().as_table());
@@ -194,6 +199,7 @@ impl DriverManifest {
             _ => None,
         };
         Some(Self {
+            name,
             version,
             relative_library,
         })
@@ -207,6 +213,9 @@ impl DriverManifest {
 pub(crate) struct AdbcDriver {
     pub(crate) driver: ManagedDriver,
     pub(crate) requirement: DriverRequirement,
+    /// The name the manifest declares, which with its version identifies the
+    /// driver without asking it.
+    pub(crate) manifest_name: Option<String>,
     /// The version the manifest declares, used when the driver itself reports
     /// no version.
     pub(crate) manifest_version: Option<String>,
@@ -256,6 +265,17 @@ mod tests {
         assert_eq!(version("manifest_version = 1\n"), Some(None));
         assert_eq!(version("version = 1"), None);
         assert_eq!(version("not toml ="), None);
+    }
+
+    #[test]
+    fn manifest_names_are_read_from_the_top_level_key() {
+        let name = |contents: &str| DriverManifest::parse(contents).map(|m| m.name);
+        assert_eq!(
+            name("manifest_version = 1\nname = \"ADBC PostgreSQL Driver\"\n"),
+            Some(Some("ADBC PostgreSQL Driver".to_owned()))
+        );
+        assert_eq!(name("manifest_version = 1\n"), Some(None));
+        assert_eq!(name("name = 1"), None);
     }
 
     #[test]

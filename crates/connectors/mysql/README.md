@@ -15,7 +15,10 @@ The MySQL connector reads MySQL through the ADBC Driver Foundry MySQL driver
 | Fixed session settings | `time_zone='+00:00'`, the character set `utf8mb4`, and `sql_mode='NO_BACKSLASH_ESCAPES'` |
 | Fixed driver options | `mysql.query.zero_datetime_behavior=error` |
 
-The driver reports its version as `v0.8.0`. It fixes `time_zone` itself, so
+The driver is identified by its driver manifest, which declares its name and
+version, without `GetInfo`: two concurrent `GetInfo` calls on the driver end
+the process (see [Data Source access](../../../docs/connector-sdk.md)). It
+fixes `time_zone` itself, so
 `TIMESTAMP` values arrive as UTC instants. The connector passes its other
 session settings as DSN parameters, which the driver runs as `SET`
 statements after connecting. `sql_mode` keeps backslashes in generated

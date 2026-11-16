@@ -16,8 +16,8 @@ general conventions it follows are in
 | Fixed session settings | `TimeZone=UTC`, `client_encoding=UTF8`, and `standard_conforming_strings=on` |
 | Fixed driver options | `adbc.postgresql.use_copy=true` and `adbc.postgresql.type_resolver_mode=server` |
 
-The driver reports its version as `unknown`, so the version comes from the
-driver manifest.
+The driver is identified by its driver manifest, which declares its name and
+version; the driver itself reports its version as `unknown`.
 
 `search_path` decides how Data Source types are spelled: `format_type`
 qualifies a user-defined type, such as an enum or a domain, with its schema

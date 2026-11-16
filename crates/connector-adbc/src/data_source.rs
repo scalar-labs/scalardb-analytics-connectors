@@ -23,7 +23,8 @@ const UNKNOWN_VERSION: &str = "unknown";
 ///
 /// The driver manager serializes calls on the database, so sessions can
 /// connect from several threads. The driver version is checked when the first
-/// session connects, because ADBC reports it only through a connection.
+/// session connects, because ADBC reports it only through a connection, unless
+/// the driver's manifest declares it.
 pub struct AdbcDatabase<C> {
     database: ManagedDatabase,
     driver: AdbcDriver,
@@ -56,11 +57,39 @@ impl<C: AdbcConnector> AdbcDatabase<C> {
         })
     }
 
-    /// Reads the driver's name and version and checks the supported range.
+    /// Identifies the driver and checks the supported range.
+    ///
+    /// A driver whose manifest declares its name and version is identified by
+    /// the manifest without asking the driver. `GetInfo` is not safe to call
+    /// concurrently on every driver: the ADBC Driver Foundry MySQL driver 0.8.0
+    /// writes the information that all its connections share on each call,
+    /// without a lock, and Go ends the process when the write meets another
+    /// connection's.
+    fn identify(&self, connection: &ManagedConnection) -> Result<Component, ConnectorError> {
+        let (name, version) = match (&self.driver.manifest_name, &self.driver.manifest_version) {
+            (Some(name), Some(version)) => (name.clone(), version.clone()),
+            _ => self.reported(connection)?,
+        };
+        let parsed = version.parse::<DriverVersion>().map_err(|()| {
+            invalid_settings(format!(
+                "the ADBC driver version `{version}` is not a release version"
+            ))
+        })?;
+        let requirement = self.driver.requirement;
+        if !requirement.supports(parsed) {
+            return Err(invalid_settings(format!(
+                "the ADBC driver version {version} is outside the supported range {}",
+                requirement.supported_versions()
+            )));
+        }
+        Ok(Component { name, version })
+    }
+
+    /// Reads the name and version the driver reports through `GetInfo`.
     ///
     /// A driver that reports its version as `unknown`, as the Apache Arrow ADBC
     /// PostgreSQL driver does, is identified by its manifest's version.
-    fn identify(&self, connection: &ManagedConnection) -> Result<Component, ConnectorError> {
+    fn reported(&self, connection: &ManagedConnection) -> Result<(String, String), ConnectorError> {
         let codes = HashSet::from([InfoCode::DriverName, InfoCode::DriverVersion]);
         let reader = connection
             .get_info(Some(codes))
@@ -85,19 +114,7 @@ impl<C: AdbcConnector> AdbcDatabase<C> {
             (UNKNOWN_VERSION, Some(declared)) => declared.clone(),
             _ => version,
         };
-        let parsed = version.parse::<DriverVersion>().map_err(|()| {
-            invalid_settings(format!(
-                "the ADBC driver reported version `{version}`, which is not a release version"
-            ))
-        })?;
-        let requirement = self.driver.requirement;
-        if !requirement.supports(parsed) {
-            return Err(invalid_settings(format!(
-                "the ADBC driver version {version} is outside the supported range {}",
-                requirement.supported_versions()
-            )));
-        }
-        Ok(Component { name, version })
+        Ok((name, version))
     }
 }
 

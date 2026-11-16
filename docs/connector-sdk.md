@@ -1023,14 +1023,19 @@ This applies only to ADBC access and is implemented by `connector-adbc`.
   version. A relative library path given as a string `Driver.shared` is
   relative to that location, so a
   directory of drivers, such as the one in the distribution package, works
-  wherever it is placed. ADBC reports a driver's version through a connection function
-  (`AdbcConnectionGetInfo`), so the version is checked against the supported
-  range when the first session opens, returning `invalid settings` if it
-  is outside
+  wherever it is placed. The driver's version is checked against the
+  supported range when the first session opens, returning `invalid settings`
+  if it is outside
   ([Calling-convention conformance tests](connector-contract.md#calling-convention-conformance-tests),
   [Data Source access rules](connector-contract.md#data-source-access-rules)).
-  A driver that reports its version as `unknown`, as the Apache Arrow ADBC
-  PostgreSQL driver does, is identified by the manifest's version instead. A
+  A driver whose manifest declares its `name` and `version` is identified by
+  the manifest. Otherwise the driver is asked through a connection function
+  (`AdbcConnectionGetInfo`), and a driver that reports its version as
+  `unknown`, as the Apache Arrow ADBC PostgreSQL driver does, is identified
+  by the manifest's version instead. The manifest comes first because
+  `GetInfo` is not safe to call concurrently on every driver: the ADBC Driver
+  Foundry MySQL driver 0.8.0 writes the information its connections share on
+  each call without a lock, which ends the process when two calls meet. A
   version prefixed with `v`, as Go drivers report their module version, such
   as `v0.8.0`, is read without the prefix.
 - **Options:** the connector maps product connection options to driver
