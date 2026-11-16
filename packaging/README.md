@@ -45,6 +45,18 @@ A dependency the user installs is not listed here.
 | `adbc-driver` | `adbc-drivers/<name>.toml` and the library it names, relative to it; license texts in `LICENSES/<name>/` | `name`, `version`, `library` and `licenses` (paths in the wheel), `wheels.<platform>.url` and `.hash` (SRI sha256) |
 | `adbc-driver-archive` | As `adbc-driver`, from a per-platform tar.gz archive instead of a wheel, such as an ADBC Driver Foundry release | `name`, `version`, `licenses` (file paths in the archive), `archives.<platform>.url`, `.hash` (SRI sha256), and `.library` (path in the archive) |
 
+### Source code availability
+
+An entry of any kind that contains a component whose license requires its
+source code to be available with a binary, such as MPL-2.0, lists that
+component under `sources`, each with `name`, `version`, `license`, and the
+`url` of its source code at that version. `package.sh` writes the list to
+`LICENSES/<name>/SOURCES.txt`.
+
+The versions are those built into the shipped binary, so they are read again
+whenever the entry's version changes: for a driver built from Go, from the
+module build information the binary embeds (`go version -m <library>`).
+
 ## Adding a connector
 
 1. If the connector ships dependencies beyond the library, add its

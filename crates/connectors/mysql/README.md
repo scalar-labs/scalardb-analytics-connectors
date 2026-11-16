@@ -43,8 +43,11 @@ does not.
 
 The driver is one self-contained shared library, built from Go with
 `go-sql-driver/mysql` and Go's own TLS; its bundled license file lists the
-licenses of what it contains, all permissive. No build is published for
-macOS x86_64. Exceptions: none. No dependency is installed by the user.
+licenses of what it contains. All are permissive except
+`go-sql-driver/mysql`, which is MPL-2.0; the package states where its source
+code is available
+([Source code availability](../../../packaging/README.md#source-code-availability)).
+No build is published for macOS x86_64. Exceptions: none. No dependency is installed by the user.
 
 ## Source metadata
 

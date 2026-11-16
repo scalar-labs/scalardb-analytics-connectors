@@ -113,7 +113,8 @@ lib/           The connector API library, with the connectors whose dependencies
 duckdb/        The DuckDB v1.5.6 loadable extension, which finds ../lib
 adbc-drivers/  The ADBC drivers that ship, with their manifests
 include/       The C header of the connector API library
-LICENSES/      The license texts of everything in the package
+LICENSES/      The license texts of everything in the package, and where to
+               obtain the source code a license requires to be available
 ```
 
 The extension uses the package's `adbc-drivers` unless

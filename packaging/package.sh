@@ -11,7 +11,8 @@
 #   adbc-drivers/  the ADBC drivers and their manifests, which the extension
 #                  uses unless SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY is set
 #   include/       the C header of the connector API library
-#   LICENSES/      the license texts of everything shipped
+#   LICENSES/      the license texts of everything shipped, and where to
+#                  obtain the source code a license requires to be available
 #
 # The library is built with every connector feature of connector-api.
 # packaging/dependencies.json declares the dependencies those connectors ship;
@@ -127,6 +128,15 @@ for dependency in $(jq -r '[.connectors[].dependencies[]] | unique | .[]' "$decl
 	kind=$(field '.kind' | tr - _)
 	command -v "ship_$kind" >/dev/null || { echo "$dependency: no ship_$kind for its kind" >&2; exit 1; }
 	"ship_$kind"
+	# Where to obtain the source code of the components the dependency
+	# contains under a license that requires it to be available with a binary.
+	if field '| has("sources")' >/dev/null; then
+		{
+			printf 'The source code of these components of %s %s,\n' "$(field '.name')" "$(field '.version')"
+			printf 'whose licenses require it to be available, is at:\n\n'
+			field '.sources[] | "- \(.name) \(.version) (\(.license)): \(.url)"'
+		} >"$stage/LICENSES/$dependency/SOURCES.txt"
+	fi
 done
 
 # The DuckDB extension.
