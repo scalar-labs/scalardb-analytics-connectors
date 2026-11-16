@@ -238,6 +238,20 @@ target_link_libraries(scalardb_analytics_duckdb_tests PRIVATE
 target_include_directories(scalardb_analytics_duckdb_tests PRIVATE src)
 add_test(NAME scalardb_analytics_duckdb_tests COMMAND scalardb_analytics_duckdb_tests)
 
+# The loadable extension in a process that initialized the library before
+# loading it, as an application that owns the library does. It links only
+# DuckDB and the library, not the adapter's Substrait messages, which the
+# extension carries too.
+add_executable(scalardb_analytics_duckdb_extension_tests test/extension_test.cpp)
+target_include_directories(scalardb_analytics_duckdb_extension_tests PRIVATE
+  "${CONNECTOR_API_INCLUDE_DIR}" ${DuckDB_INCLUDE_DIRS})
+target_link_libraries(scalardb_analytics_duckdb_extension_tests PRIVATE
+  duckdb "${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}" Catch2::Catch2WithMain)
+target_compile_definitions(scalardb_analytics_duckdb_extension_tests PRIVATE
+  SCALARDB_ANALYTICS_EXTENSION_FILE="$<TARGET_FILE:scalardb_analytics_connectors_extension>")
+add_dependencies(scalardb_analytics_duckdb_extension_tests scalardb_analytics_connectors_extension)
+add_test(NAME scalardb_analytics_duckdb_extension_tests COMMAND scalardb_analytics_duckdb_extension_tests)
+
 # The loadable extension in the DuckDB CLI, end to end against PostgreSQL.
 find_program(DUCKDB_CLI duckdb REQUIRED)
 add_test(NAME scalardb_analytics_duckdb_e2e

@@ -26,6 +26,14 @@ pub(crate) fn initialize(settings: LibrarySettings) -> Result<(), ConnectorError
     Ok(())
 }
 
+/// Whether the library is initialized in this process.
+pub(crate) fn is_initialized() -> bool {
+    CURRENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_some()
+}
+
 /// Shuts the library down; Data Sources still open become unusable.
 pub(crate) fn shutdown() -> Result<(), ConnectorError> {
     CURRENT

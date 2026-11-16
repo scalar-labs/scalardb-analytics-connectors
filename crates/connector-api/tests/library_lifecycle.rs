@@ -44,7 +44,9 @@ fn the_library_is_initialized_once_and_shut_down_by_the_application() {
         ScalardbAnalyticsConnectorErrorKind::InvalidState
     );
 
+    assert!(!(api().library_is_initialized)());
     initialize_library().unwrap();
+    assert!((api().library_is_initialized)());
     let error = initialize_library().err().unwrap();
     assert_eq!(
         error.kind,
@@ -69,6 +71,7 @@ fn the_library_is_initialized_once_and_shut_down_by_the_application() {
         check((api().library_shutdown)()).unwrap();
         puller.join().unwrap()
     });
+    assert!(!(api().library_is_initialized)());
 
     assert!(matches!(pulled, Pull::Failed(..)));
     assert_eq!(
@@ -96,5 +99,6 @@ fn the_library_is_initialized_once_and_shut_down_by_the_application() {
     data_source.close();
 
     initialize_library().unwrap();
+    assert!((api().library_is_initialized)());
     assert!(DataSource::open(&[("label", "reinitialized")]).is_ok());
 }

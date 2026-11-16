@@ -123,8 +123,9 @@ batch.
 ## Entry points
 
 The loadable extension, `scalardb_analytics_connectors.duckdb_extension`, owns the
-connector API library: it initializes the library when DuckDB loads it and
-never shuts it down, because DuckDB does not unload extensions. It reads the
+connector API library unless another caller in the process already does: it
+initializes the library when DuckDB loads it and never shuts it down, because
+DuckDB does not unload extensions. It reads the
 ADBC driver directory from the environment variable
 `SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY`, because DuckDB applies an
 extension's own settings only after loading it. Without the variable, it uses
@@ -135,7 +136,17 @@ user who can set it could make the process load a native library. The
 extension is unsigned, so DuckDB loads it only with unsigned extensions
 allowed.
 
-An application that embeds DuckDB and owns an initialized library uses
+When the library is already initialized as DuckDB loads the extension, the
+extension uses it as it is. This serves an application that owns the library
+but runs DuckDB through a binding that can only load extensions, such as a
+JDBC or Python driver: the application initializes the library with its own
+settings, shares it with its other callers, and loads the extension into
+DuckDB. The extension's driver directory is then not used, and the application
+shuts the library down only after DuckDB has closed the catalogs the extension
+attached.
+
+An application that embeds DuckDB through its C++ API and owns an initialized
+library can use
 [`scalardb_analytics_duckdb.hpp`](include/scalardb_analytics_duckdb.hpp)
 instead: `Register` adds the attach type and the pragma to a database without
 touching the library's lifecycle.
@@ -257,7 +268,10 @@ nix develop --command cmake --build target/duckdb-adapter
 nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
 ```
 
-`ctest` runs two suites. The end-to-end test,
+`ctest` runs three suites. The integration tests embed DuckDB through
+`Register`, with a library the test process initialized. The extension test
+initializes the library first and then loads the built extension, as an
+application that owns the library does. The end-to-end test,
 [`test/e2e.sh`](test/e2e.sh), runs the DuckDB CLI of the development shell,
 loads the built extension, which initializes the library itself, and queries
 PostgreSQL as a user would: complete and partial pushdown with their plans, an

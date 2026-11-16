@@ -128,7 +128,10 @@ component in that process owns its initialization and shutdown:
   Physical Catalog. The application owns the library: it initializes it before
   any caller uses it and shuts it down after every caller has closed its data
   sources. The adapter and the other callers receive the initialized library
-  and share it; none of them initializes or shuts it down.
+  and share it; none of them initializes or shuts it down. A caller that can
+  run in either case, such as an adapter the application loads as a plugin,
+  asks the library whether it is initialized and initializes it only when it
+  is not.
 
 Every initialization setting has a single process-wide value, so per-caller
 initialization would need a rule for conflicting settings. The library returns
@@ -1363,7 +1366,7 @@ The connector API has these functions:
   driver location
   ([Data Source access rules](#data-source-access-rules)), and log level and destination.
   Static information ([Static information](#static-information)) can be read
-  even before initialization.
+  even before initialization, and so can whether the library is initialized.
 - **Open and close a data source.** Input: Connector, connection setting and
   credential options, and connection timeout.
 - **Open and close a session.**

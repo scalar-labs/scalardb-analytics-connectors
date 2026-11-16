@@ -521,6 +521,12 @@ pub struct ScalardbAnalyticsConnectorApi {
     ///
     /// `bytes` was returned by this library and not yet freed.
     pub owned_bytes_free: unsafe extern "C" fn(bytes: ScalardbAnalyticsConnectorOwnedBytes),
+    /// Returns whether the library is initialized in this process.
+    ///
+    /// A caller that does not own the library, such as an adapter loaded into
+    /// an application that initialized it, uses the library as it is when this
+    /// returns true, and initializes it only when this returns false.
+    pub library_is_initialized: extern "C" fn() -> bool,
 }
 
 static API: ScalardbAnalyticsConnectorApi = ScalardbAnalyticsConnectorApi {
@@ -560,6 +566,7 @@ static API: ScalardbAnalyticsConnectorApi = ScalardbAnalyticsConnectorApi {
     operation_close,
     error_free,
     owned_bytes_free,
+    library_is_initialized,
 };
 
 /// Returns the library's functions. It is the only exported symbol, is
@@ -593,6 +600,10 @@ unsafe extern "C" fn library_initialize(
 
 extern "C" fn library_shutdown() -> *mut ScalardbAnalyticsConnectorError {
     contain(library::shutdown)
+}
+
+extern "C" fn library_is_initialized() -> bool {
+    library::is_initialized()
 }
 
 unsafe extern "C" fn data_source_open(

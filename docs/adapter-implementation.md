@@ -48,6 +48,14 @@ The caller always knows which case it is in, so an adapter exposes the two as
 separate entry points: the one the Query Engine loads as a plugin initializes
 the library, and the one an embedding application uses does not.
 
+An embedding application cannot always reach the second entry point. When it
+runs the Query Engine through a binding that only loads plugins, such as a JDBC
+or Python driver, the plugin entry is the only one it can use. The plugin entry
+therefore initializes the library only when no caller in the process has:
+when `library_is_initialized` returns true, the application already owns the
+library, and the adapter uses it without its own settings and never shuts it
+down.
+
 The adapter opens one data source per registered data source and as many
 sessions as it needs concurrent planning calls and reads.
 
