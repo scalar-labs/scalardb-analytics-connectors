@@ -122,8 +122,9 @@ The extension uses the package's `adbc-drivers` unless
 CI builds and checks the package of every platform for each pull request and
 `main` push and keeps it as a workflow artifact
 (`.github/workflows/package.yml`). Pushing a tag `v<version>` that equals the
-workspace version publishes the packages as a GitHub Release. Which connectors
-and dependencies ship is declared in `packaging/dependencies.json`
+workspace version publishes the packages as a GitHub Release. The library
+ships the connectors that `connector-api` has features for, and the
+dependencies they ship are declared in `packaging/dependencies.json`
 ([Packaging](packaging/README.md)). The packages are built with
 `packaging/package.sh`: on macOS in the Nix shell, and for Linux in
 a manylinux_2_28 container that `packaging/linux/package.sh` starts with

@@ -13,9 +13,10 @@
 #   include/       the C header of the connector API library
 #   LICENSES/      the license texts of everything shipped
 #
-# What ships is declared in packaging/dependencies.json: the connectors built
-# into the library, and the dependencies each one ships. Each dependency has a
-# kind, and the ship_<kind> function below places it (packaging/README.md).
+# The library is built with every connector feature of connector-api.
+# packaging/dependencies.json declares the dependencies those connectors ship;
+# each dependency has a kind, and the ship_<kind> function below places it
+# (packaging/README.md).
 #
 # Usage: package.sh
 #
@@ -45,8 +46,13 @@ stage=$work/$name
 rm -rf "$stage"
 mkdir -p "$stage/lib" "$stage/duckdb" "$stage/include" "$stage/LICENSES"
 
-# The shipping connectors are the connector-api features declared.
-features=$(jq -r '.connectors | keys | join(",")' "$declaration")
+# The shipping connectors are the connector-api features that enable a
+# connector crate. sqlserver-odbc is left out until the package ships the ODBC
+# driver manager that its library links.
+features=$(printf '%s' "$metadata" | jq -r '
+	.packages[] | select(.name == "connector-api") | .features | to_entries
+	| map(select(any(.value[]; startswith("dep:connector-"))) | .key)
+	| map(select(. != "sqlserver-odbc")) | join(",")')
 
 # Reads a field of the dependency being shipped: field '<jq path below it>'.
 field() {

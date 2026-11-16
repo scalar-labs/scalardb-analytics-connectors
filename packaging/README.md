@@ -6,7 +6,7 @@ platform that works wherever it is unpacked.
 
 | File | Role |
 | --- | --- |
-| `dependencies.json` | What ships: the connectors built into the library and the dependencies each one ships |
+| `dependencies.json` | The dependencies the connectors ship |
 | `package.sh` | Builds the package of the running platform from that declaration |
 | `linux/package.sh` | Runs `package.sh` for Linux in the pinned manylinux_2_28 image with Docker |
 | `linux/build.sh` | Prepares the manylinux container and runs `package.sh` in it |
@@ -16,13 +16,19 @@ platform that works wherever it is unpacked.
 
 ## What ships
 
-`dependencies.json` has two parts:
+The library is built with every connector feature of `connector-api`, the
+features that enable a connector crate, and its Rust license texts cover them.
+`sqlserver-odbc` is left out until the package ships the ODBC driver manager
+that its library links.
 
-- `connectors`: each key is a `connector-api` feature. The library is built
-  with exactly these features, and its Rust license texts cover them.
+`dependencies.json` declares what those connectors ship beyond the library, in
+two parts:
+
+- `connectors`: each key is a connector feature, which lists the entries it
+  ships under `dependencies`. A connector that ships nothing beyond the
+  library has no key.
 - `dependencies`: each entry has a `kind` and the fields that kind needs.
-  A connector lists the entries it ships under `dependencies`; an entry
-  shared by several connectors ships once.
+  An entry shared by several connectors ships once.
 
 A connector's README declares all its dependencies and whether each ships or
 the user installs it
@@ -40,8 +46,9 @@ A dependency the user installs is not listed here.
 
 ## Adding a connector
 
-1. Add the connector's `connector-api` feature under `connectors`, with the
-   dependencies it ships.
+1. If the connector ships dependencies beyond the library, add its
+   `connector-api` feature under `connectors`, with those dependencies. Its
+   feature alone builds it into the library.
 2. Declare each new dependency under `dependencies` with an existing kind, or
    add a kind as below.
 3. Build and check the package on each platform. `test/check-package.sh`
