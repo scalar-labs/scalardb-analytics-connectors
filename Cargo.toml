@@ -9,6 +9,7 @@ members = [
     "crates/connectors/mysql",
     "crates/connectors/salesforce",
     "crates/connectors/sqlserver-odbc",
+    "crates/connectors/oracle",
     "crates/connectors/salesforce/client",
     "crates/connector-api",
 ]
@@ -41,6 +42,7 @@ connector-postgresql = { path = "crates/connectors/postgresql" }
 connector-mysql = { path = "crates/connectors/mysql" }
 connector-salesforce = { path = "crates/connectors/salesforce" }
 connector-sqlserver-odbc = { path = "crates/connectors/sqlserver-odbc" }
+connector-oracle = { path = "crates/connectors/oracle" }
 connector-salesforce-client = { path = "crates/connectors/salesforce/client" }
 base64 = "0.22"
 bytes = "1"

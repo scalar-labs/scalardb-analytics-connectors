@@ -8,10 +8,12 @@ implemented, and the PostgreSQL connector
 ([crates/connectors/postgresql](crates/connectors/postgresql/README.md)), the
 MySQL connector ([crates/connectors/mysql](crates/connectors/mysql/README.md)),
 the Salesforce connector
-([crates/connectors/salesforce](crates/connectors/salesforce/README.md)), and
+([crates/connectors/salesforce](crates/connectors/salesforce/README.md)),
 the SQL Server through ODBC connector
-([crates/connectors/sqlserver-odbc](crates/connectors/sqlserver-odbc/README.md))
-are implemented on them.
+([crates/connectors/sqlserver-odbc](crates/connectors/sqlserver-odbc/README.md)),
+and the Oracle connector
+([crates/connectors/oracle](crates/connectors/oracle/README.md)) are
+implemented on them.
 The C API library includes a Connector when it is built with that Connector's
 feature, such as `cargo build -p connector-api --features postgresql`. The
 DuckDB adapter attaches Data Sources to DuckDB through that library
@@ -41,6 +43,8 @@ connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> anal
              |                        +------------------> connector-sdk
              +-> connector-sqlserver-odbc -> connector-sql
              |                         +-> connector-odbc -> connector-sdk
+             +-> connector-oracle -----> connector-sql
+             |                     +-> connector-odbc
              +-> connector-sdk -----------------------------------> analytics-types
 connector-odbc -> connector-sdk
 ```
@@ -63,7 +67,8 @@ the DuckDB adapter's C++ build inputs and DuckDB CLI (DuckDB from its release
 files), unixODBC and the
 PostgreSQL ODBC driver for `connector-odbc` and its tests, the Microsoft ODBC
 Driver 18 for SQL Server for the SQL Server through ODBC connector's tests,
-which is the one unfree package the flake allows, and repository utilities.
+the Oracle Instant Client ODBC driver for the Oracle connector's tests, which
+are the two unfree packages the flake allows, and repository utilities.
 Enter it directly or let direnv load it:
 
 ```sh
@@ -78,7 +83,8 @@ supplies exactly Rust 1.88.0. Run the same checks as CI through the flake. The
 PostgreSQL and MySQL connectors' tests, the library's tests with their
 `postgresql` and `mysql` features, and `connector-odbc`'s tests also need
 Docker, which they use to start a PostgreSQL or MySQL server, and the SQL
-Server through ODBC connector's tests use it to start a SQL Server:
+Server through ODBC and Oracle connectors' tests use it to start a SQL Server
+or an Oracle Database:
 
 ```sh
 nix develop --command cargo fmt --all -- --check

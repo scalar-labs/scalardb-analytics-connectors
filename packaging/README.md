@@ -21,8 +21,8 @@ platform that works wherever it is unpacked.
 
 The library is built with every connector feature of `connector-api`, the
 features that enable a connector crate, and its Rust license texts cover them.
-`sqlserver-odbc` is left out until the package ships the ODBC driver manager
-that its library links.
+The ODBC connectors, `sqlserver-odbc` and `oracle`, are left out until the
+package ships the ODBC driver manager that their library links.
 
 `dependencies.json` declares what those connectors ship beyond the library, in
 two parts:

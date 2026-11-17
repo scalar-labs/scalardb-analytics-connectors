@@ -48,12 +48,12 @@ rm -rf "$stage"
 mkdir -p "$stage/lib" "$stage/duckdb" "$stage/include" "$stage/LICENSES"
 
 # The shipping connectors are the connector-api features that enable a
-# connector crate. sqlserver-odbc is left out until the package ships the ODBC
-# driver manager that its library links.
+# connector crate. The ODBC connectors, sqlserver-odbc and oracle, are left out
+# until the package ships the ODBC driver manager that their library links.
 features=$(printf '%s' "$metadata" | jq -r '
 	.packages[] | select(.name == "connector-api") | .features | to_entries
 	| map(select(any(.value[]; startswith("dep:connector-"))) | .key)
-	| map(select(. != "sqlserver-odbc")) | join(",")')
+	| map(select(. != "sqlserver-odbc" and . != "oracle")) | join(",")')
 
 # Reads a field of the dependency being shipped: field '<jq path below it>'.
 field() {
