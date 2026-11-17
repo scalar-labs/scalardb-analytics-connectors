@@ -88,6 +88,9 @@ impl Connector for OdbcTestConnector {
 
 impl OdbcConnector for OdbcTestConnector {
     const DRIVER: &'static str = "psqlodbcw";
+    /// Names each session's application, which the tests observe.
+    const SESSION_STATEMENTS: &'static [&'static str] =
+        &["SET application_name = 'connector-odbc-test'"];
 
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError> {
         let value = |key| match options.get(key) {

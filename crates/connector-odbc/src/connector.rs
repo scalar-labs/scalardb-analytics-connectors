@@ -36,6 +36,12 @@ pub trait OdbcConnector: Connector<Access = Odbc<Self>> {
     /// attributes. The driver is not part of it.
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError>;
 
+    /// Statements run on each connection right after it connects, before any
+    /// request: the Connector's fixed session settings, for a driver whose
+    /// connection string cannot state them. A failure fails opening the
+    /// session.
+    const SESSION_STATEMENTS: &'static [&'static str] = &[];
+
     /// The Arrow type a result column of `data_type`, as the ODBC driver
     /// describes it, is read as, or `None` to read it as `arrow-odbc` derives
     /// from the description.
@@ -142,7 +148,7 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
 
     /// Connects with the Data Source's connection timeout as the ODBC login
     /// timeout, rounded up to whole seconds and at least one, because ODBC
-    /// reads zero as no limit.
+    /// reads zero as no limit, and runs the Connector's session statements.
     fn open_session(data_source: &OdbcDataSource) -> Result<OdbcConnection<C>, ConnectorError> {
         let options = OdbcConnectionOptions {
             login_timeout_sec: data_source.connection_timeout.map(|timeout| {
@@ -154,6 +160,12 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
         let connection = environment()?
             .connect_with_connection_string(data_source.connection_string.expose(), options)
             .map_err(|error| odbc_error::<C>(&error, None))?;
+        for statement in C::SESSION_STATEMENTS {
+            connection
+                .execute(statement, (), None)
+                .map(drop)
+                .map_err(|error| odbc_error::<C>(&error, Some(&connection)))?;
+        }
         Ok(OdbcConnection::new(Shared::new(connection)))
     }
 
