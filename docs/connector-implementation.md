@@ -584,7 +584,11 @@ The form is chosen from the source's nature, in this order:
    library and has no native dependencies
    ([Isolating native dependencies](#isolating-native-dependencies)), while an
    ADBC driver is a separate artifact that can contain them. Deciding native
-   dependencies first keeps them out of the library.
+   dependencies first keeps them out of the library. A source reached through
+   ODBC is the exception: the ODBC driver manager loads the source's ODBC
+   driver, and the vendor client it uses, at run time, so direct access links
+   only the driver manager
+   ([Reach ODBC sources through direct access](design/reach-odbc-sources-through-direct-access.md)).
 2. A source whose protocol returns typed results that describe themselves uses
    ADBC access. RDBMSs, data warehouses, OLAP engines, and external Query
    Engines belong here.
@@ -839,23 +843,34 @@ every case the contract, connector traits, and connector SDK stay the same.
 
 ### Oracle
 
+The Oracle connector ([crates/connectors/oracle](../crates/connectors/oracle/README.md))
+implements these conventions:
+
 - **Structure:** `connector-sql` with an Oracle SQL dialect. Comparisons
   on `CHAR` columns and on columns with non-binary collations cannot be exact
   without a separately proven semantic rule.
-- **Data Source access:** ADBC access through an ADBC driver for Oracle; without an
-  existing one, our own driver using an Oracle client. Native dependencies such
-  as Oracle Instant Client stay outside the library as dependencies of the
-  driver, shipped or installed by the user as in
-  [Connector dependencies](#connector-dependencies).
-- **Connection settings and credentials:** a connect descriptor, and user name
-  and password as separate options.
-- **Cancellation and timeouts:** the driver's cancellation, which must stop the
-  query at the source.
-- **Metadata:** read from `ALL_TABLES`, `ALL_TAB_COLUMNS`, and related views.
-  The type mapping is decided when the connector is started.
-- **Constraints:** primary keys, unique constraints, foreign keys, and CHECK
-  constraints.
-- **Identifiers:** object IDs.
+- **Data Source access:** direct access through `connector-odbc` and the Oracle
+  Instant Client ODBC driver, as for a Generic ODBC Connector
+  ([Reach ODBC sources through direct access](design/reach-odbc-sources-through-direct-access.md)):
+  the connector reads Oracle's own catalog and each column's ODBC description
+  itself. Oracle Instant Client stays outside the library, loaded with the
+  ODBC driver from the library's ODBC driver directory and installed by the
+  user as in [Connector dependencies](#connector-dependencies).
+- **Connection settings and credentials:** the host, port, and service name of
+  an Easy Connect string, and user name and password as separate options.
+- **Fixed settings:** the session time zone, numeric characters, and binary
+  comparison and sort, run as session statements right after connecting,
+  because the driver's connection string cannot state them.
+- **Cancellation and timeouts:** ODBC `SQLCancel`, which stops the query at
+  the source.
+- **Metadata:** read from `ALL_USERS`, `ALL_TABLES`, `ALL_VIEWS`,
+  `ALL_TAB_COLS`, and related views. `LONG` values, such as view definitions
+  and CHECK conditions, are read through an inline PL/SQL function.
+- **Constraints:** primary keys, unique constraints and unique indexes on
+  columns, foreign keys, and CHECK constraints, without the NOT NULL
+  constraints that nullability states.
+- **Identifiers:** the table's object ID; Oracle keeps no column identifier
+  across a dropped column.
 - **Missing information:** objects hidden by privilege are "not found".
 - **Data read:** read consistency within one query.
 - **Filter planning:** apply a remote filter rewrite only when the Oracle type
