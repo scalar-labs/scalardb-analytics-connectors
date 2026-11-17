@@ -159,10 +159,50 @@
           # connector's tests use: Instant Client Basic and its ODBC package
           # in one directory, with `libsqora` linking to the driver, so that
           # the driver's path is the same on every platform. The driver finds
-          # the client libraries beside itself. nixpkgs pins a different
-          # Instant Client version per platform, and the driver's file name
-          # carries the major version, such as `libsqora.so.21.1`.
-          oracleInstantClient = pkgs.oracle-instantclient;
+          # the client libraries beside itself. The driver's file name carries
+          # the major version, such as `libsqora.so.23.1`.
+          #
+          # The tests need Instant Client 23: earlier ODBC drivers describe
+          # `BOOLEAN` as a floating-point number. nixpkgs pins 23 only on
+          # aarch64-darwin, and 21 and 19 on Linux, so on Linux the client is
+          # Instant Client 23 from Oracle's release files instead: its Basic
+          # and ODBC packages, of which only the libraries are installed.
+          oracleInstantClient =
+            if pkgs.stdenv.hostPlatform.isLinux then
+              let
+                version = "23.26.4.0.0";
+                arch = if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64";
+                hashes = {
+                  x64 = {
+                    basic = "sha256-yrWao7QRs7UImORW+pqr/kjWfiXLwbsjMDgAOQzn3iY=";
+                    odbc = "sha256-dmUnxK9EaGKYYpfjqhae1CWCuKtVoX1LkBKA6BT3DYo=";
+                  };
+                  arm64 = {
+                    basic = "sha256-aI30Jsq7TllF6ECa4CKs0WuS/wZYLI2Try9B4/uaQvM=";
+                    odbc = "sha256-cmWB1MH5LmiS5oOg9aQzL5pK/jHsj+bnn29Mu6y/i48=";
+                  };
+                };
+              in
+              pkgs.oracle-instantclient.overrideAttrs {
+                inherit version;
+                srcs = map (
+                  component:
+                  pkgs.fetchurl {
+                    url = "https://download.oracle.com/otn_software/linux/instantclient/2326400/instantclient-${component}-linux.${arch}-${version}.zip";
+                    hash = hashes.${arch}.${component};
+                  }
+                ) [ "basic" "odbc" ];
+                # Both archives carry the same top-level `META-INF`, which the
+                # second one overwrites.
+                unpackCmd = "unzip -o $curSrc";
+                sourceRoot = "instantclient_23_26";
+                installPhase = ''
+                  mkdir -p $out $dev $lib/lib
+                  cp -P *.so* $lib/lib
+                '';
+              }
+            else
+              pkgs.oracle-instantclient;
           oracleOdbcDriver = pkgs.runCommand "oracle-odbc-driver" { } ''
             mkdir -p $out
             ln -s ${oracleInstantClient.lib}/lib/* $out/
