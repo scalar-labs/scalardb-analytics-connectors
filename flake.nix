@@ -155,22 +155,42 @@
           }/lib";
           # The ODBC driver manager that connector-odbc links.
           odbcLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.unixodbc ];
+          # The Oracle Instant Client ODBC driver, which the Oracle
+          # connector's tests use: Instant Client Basic and its ODBC package
+          # in one directory, with `libsqora` linking to the driver, so that
+          # the driver's path is the same on every platform. The driver finds
+          # the client libraries beside itself. nixpkgs pins a different
+          # Instant Client version per platform, and the driver's file name
+          # carries the major version, such as `libsqora.so.21.1`.
+          oracleInstantClient = pkgs.oracle-instantclient;
+          oracleOdbcDriver = pkgs.runCommand "oracle-odbc-driver" { } ''
+            mkdir -p $out
+            ln -s ${oracleInstantClient.lib}/lib/* $out/
+            ln -s ${oracleInstantClient.lib}/lib/libsqora${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}.${pkgs.lib.versions.major oracleInstantClient.version}.1 $out/libsqora
+            test -e $out/libsqora
+          '';
           # Directory of the ODBC drivers that connector tests load, each at
           # the path its Connector names: the PostgreSQL ODBC driver that
-          # connector-odbc's tests reach a server through, and the Microsoft
+          # connector-odbc's tests reach a server through, the Microsoft
           # ODBC Driver 18 for SQL Server that the SQL Server through ODBC
           # connector's tests use, with its `share` beside its `lib` because
-          # it loads its resources relative to its own path.
+          # it loads its resources relative to its own path, and the Oracle
+          # Instant Client ODBC driver.
           msodbcsql = pkgs.unixodbcDrivers.msodbcsql18;
           odbcDriverDirectory = pkgs.linkFarm "odbc-drivers" {
             psqlodbcw = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
             "msodbcsql18/lib/msodbcsql18" = "${msodbcsql}/${msodbcsql.driver}";
             "msodbcsql18/share" = "${msodbcsql}/share";
+            instantclient = oracleOdbcDriver;
           };
-          # The driver loads OpenSSL at run time by its file name; on macOS it
-          # finds it only through `DYLD_LIBRARY_PATH`, which holds nothing but
-          # OpenSSL.
-          msodbcsqlLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
+          # Libraries the ODBC drivers load by file name, which on macOS they
+          # find only through `DYLD_LIBRARY_PATH`: OpenSSL, which the SQL
+          # Server driver loads at run time, and unixODBC's installer library,
+          # which the Oracle driver links through its `@rpath`.
+          odbcDriverLibraryPath = pkgs.lib.makeLibraryPath [
+            pkgs.openssl
+            pkgs.unixodbc
+          ];
           # Libraries the workspace links: the ODBC driver manager, and on
           # macOS libiconv.
           libraryPath = pkgs.lib.makeLibraryPath (
@@ -303,8 +323,14 @@
             overlays = [
               devshell.overlays.default
             ];
-            # The SQL Server ODBC driver is the only unfree package allowed.
-            config.allowUnfreePredicate = pkg: pkgs.lib.getName pkg == "msodbcsql18";
+            # The ODBC drivers of SQL Server and Oracle are the only unfree
+            # packages allowed.
+            config.allowUnfreePredicate =
+              pkg:
+              builtins.elem (pkgs.lib.getName pkg) [
+                "msodbcsql18"
+                "oracle-instantclient"
+              ];
           };
 
           devShells.default = pkgs.devshell.mkShell {
@@ -351,7 +377,7 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               {
                 name = "DYLD_LIBRARY_PATH";
-                value = msodbcsqlLibraryPath;
+                value = odbcDriverLibraryPath;
               }
             ];
             packages = [
@@ -401,7 +427,7 @@
               export LD_LIBRARY_PATH="${odbcLibraryPath}"
             ''
             + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              export DYLD_LIBRARY_PATH="${msodbcsqlLibraryPath}"
+              export DYLD_LIBRARY_PATH="${odbcDriverLibraryPath}"
             '';
             packages = [
               msrvToolchain
