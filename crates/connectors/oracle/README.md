@@ -33,7 +33,7 @@ names by code point.
 
 | Dependency | Used for | Ships with the connector | Tested versions |
 | --- | --- | --- | --- |
-| Oracle Instant Client Basic and ODBC packages (Oracle Technology Network License, not free) | Data Source access | No: installed by the user in the ODBC driver directory, because its license does not allow us to redistribute it | 23.3.0.23.09 |
+| Oracle Instant Client Basic and ODBC packages (Oracle Technology Network License, not free) | Data Source access | No: installed by the user in the ODBC driver directory, because its license does not allow us to redistribute it | 23.3.0.23.09 and 23.26.4.0.0 |
 | ODBC driver manager: unixODBC on Linux and macOS (LGPL-2.1) | Loading the ODBC driver; the ODBC driver also links its installer library, `libodbcinst` | No: installed by the user, and linked dynamically | 2.3.14 |
 
 Exceptions: the ODBC driver manager is a native library the connector links
@@ -48,6 +48,10 @@ manager's registered drivers are not used. The driver loads the Instant Client
 Basic libraries, such as `libclntsh`, from its own directory, so both packages
 are unpacked into `instantclient`. The driver finds unixODBC's
 `libodbcinst` on the library search path.
+
+The connector requires Instant Client 23 or later. Earlier ODBC drivers, such
+as 21.10, describe a `BOOLEAN` column as a floating-point number and return 1.0
+and 0.0, which the connector does not read as Boolean.
 
 ## Source metadata
 
@@ -284,6 +288,7 @@ Only combinations that passed this crate's tests are listed.
 | Oracle Database | ODBC driver | ODBC driver manager | Platform |
 | --- | --- | --- | --- |
 | 23ai Free 23.26.3 (`gvenzl/oracle-free:23-slim-faststart`) | Instant Client 23.3.0.23.09 | unixODBC 2.3.14 | macOS arm64 |
+| 23ai Free 23.26.3 (`gvenzl/oracle-free:23-slim-faststart`) | Instant Client 23.26.4.0.0 | unixODBC 2.3.14 | Linux x86_64 |
 
 ## Tests
 
