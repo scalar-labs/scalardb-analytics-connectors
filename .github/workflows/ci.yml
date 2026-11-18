@@ -64,16 +64,6 @@ jobs:
         run: nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Check dependency policy
         run: nix develop --command cargo deny check bans licenses
-      # The connector tests keep their Data Source containers running for
-      # later runs, so by now every Data Source runs at once. Stopping them
-      # frees the runner's memory for the MSRV steps; each test starts its
-      # container again when it needs it.
-      - name: Stop test containers
-        run: |
-          free -h
-          docker stats --no-stream
-          docker ps -q --filter name=scalardb-analytics-connector-test- | xargs -r docker stop
-          free -h
       - name: Verify MSRV build
         run: nix develop .#msrv --command cargo build --workspace --all-targets
       - name: Verify MSRV tests
