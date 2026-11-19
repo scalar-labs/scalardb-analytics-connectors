@@ -53,8 +53,8 @@
             "rustfmt"
           ];
           msrvToolchain = (fenix.packages.${system}.toolchainOf {
-            channel = "1.88.0";
-            sha256 = "sha256-Qxt8XAuaUR2OMdKbN4u8dBJOhSHxS+uS06Wl9+flVEk=";
+            channel = "1.94.1";
+            sha256 = "sha256-zC8E38iDVJ1oPIzCqTk/Ujo9+9kx9dXq7wAwPMpkpg0=";
           }).withComponents [
             "cargo"
             "rustc"

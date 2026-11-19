@@ -72,13 +72,13 @@ nix develop
 direnv allow
 ```
 
-The workspace uses Rust 2024 and declares Rust 1.88 as its minimum supported
-version, which the ODBC crates that `connector-odbc` uses require. The `msrv` shell
-supplies exactly Rust 1.88.0. Run the same checks as CI through the flake. The
-PostgreSQL and MySQL connectors' tests, the library's tests with their
-`postgresql` and `mysql` features, and `connector-odbc`'s tests also need
-Docker, which they use to start a PostgreSQL or MySQL server, and the SQL
-Server through ODBC connector's tests use it to start a SQL Server:
+The workspace uses Rust 2024 and declares Rust 1.94.1 as its minimum supported
+version, which the AWS SDK for Rust that the DynamoDB connector reads through
+requires. The `msrv` shell supplies exactly Rust 1.94.1. Run the same checks as
+CI through the flake. The PostgreSQL and MySQL connectors' tests, the library's
+tests with their `postgresql` and `mysql` features, and `connector-odbc`'s tests
+also need Docker, which they use to start a PostgreSQL or MySQL server, and the
+SQL Server through ODBC connector's tests use it to start a SQL Server:
 
 ```sh
 nix develop --command cargo fmt --all -- --check
