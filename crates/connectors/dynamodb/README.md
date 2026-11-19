@@ -232,10 +232,24 @@ Neither DynamoDB nor DynamoDB Local has been tested.
 `tests/mock` drives the connector through the SDK's runtime against a mock
 endpoint that the test serves over HTTP on a local port with canned DynamoDB
 responses, including the IAM denials, rejected credentials, and throttling
-that DynamoDB Local does not produce. It needs no container or network access:
+that DynamoDB Local does not produce. It needs no container or network access.
+
+`tests/conformance` runs the SDK's connector conformance suite with this
+connector's fixture against DynamoDB Local, which it starts with Docker in
+memory, with one database for every access key (`-sharedDb`) and a 256 MB
+Java heap. The fixture's credentials reach DynamoDB Local through a proxy
+in the test, which adds what DynamoDB Local does not emulate: it answers the
+requests an access key's policy denies with `AccessDeniedException` or
+`UnrecognizedClientException`, holds a read of one table and the
+`DescribeTable` of another until the client closes the connection, serves
+an endless `Scan`, counts the requests it is answering, and breaks every
+connection on request. The fixture prepares its tables directly in DynamoDB
+Local.
 
 ```sh
 nix develop --command cargo test -p connector-dynamodb
 ```
 
-The conformance suite does not run against this connector yet.
+`DYNAMODB_TEST_IMAGE` selects another image (default
+`amazon/dynamodb-local:3.3.2`). The container is kept between runs and can be
+removed with `docker rm -f`.

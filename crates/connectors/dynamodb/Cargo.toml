@@ -45,7 +45,8 @@ jsonschema.workspace = true
 prost.workspace = true
 serde_json.workspace = true
 substrait.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# The conformance proxy reads and writes HTTP on its own runtime.
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
 wiremock.workspace = true
 
 [lib]
