@@ -9,6 +9,7 @@ writes, and how it is tested are in
 | [postgresql](postgresql/README.md) | ADBC, through the Apache Arrow ADBC PostgreSQL driver |
 | [mysql](mysql/README.md) | ADBC, through the ADBC Driver Foundry MySQL driver |
 | [salesforce](salesforce/README.md) | Direct access, through the Salesforce REST API client in [salesforce/client](salesforce/client) |
+| [dynamodb](dynamodb/README.md) | Direct access, through the AWS SDK for Rust |
 | [sqlserver-odbc](sqlserver-odbc/README.md) | Direct access, through ODBC and the Microsoft ODBC Driver 18 for SQL Server |
 
 ## README template

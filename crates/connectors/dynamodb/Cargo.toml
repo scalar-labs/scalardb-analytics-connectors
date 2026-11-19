@@ -1,0 +1,52 @@
+[package]
+name = "connector-dynamodb"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Amazon DynamoDB connector for ScalarDB Analytics"
+
+[dependencies]
+analytics-types.workspace = true
+arrow-array.workspace = true
+# Planned queries carry the Arrow schema the items are decoded into as JSON.
+arrow-schema = { workspace = true, features = ["serde"] }
+# The SDK's credential chain, without SSO and credential processes.
+aws-config = { workspace = true, features = ["rt-tokio"] }
+# Tells a credential-chain failure from other failures to send a request.
+aws-credential-types.workspace = true
+aws-sdk-dynamodb = { workspace = true, features = ["rt-tokio"] }
+# The HTTPS client: rustls on ring, which builds no native library.
+aws-smithy-http-client = { workspace = true, features = ["rustls-ring"] }
+# Binary values in the DynamoDB JSON of the `item` column.
+base64.workspace = true
+connector-sdk.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+# Endpoint URLs are checked as the SDK parses them.
+http.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+# The SDK's futures run on a runtime the connector holds; its I/O and timers
+# need the runtime's drivers.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+# Shared config profiles in tests that the connector must not follow.
+aws-runtime.workspace = true
+# Batches of reads in tests are downcast to their arrays.
+arrow-array.workspace = true
+connector-sdk = { workspace = true, features = ["conformance"] }
+# Source metadata is checked against the JSON Schema the static information
+# publishes.
+jsonschema.workspace = true
+prost.workspace = true
+serde_json.workspace = true
+substrait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock.workspace = true
+
+[lib]
+path = "src/lib.rs"
