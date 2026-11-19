@@ -9,6 +9,7 @@ description = "C API implementation and connector assembly"
 
 [features]
 default = []
+dynamodb = ["dep:connector-dynamodb"]
 mysql = ["dep:connector-mysql"]
 postgresql = ["dep:connector-postgresql"]
 salesforce = ["dep:connector-salesforce"]
@@ -23,6 +24,7 @@ analytics-types.workspace = true
 arrow-array = { workspace = true, features = ["ffi"] }
 arrow-schema.workspace = true
 connector-sdk.workspace = true
+connector-dynamodb = { workspace = true, optional = true }
 connector-mysql = { workspace = true, optional = true }
 connector-postgresql = { workspace = true, optional = true }
 connector-salesforce = { workspace = true, optional = true }

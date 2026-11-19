@@ -8,7 +8,9 @@ implemented, and the PostgreSQL connector
 ([crates/connectors/postgresql](crates/connectors/postgresql/README.md)), the
 MySQL connector ([crates/connectors/mysql](crates/connectors/mysql/README.md)),
 the Salesforce connector
-([crates/connectors/salesforce](crates/connectors/salesforce/README.md)), and
+([crates/connectors/salesforce](crates/connectors/salesforce/README.md)), the
+DynamoDB connector
+([crates/connectors/dynamodb](crates/connectors/dynamodb/README.md)), and
 the SQL Server through ODBC connector
 ([crates/connectors/sqlserver-odbc](crates/connectors/sqlserver-odbc/README.md))
 are implemented on them.
@@ -39,6 +41,7 @@ connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> anal
              +-> connector-mysql ------> connector-sql
              +-> connector-salesforce -> connector-salesforce-client
              |                        +------------------> connector-sdk
+             +-> connector-dynamodb ---------------------> connector-sdk
              +-> connector-sqlserver-odbc -> connector-sql
              |                         +-> connector-odbc -> connector-sdk
              +-> connector-sdk -----------------------------------> analytics-types

@@ -24,6 +24,8 @@ pub(crate) fn built_in_connectors() -> &'static [BuiltInConnector] {
             BuiltInConnector::of::<connector_mysql::MysqlConnector>(),
             #[cfg(feature = "salesforce")]
             BuiltInConnector::of::<connector_salesforce::SalesforceConnector>(),
+            #[cfg(feature = "dynamodb")]
+            BuiltInConnector::of::<connector_dynamodb::DynamoDbConnector>(),
             #[cfg(feature = "sqlserver-odbc")]
             BuiltInConnector::of::<connector_sqlserver_odbc::SqlServerConnector>(),
         ]

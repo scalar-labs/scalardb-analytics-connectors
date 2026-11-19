@@ -927,6 +927,7 @@ dependencies = [
  "arrow-schema",
  "cbindgen",
  "connector-api",
+ "connector-dynamodb",
  "connector-mysql",
  "connector-postgresql",
  "connector-salesforce",
