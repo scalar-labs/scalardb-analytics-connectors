@@ -4,7 +4,7 @@ The DynamoDB connector reads Amazon DynamoDB through the AWS SDK for Rust
 (direct access). It lists tables with `ListTables`, reads each table's keys
 from `DescribeTable`, maps the key attributes' types by its
 [type mapping](#type-mapping), and reads items with one sequential `Scan` per
-read. DynamoDB declares the types of key attributes only, so a table's columns
+read, or one `Query` when the read filters by the partition key. DynamoDB declares the types of key attributes only, so a table's columns
 are its key attributes and one `item` column that holds each whole item as
 DynamoDB JSON.
 
@@ -60,14 +60,16 @@ statuses that no code names follow `src/error_handler.rs`.
 DynamoDB's message is returned for each code above except
 `ValidationException`, whose message can quote the request's expressions.
 
-A read is one `Scan` of one segment, following `LastEvaluatedKey` from page to
-page, each page requested when the previous one has been pulled. Reads are
-eventually consistent, at half the read capacity of strongly consistent ones.
-A `Scan` is not a point-in-time view of the table either way, so the connector
-does not claim that a read sees one state of the table
-([Consistency](../../../docs/connector-contract.md#consistency)). A projection
-reduces the data DynamoDB returns but not the read capacity a `Scan` consumes,
-which follows the size of the items read. Cancelling a read, or its timeout,
+A read is one `Scan` of one segment, or one `Query` of one partition when its
+filter moves into a key condition ([Pushdown](#pushdown)), following
+`LastEvaluatedKey` from page to page, each page requested when the previous one
+has been pulled. Reads are eventually consistent, at half the read capacity of
+strongly consistent ones. Neither a `Scan` nor a `Query` is a point-in-time
+view either way, so the connector does not claim that a read sees one state of
+the table ([Consistency](../../../docs/connector-contract.md#consistency)). A
+projection reduces the data DynamoDB returns but not the read capacity a read
+consumes, which follows the size of the items read; a `Query` reads only the
+items its key condition selects. Cancelling a read, or its timeout,
 drops the request in flight; a page DynamoDB has already started reading still
 consumes its capacity.
 
@@ -166,8 +168,8 @@ type.
 
 | Data Source type | Analytics type | DynamoDB's comparison | Runs remotely |
 | --- | --- | --- | --- |
-| `S` | `Text` | The same: by the bytes of the UTF-8 encoding | None |
-| `B` | `Blob` | The same: by unsigned bytes | None |
+| `S` | `Text` | The same: by the bytes of the UTF-8 encoding | Key conditions ([Pushdown](#pushdown)) |
+| `B` | `Blob` | The same: by unsigned bytes | Key conditions ([Pushdown](#pushdown)) |
 | `item` | `Json` | None | None |
 
 `N` is not mapped: a number holds up to 38 significant digits with an exponent
@@ -192,8 +194,9 @@ a connection option, such as a declared schema, or inferred by sampling items;
 neither is a mapping rule of this version, and either would make a table's
 columns depend on that option.
 
-`S` and `B` comparisons agree with the Analytics comparison but stay in the
-local plan; see [Pushdown](#pushdown).
+`S` and `B` comparisons agree with the Analytics comparison, and a key is
+never NULL, so a `Query`'s key condition evaluates them with the offered
+meaning.
 
 ## Coverage
 
@@ -205,8 +208,8 @@ carried and is a `data` error; DynamoDB does not store such items.
 
 | Offered work | Runs remotely when |
 | --- | --- |
-| Filter | Never. A filter expression is applied after items are read, so it saves no read capacity, and it is false rather than NULL for a missing attribute. |
-| Projection | It selects at least one plain column and no filter remains local below it. A projection of key columns becomes the `Scan`'s projection expression, with a placeholder for each attribute name, so whole items are not returned; one that selects `item` reads whole items without a projection expression. A column projected twice is read once and repeated in the output. |
+| Filter | Its conjuncts, those of its top-level `AND`s, include the partition key's equality with a literal. That conjunct, and the first comparison (`=`, `<`, `<=`, `>`, `>=`) of the sort key with a literal, become the key condition of a `Query`; every other conjunct stays local. A literal that is empty or longer than DynamoDB allows for the key (2048 bytes for a partition key, 1024 for a sort key) does not qualify, since DynamoDB refuses it. A key of type `N` is not mapped, so it is never compared remotely. No other filter runs remotely: a filter expression is applied after items are read, so it saves no read capacity, and it is false rather than NULL for a missing attribute. |
+| Projection | It selects at least one plain column and no filter remains local below it. A projection of key columns becomes the read's projection expression, with a placeholder for each attribute name, so whole items are not returned; one that selects `item` reads whole items without a projection expression. A column projected twice is read once and repeated in the output. |
 
 ## Known limitations
 

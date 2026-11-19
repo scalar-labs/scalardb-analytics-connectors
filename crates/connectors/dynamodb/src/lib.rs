@@ -4,8 +4,8 @@
 //! protocol: request signing, the credential chain, endpoints, retries, and
 //! the JSON forms of attribute values. The connector holds what the data
 //! means: the catalog read from `ListTables` and `DescribeTable` and its type
-//! mapping, the `Scan` that implements a read, and the classification of
-//! DynamoDB's errors.
+//! mapping, the `Scan` or `Query` that implements a read, and the
+//! classification of DynamoDB's errors.
 //!
 //! DynamoDB declares the types of key attributes only, so a table's columns
 //! are its key attributes and one `item` column that holds each whole item
@@ -27,7 +27,7 @@ pub use catalog::{
 };
 pub use error_handler::{DynamoDbErrorHandler, Error, TransportKind};
 pub use pushdown::{DynamoDbPlanner, PlanningFacts};
-pub use query::{DynamoDbExecutor, Projected, TableRead};
+pub use query::{Comparison, DynamoDbExecutor, KeyComparison, KeyValue, Projected, TableRead};
 
 use std::sync::Arc;
 

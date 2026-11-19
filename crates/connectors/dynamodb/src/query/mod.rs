@@ -1,5 +1,6 @@
-//! The planned query and running it: one `Scan` of a table, what it projects
-//! from each item, and decoding its items into Arrow batches.
+//! The planned query and running it: one `Scan` of a table, or one `Query` of
+//! a partition, what it projects from each item, and decoding its items into
+//! Arrow batches.
 
 mod item;
 
@@ -10,7 +11,7 @@ use arrow_array::{
     ArrayRef, RecordBatch, RecordBatchOptions,
     builder::{BinaryBuilder, StringBuilder},
 };
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::{primitives::Blob, types::AttributeValue};
 use connector_sdk::{
     Connector, ConnectorError, ErrorKind, ExecutionOutput, Executor, PortableQuery, Session,
 };
@@ -19,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DynamoDbConnector, Error, catalog::ITEM};
 
-/// One read of a table implementing a remote plan.
+/// One read of a table implementing a remote plan: a `Scan` of the table,
+/// or a `Query` of the items `key_condition` selects when it is not empty.
 ///
 /// The read decodes `values` from each item, each once, and `columns` places
 /// them in the remote output: output column `i` is `values[columns[i]]`.
@@ -31,8 +33,39 @@ use crate::{DynamoDbConnector, Error, catalog::ITEM};
 pub struct TableRead {
     /// The table's name.
     pub table: String,
+    /// The key condition of a `Query`: the partition key's equality, then at
+    /// most one comparison of the sort key. Empty for a `Scan`.
+    pub key_condition: Vec<KeyComparison>,
     pub values: Vec<Projected>,
     pub columns: Vec<usize>,
+}
+
+/// One comparison of a key attribute with a value, in a `Query`'s key
+/// condition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyComparison {
+    /// The key attribute's name.
+    pub attribute: String,
+    pub comparison: Comparison,
+    pub value: KeyValue,
+}
+
+/// A comparison a key condition can make, with the key attribute on its left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Comparison {
+    Equal,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+}
+
+/// A key attribute's value: a string or binary, the key types the type
+/// mapping maps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyValue {
+    S(String),
+    B(Vec<u8>),
 }
 
 /// What a read decodes from each item.
@@ -49,6 +82,7 @@ pub enum Projected {
 #[derive(Serialize, Deserialize)]
 struct TableReadBytes {
     table: String,
+    key_condition: Vec<KeyComparison>,
     values: Vec<ProjectedBytes>,
     columns: Vec<usize>,
 }
@@ -65,6 +99,7 @@ impl PortableQuery for TableRead {
     fn to_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(&TableReadBytes {
             table: self.table.clone(),
+            key_condition: self.key_condition.clone(),
             values: self
                 .values
                 .iter()
@@ -102,6 +137,7 @@ impl PortableQuery for TableRead {
         }
         Ok(Self {
             table: read.table,
+            key_condition: read.key_condition,
             values,
             columns: read.columns,
         })
@@ -118,25 +154,79 @@ impl Projected {
     }
 }
 
+impl Comparison {
+    fn operator(self) -> &'static str {
+        match self {
+            Self::Equal => "=",
+            Self::Less => "<",
+            Self::LessOrEqual => "<=",
+            Self::Greater => ">",
+            Self::GreaterOrEqual => ">=",
+        }
+    }
+}
+
+impl KeyValue {
+    fn attribute_value(&self) -> AttributeValue {
+        match self {
+            Self::S(text) => AttributeValue::S(text.clone()),
+            Self::B(bytes) => AttributeValue::B(Blob::new(bytes.clone())),
+        }
+    }
+}
+
+/// The expressions every request of one read carries.
+///
+/// Names and values are placeholders, so that any attribute name and value
+/// can be sent: `#a` for a projected attribute, `#k` and `:k` for a key
+/// comparison's attribute and value. DynamoDB refuses an empty or unused
+/// placeholder map, so each map is `None` when nothing uses it.
+#[derive(Clone)]
+struct Expressions {
+    /// `None` when the read decodes whole items, which DynamoDB returns
+    /// without a projection expression.
+    projection: Option<String>,
+    key_condition: Option<String>,
+    names: Option<HashMap<String, String>>,
+    values: Option<HashMap<String, AttributeValue>>,
+}
+
 impl TableRead {
-    /// The projection expression, with a placeholder per attribute so that
-    /// any attribute name can be projected, and the names the placeholders
-    /// stand for; `None` when the read decodes whole items, which DynamoDB
-    /// returns without one.
-    fn projection(&self) -> Option<(String, HashMap<String, String>)> {
+    fn expressions(&self) -> Expressions {
         let mut names = HashMap::new();
-        let mut placeholders = Vec::new();
-        for (index, value) in self.values.iter().enumerate() {
-            match value {
+        let projection = self
+            .values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| match value {
                 Projected::Attribute(field) => {
                     let placeholder = format!("#a{index}");
                     names.insert(placeholder.clone(), field.name().to_owned());
-                    placeholders.push(placeholder);
+                    Some(placeholder)
                 }
-                Projected::Item => return None,
-            }
+                Projected::Item => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        if projection.is_none() {
+            names.clear();
         }
-        Some((placeholders.join(", "), names))
+        let mut values = HashMap::new();
+        let key_condition = self
+            .key_condition
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                names.insert(format!("#k{index}"), key.attribute.clone());
+                values.insert(format!(":k{index}"), key.value.attribute_value());
+                format!("#k{index} {} :k{index}", key.comparison.operator())
+            })
+            .collect::<Vec<_>>();
+        Expressions {
+            projection: projection.map(|placeholders| placeholders.join(", ")),
+            key_condition: (!key_condition.is_empty()).then(|| key_condition.join(" AND ")),
+            names: (!names.is_empty()).then_some(names),
+            values: (!values.is_empty()).then_some(values),
+        }
     }
 
     /// Decodes one page of items into the remote output's columns.
@@ -251,8 +341,8 @@ fn decode_attribute(
 /// Runs a planned read through the SDK.
 pub struct DynamoDbExecutor;
 
-/// Where the next `Scan` page starts: the first page, after an evaluated key,
-/// or nowhere once the last page was read.
+/// Where the next page starts: the first page, after an evaluated key, or
+/// nowhere once the last page was read.
 enum Page {
     First,
     After(HashMap<String, AttributeValue>),
@@ -260,9 +350,9 @@ enum Page {
 }
 
 impl Executor<DynamoDbConnector> for DynamoDbExecutor {
-    /// Returns one batch per non-empty `Scan` page, with the remote output's
-    /// columns in order. Each page is requested when the previous one has
-    /// been pulled, starting after its `LastEvaluatedKey`.
+    /// Returns one batch per non-empty `Scan` or `Query` page, with the
+    /// remote output's columns in order. Each page is requested when the
+    /// previous one has been pulled, starting after its `LastEvaluatedKey`.
     fn run(
         session: &Session<DynamoDbConnector>,
         query: &TableRead,
@@ -274,14 +364,13 @@ impl Executor<DynamoDbConnector> for DynamoDbExecutor {
                 .map(|column| query.values[*column].field().to_arrow())
                 .collect::<Vec<_>>(),
         ));
-        let (expression, names) = query.projection().unzip();
+        let expressions = query.expressions();
         let client = session.access().client.clone();
         let query = query.clone();
         let batches = stream::try_unfold(Page::First, move |page| {
             let client = client.clone();
             let schema = Arc::clone(&schema);
-            let expression = expression.clone();
-            let names = names.clone();
+            let expressions = expressions.clone();
             let query = query.clone();
             async move {
                 let mut page = page;
@@ -291,21 +380,41 @@ impl Executor<DynamoDbConnector> for DynamoDbExecutor {
                         Page::After(key) => Some(key),
                         Page::Done => return Ok(None),
                     };
-                    let output = client
-                        .scan()
-                        .table_name(&query.table)
-                        .set_projection_expression(expression.clone())
-                        .set_expression_attribute_names(names.clone())
-                        .consistent_read(false)
-                        .set_exclusive_start_key(start)
-                        .send()
-                        .await
-                        .map_err(|error| DynamoDbConnector::classify(Error::from(error)))?;
-                    page = match output.last_evaluated_key {
+                    let (items, last_evaluated_key) = match expressions.key_condition.clone() {
+                        None => {
+                            let output = client
+                                .scan()
+                                .table_name(&query.table)
+                                .set_projection_expression(expressions.projection.clone())
+                                .set_expression_attribute_names(expressions.names.clone())
+                                .consistent_read(false)
+                                .set_exclusive_start_key(start)
+                                .send()
+                                .await
+                                .map_err(|error| DynamoDbConnector::classify(Error::from(error)))?;
+                            (output.items, output.last_evaluated_key)
+                        }
+                        Some(key_condition) => {
+                            let output = client
+                                .query()
+                                .table_name(&query.table)
+                                .key_condition_expression(key_condition)
+                                .set_projection_expression(expressions.projection.clone())
+                                .set_expression_attribute_names(expressions.names.clone())
+                                .set_expression_attribute_values(expressions.values.clone())
+                                .consistent_read(false)
+                                .set_exclusive_start_key(start)
+                                .send()
+                                .await
+                                .map_err(|error| DynamoDbConnector::classify(Error::from(error)))?;
+                            (output.items, output.last_evaluated_key)
+                        }
+                    };
+                    page = match last_evaluated_key {
                         Some(key) if !key.is_empty() => Page::After(key),
                         _ => Page::Done,
                     };
-                    let items = output.items.unwrap_or_default();
+                    let items = items.unwrap_or_default();
                     if !items.is_empty() {
                         return Ok(Some((query.decode(&schema, &items)?, page)));
                     }

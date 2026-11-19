@@ -8,6 +8,7 @@
 
 mod connection;
 mod metadata;
+mod queries;
 mod reads;
 
 use std::{sync::Arc, time::Duration};
