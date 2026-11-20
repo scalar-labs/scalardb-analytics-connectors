@@ -1,5 +1,8 @@
 {
   "connectors": {
+    "databricks": {
+      "dependencies": ["adbc_driver_databricks"]
+    },
     "mysql": {
       "dependencies": ["adbc_driver_mysql"]
     },
@@ -8,6 +11,43 @@
     }
   },
   "dependencies": {
+    "adbc_driver_databricks": {
+      "kind": "adbc-driver-archive",
+      "name": "ADBC Driver Foundry Driver for Databricks",
+      "version": "0.4.0",
+      "licenses": ["LICENSE", "NOTICE"],
+      "sources": [
+        {
+          "name": "hashicorp/go-cleanhttp",
+          "version": "0.5.2",
+          "license": "MPL-2.0",
+          "url": "https://github.com/hashicorp/go-cleanhttp/tree/v0.5.2"
+        },
+        {
+          "name": "hashicorp/go-retryablehttp",
+          "version": "0.7.8",
+          "license": "MPL-2.0",
+          "url": "https://github.com/hashicorp/go-retryablehttp/tree/v0.7.8"
+        }
+      ],
+      "archives": {
+        "osx_arm64": {
+          "url": "https://github.com/adbc-drivers/databricks/releases/download/go%2Fv0.4.0/databricks_macos_arm64_v0.4.0.tar.gz",
+          "hash": "sha256-InCJ+jtI2SlO1U1xWRwCRFidozXHG7V15/NZk2CBuO0=",
+          "library": "libadbc_driver_databricks.dylib"
+        },
+        "linux_arm64": {
+          "url": "https://github.com/adbc-drivers/databricks/releases/download/go%2Fv0.4.0/databricks_linux_arm64_v0.4.0.tar.gz",
+          "hash": "sha256-R7Mn0aNtsHv+A0aZKfaL6paI9Cnat3+rXsa02jwpDiA=",
+          "library": "libadbc_driver_databricks.so"
+        },
+        "linux_amd64": {
+          "url": "https://github.com/adbc-drivers/databricks/releases/download/go%2Fv0.4.0/databricks_linux_amd64_v0.4.0.tar.gz",
+          "hash": "sha256-1g3HHS+Akdmv/BL5+3649LhoR6Scqxj93zUVB3Hj9cI=",
+          "library": "libadbc_driver_databricks.so"
+        }
+      }
+    },
     "adbc_driver_mysql": {
       "kind": "adbc-driver-archive",
       "name": "ADBC Driver Foundry Driver for MySQL",

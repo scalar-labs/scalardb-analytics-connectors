@@ -143,6 +143,39 @@
               EOF
             '';
           };
+          # The ADBC Driver Foundry Databricks driver that the Databricks
+          # connector's tests load, from the release tarball the distribution
+          # package ships (packaging/dependencies.json). It ships one
+          # self-contained shared library; no build is published for
+          # x86_64-darwin.
+          adbcDriverDatabricksPin =
+            (builtins.fromJSON (builtins.readFile ./packaging/dependencies.json))
+            .dependencies.adbc_driver_databricks;
+          adbcDriverDatabricksArchive = adbcDriverDatabricksPin.archives.${duckdbPlatform} or null;
+          adbcDriverDatabricks = pkgs.stdenv.mkDerivation {
+            pname = "adbc-driver-databricks";
+            version = adbcDriverDatabricksPin.version;
+            src = pkgs.fetchurl { inherit (adbcDriverDatabricksArchive) url hash; };
+            sourceRoot = ".";
+            dontBuild = true;
+            dontFixup = true;
+            # Install the library with an ADBC driver manifest, through which
+            # connectors load the driver and learn its version. The manifest
+            # names the library relative to itself, as in the distribution
+            # package.
+            installPhase = ''
+              install -Dm755 ${adbcDriverDatabricksArchive.library} \
+                $out/lib/${adbcDriverDatabricksArchive.library}
+              cat > $out/lib/adbc_driver_databricks.toml <<EOF
+              manifest_version = 1
+              name = "${adbcDriverDatabricksPin.name}"
+              version = "${adbcDriverDatabricksPin.version}"
+
+              [Driver]
+              shared = "${adbcDriverDatabricksArchive.library}"
+              EOF
+            '';
+          };
           # Directory of the ADBC drivers that connector tests load.
           adbcDriverDirectory = "${
             pkgs.symlinkJoin {
@@ -150,7 +183,8 @@
               paths = [
                 adbcDriverPostgresql
               ]
-              ++ pkgs.lib.optionals (adbcDriverMysqlTarballs ? ${system}) [ adbcDriverMysql ];
+              ++ pkgs.lib.optionals (adbcDriverMysqlTarballs ? ${system}) [ adbcDriverMysql ]
+              ++ pkgs.lib.optionals (adbcDriverDatabricksArchive != null) [ adbcDriverDatabricks ];
             }
           }/lib";
           # The ODBC driver manager that connector-odbc links.
@@ -296,6 +330,9 @@
           }
           // pkgs.lib.optionalAttrs (adbcDriverMysqlTarballs ? ${system}) {
             adbc-driver-mysql = adbcDriverMysql;
+          }
+          // pkgs.lib.optionalAttrs (adbcDriverDatabricksArchive != null) {
+            adbc-driver-databricks = adbcDriverDatabricks;
           };
 
           _module.args.pkgs = import nixpkgs {
