@@ -570,8 +570,12 @@ dependencies = [
  "connector-adbc",
  "connector-sdk",
  "connector-sql",
+ "reqwest",
  "schemars 1.2.3",
  "serde",
+ "serde_json",
+ "substrait",
+ "tokio",
 ]
 
 [[package]]

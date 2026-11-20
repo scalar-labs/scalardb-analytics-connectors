@@ -19,6 +19,11 @@ serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 arrow-buffer.workspace = true
+connector-sdk = { workspace = true, features = ["conformance"] }
+reqwest.workspace = true
+serde_json.workspace = true
+substrait.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "time"] }
 
 [lib]
 path = "src/lib.rs"
