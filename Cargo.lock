@@ -559,6 +559,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector-databricks"
+version = "0.1.0"
+dependencies = [
+ "adbc_core",
+ "analytics-types",
+ "arrow-array",
+ "connector-adbc",
+ "connector-sdk",
+ "connector-sql",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
 name = "connector-mysql"
 version = "0.1.0"
 dependencies = [

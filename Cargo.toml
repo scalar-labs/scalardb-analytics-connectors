@@ -7,6 +7,7 @@ members = [
     "crates/connector-odbc",
     "crates/connectors/postgresql",
     "crates/connectors/mysql",
+    "crates/connectors/databricks",
     "crates/connectors/salesforce",
     "crates/connectors/sqlserver-odbc",
     "crates/connectors/salesforce/client",
@@ -39,6 +40,7 @@ connector-sql = { path = "crates/connector-sql" }
 connector-odbc = { path = "crates/connector-odbc" }
 connector-postgresql = { path = "crates/connectors/postgresql" }
 connector-mysql = { path = "crates/connectors/mysql" }
+connector-databricks = { path = "crates/connectors/databricks" }
 connector-salesforce = { path = "crates/connectors/salesforce" }
 connector-sqlserver-odbc = { path = "crates/connectors/sqlserver-odbc" }
 connector-salesforce-client = { path = "crates/connectors/salesforce/client" }

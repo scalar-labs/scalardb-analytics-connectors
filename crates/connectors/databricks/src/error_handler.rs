@@ -1,0 +1,351 @@
+//! The Databricks error table and the redaction of the ADBC driver's
+//! diagnostics.
+//!
+//! Databricks names each error with an error class, which its messages carry
+//! in brackets, such as `[TABLE_OR_VIEW_NOT_FOUND]`, and its REST responses as
+//! an error code, such as `TEMPORARILY_UNAVAILABLE`. The table reads the
+//! names from the message and the SQLSTATE beside them.
+
+use connector_adbc::AdbcDiagnostic;
+use connector_sdk::{ErrorClass, ErrorHandler, ErrorKind};
+
+/// The Databricks connector's handling of the ADBC driver's errors.
+pub struct DatabricksErrorHandler;
+
+/// The error class of a syntax error, whose message quotes the statement
+/// from where parsing stopped; the statement carries filter literals.
+const PARSE_SYNTAX_ERROR: &str = "PARSE_SYNTAX_ERROR";
+
+impl ErrorHandler for DatabricksErrorHandler {
+    type Diagnostic = AdbcDiagnostic;
+
+    /// The Databricks error table, applied before the SQLSTATE classes.
+    fn classify(diagnostic: &AdbcDiagnostic) -> Option<ErrorClass> {
+        classify(diagnostic.sqlstate_bytes(), diagnostic.message())
+    }
+
+    /// Keeps the first line of a message, since Databricks adds the statement
+    /// or its plan on later lines, and removes a syntax error's text, which
+    /// quotes the statement.
+    fn redact(diagnostic: AdbcDiagnostic) -> AdbcDiagnostic {
+        let message = diagnostic.message();
+        let first_line = message.lines().next().unwrap_or_default();
+        let redacted = if let Some(start) = first_line.find(PARSE_SYNTAX_ERROR) {
+            let end = start + PARSE_SYNTAX_ERROR.len();
+            let end = end + usize::from(first_line[end..].starts_with(']'));
+            format!("{}: the statement's text was removed", &first_line[..end])
+        } else if first_line.len() == message.len() {
+            return diagnostic;
+        } else {
+            format!("{first_line} (later lines removed)")
+        };
+        AdbcDiagnostic::new(
+            diagnostic.status(),
+            redacted,
+            *diagnostic.sqlstate_bytes(),
+            diagnostic.vendor_code(),
+            diagnostic.details().clone(),
+        )
+    }
+}
+
+/// Classifies a Databricks error by the error classes or codes its message
+/// names and its SQLSTATE; `None` leaves it to the SQLSTATE classes and the
+/// ADBC status.
+///
+/// A missing table, schema, or catalog is `not found`, not `does not exist`,
+/// because Unity Catalog reports an object the principal holds no privilege
+/// on the same way.
+pub(crate) fn classify(sqlstate: &[u8; 5], message: &str) -> Option<ErrorClass> {
+    let by_name = error_names(message).find_map(|name| {
+        Some(match name {
+            "UNAUTHENTICATED" => ErrorClass::new(
+                ErrorKind::Authentication,
+                false,
+                "the workspace rejected the credentials",
+            ),
+            "INSUFFICIENT_PERMISSIONS" | "PERMISSION_DENIED" => permission_denied(),
+            "TABLE_OR_VIEW_NOT_FOUND" | "SCHEMA_NOT_FOUND" | "CATALOG_NOT_FOUND" => not_found(),
+            "TEMPORARILY_UNAVAILABLE" | "RESOURCE_EXHAUSTED" | "REQUEST_LIMIT_EXCEEDED" => {
+                ErrorClass::new(
+                    ErrorKind::Resource,
+                    true,
+                    "the workspace or SQL warehouse is busy or temporarily unavailable",
+                )
+            }
+            "INTERNAL_ERROR" => ErrorClass::new(
+                ErrorKind::DataSource,
+                true,
+                "the workspace failed with an internal error",
+            ),
+            _ => return None,
+        })
+    });
+    by_name.or_else(|| match sqlstate {
+        b"42501" => Some(permission_denied()),
+        b"42P01" => Some(not_found()),
+        _ => None,
+    })
+}
+
+fn permission_denied() -> ErrorClass {
+    ErrorClass::new(
+        ErrorKind::PermissionDenied,
+        false,
+        "the principal lacks a privilege the request needs",
+    )
+}
+
+fn not_found() -> ErrorClass {
+    ErrorClass::new(
+        ErrorKind::NotFound,
+        false,
+        "a registered table is not found; the principal may not see it",
+    )
+}
+
+/// The names of `message` that can name its error class or code.
+///
+/// A Databricks SQL error states its class first, in brackets, and its text
+/// after the class can quote identifiers and values, such as a column named
+/// `INTERNAL_ERROR` or a malformed value `'TEMPORARILY_UNAVAILABLE'`, so a
+/// message with a bracketed class names that class only. Any other message,
+/// such as a REST error code, names each of its [`name_words`].
+fn error_names(message: &str) -> impl Iterator<Item = &str> {
+    let class = message.split('[').skip(1).find_map(|rest| {
+        let (inside, _) = rest.split_once(']')?;
+        let name = name_words(inside).next()?;
+        (inside.split('.').next() == Some(name)).then_some(name)
+    });
+    let words = class
+        .is_none()
+        .then(|| name_words(message))
+        .into_iter()
+        .flatten();
+    class.into_iter().chain(words)
+}
+
+/// The words of `message` that can name an error class or code: runs of
+/// upper-case letters, digits, underscores, and dots that start with a
+/// letter and contain an underscore or are a known one-word code, such as
+/// `TABLE_OR_VIEW_NOT_FOUND` or `UNRESOLVED_COLUMN.WITH_SUGGESTION`. A class
+/// with a subclass after a dot names its main class.
+fn name_words(message: &str) -> impl Iterator<Item = &str> {
+    message
+        .split(|character: char| {
+            !(character.is_ascii_uppercase()
+                || character.is_ascii_digit()
+                || character == '_'
+                || character == '.')
+        })
+        .map(|word| word.split('.').next().unwrap_or_default())
+        .filter(|word| {
+            word.starts_with(|character: char| character.is_ascii_uppercase())
+                && (word.contains('_') || *word == "UNAUTHENTICATED")
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use adbc_core::error::Status;
+    use connector_adbc::{AdbcDetails, AdbcStatus};
+    use connector_sdk::Connector;
+
+    use super::*;
+    use crate::DatabricksConnector;
+
+    fn diagnostic(status: Status, sqlstate: &[u8; 5], message: &str) -> AdbcDiagnostic {
+        AdbcDiagnostic::new(
+            AdbcStatus::Known(status),
+            message,
+            *sqlstate,
+            0,
+            AdbcDetails::Missing,
+        )
+    }
+
+    fn kind(status: Status, sqlstate: &[u8; 5], message: &str) -> (ErrorKind, bool) {
+        let error = DatabricksConnector::classify(diagnostic(status, sqlstate, message));
+        (error.kind(), error.retryable())
+    }
+
+    #[test]
+    fn error_classes_in_messages_decide_the_kind() {
+        for (sqlstate, message, expected) in [
+            (
+                b"42P01",
+                "[TABLE_OR_VIEW_NOT_FOUND] The table or view `main`.`s`.`t` cannot be found. \
+                 SQLSTATE: 42P01",
+                (ErrorKind::NotFound, false),
+            ),
+            (
+                b"42704",
+                "[SCHEMA_NOT_FOUND] The schema `main`.`gone` cannot be found. SQLSTATE: 42704",
+                (ErrorKind::NotFound, false),
+            ),
+            (
+                b"42704",
+                "[CATALOG_NOT_FOUND] The catalog `gone` cannot be found. SQLSTATE: 42704",
+                (ErrorKind::NotFound, false),
+            ),
+            (
+                b"42501",
+                "[INSUFFICIENT_PERMISSIONS] Insufficient privileges: User does not have \
+                 SELECT on Table 'main.s.t'. SQLSTATE: 42501",
+                (ErrorKind::PermissionDenied, false),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "PERMISSION_DENIED: User is not authorized to use this SQL Endpoint",
+                (ErrorKind::PermissionDenied, false),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "UNAUTHENTICATED: Invalid access token.",
+                (ErrorKind::Authentication, false),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "TEMPORARILY_UNAVAILABLE: the SQL warehouse is starting",
+                (ErrorKind::Resource, true),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "{\"error_code\":\"REQUEST_LIMIT_EXCEEDED\",\"message\":\"too many requests\"}",
+                (ErrorKind::Resource, true),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "[RESOURCE_EXHAUSTED] Query queue is full",
+                (ErrorKind::Resource, true),
+            ),
+            (
+                b"XX000",
+                "[INTERNAL_ERROR] Unexpected failure. SQLSTATE: XX000",
+                (ErrorKind::DataSource, true),
+            ),
+        ] {
+            assert_eq!(
+                kind(Status::Unknown, sqlstate, message),
+                expected,
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlstates_decide_when_no_class_matches() {
+        assert_eq!(
+            kind(Status::Unknown, b"42501", "denied"),
+            (ErrorKind::PermissionDenied, false)
+        );
+        assert_eq!(
+            kind(Status::Unknown, b"42P01", "missing"),
+            (ErrorKind::NotFound, false)
+        );
+    }
+
+    #[test]
+    fn other_errors_fall_back_to_sqlstate_classes_and_adbc_status() {
+        assert_eq!(
+            kind(
+                Status::Unknown,
+                b"42703",
+                "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `x` cannot be resolved."
+            ),
+            (ErrorKind::Internal, false)
+        );
+        assert_eq!(
+            kind(Status::Unauthenticated, b"\0\0\0\0\0", "HTTP 401"),
+            (ErrorKind::Authentication, false)
+        );
+        assert_eq!(
+            kind(Status::Unauthorized, b"\0\0\0\0\0", "HTTP 403"),
+            (ErrorKind::PermissionDenied, false)
+        );
+        assert_eq!(
+            kind(Status::IO, b"\0\0\0\0\0", "connection reset"),
+            (ErrorKind::Connection, true)
+        );
+        assert_eq!(
+            kind(Status::Timeout, b"\0\0\0\0\0", "deadline exceeded"),
+            (ErrorKind::Timeout, true)
+        );
+        assert_eq!(
+            kind(Status::Unknown, b"22003", "[ARITHMETIC_OVERFLOW] overflow"),
+            (ErrorKind::DataSource, false)
+        );
+    }
+
+    #[test]
+    fn error_names_are_read_from_brackets_codes_and_subclasses() {
+        assert_eq!(
+            error_names("[UNRESOLVED_COLUMN.WITH_SUGGESTION] x SQLSTATE: 42703")
+                .collect::<Vec<_>>(),
+            ["UNRESOLVED_COLUMN"]
+        );
+        assert_eq!(
+            error_names("Error: UNAUTHENTICATED, see TEMPORARILY_UNAVAILABLE").collect::<Vec<_>>(),
+            ["UNAUTHENTICATED", "TEMPORARILY_UNAVAILABLE"]
+        );
+        assert_eq!(error_names("table_or_view_not_found").count(), 0);
+        assert_eq!(
+            error_names("unexpected operation state ERROR_STATE: [TABLE_OR_VIEW_NOT_FOUND] x")
+                .collect::<Vec<_>>(),
+            ["TABLE_OR_VIEW_NOT_FOUND"]
+        );
+    }
+
+    #[test]
+    fn names_quoted_after_a_bracketed_class_do_not_decide_the_kind() {
+        assert_eq!(
+            kind(
+                Status::Unknown,
+                b"22018",
+                "[CAST_INVALID_INPUT] The value 'TEMPORARILY_UNAVAILABLE' of the type \
+                 \"STRING\" cannot be cast to \"INT\" because it is malformed. SQLSTATE: 22018"
+            ),
+            kind(Status::Unknown, b"22018", "[CAST_INVALID_INPUT] malformed")
+        );
+        assert_eq!(
+            kind(
+                Status::Unknown,
+                b"42703",
+                "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `INTERNAL_ERROR` \
+                 cannot be resolved. SQLSTATE: 42703"
+            ),
+            (ErrorKind::Internal, false)
+        );
+    }
+
+    #[test]
+    fn statement_text_never_leaves_the_connector() {
+        let error = DatabricksConnector::classify(diagnostic(
+            Status::InvalidArguments,
+            b"42601",
+            "[PARSE_SYNTAX_ERROR] Syntax error at or near ''secret''. SQLSTATE: 42601 \
+             (line 1, pos 40)\n\n== SQL ==\nSELECT * FROM t WHERE c = 'secret'\n----^^^",
+        ));
+        let message = error.data_source_message().unwrap();
+        assert!(!message.contains("secret"), "{message}");
+        assert!(message.contains("PARSE_SYNTAX_ERROR"), "{message}");
+        assert_eq!(error.kind(), ErrorKind::Internal);
+
+        let error = DatabricksConnector::classify(diagnostic(
+            Status::Unknown,
+            b"42703",
+            "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `x` cannot be resolved. \
+             SQLSTATE: 42703;\n'Filter ('c = secret)\n+- 'UnresolvedRelation [t]",
+        ));
+        let message = error.data_source_message().unwrap();
+        assert!(!message.contains("secret"), "{message}");
+        assert!(message.contains("UNRESOLVED_COLUMN"), "{message}");
+    }
+
+    #[test]
+    fn one_line_messages_are_kept() {
+        let text = "[TABLE_OR_VIEW_NOT_FOUND] The table or view `main`.`s`.`t` cannot be found.";
+        let error = DatabricksConnector::classify(diagnostic(Status::NotFound, b"42P01", text));
+        assert_eq!(error.data_source_message(), Some(text));
+    }
+}
