@@ -223,9 +223,10 @@ Only combinations that passed this crate's tests are listed.
 
 | DynamoDB | AWS SDK for Rust | Platform |
 | --- | --- | --- |
-| The tests' mock endpoint | `aws-sdk-dynamodb` 1.140.0, `aws-config` 1.13.3 | macOS arm64 |
+| The tests' mock endpoint | `aws-sdk-dynamodb` 1.140.0, `aws-config` 1.13.3 | macOS arm64, Linux x86_64 |
+| DynamoDB Local 3.3.2 | `aws-sdk-dynamodb` 1.140.0, `aws-config` 1.13.3 | Linux x86_64 |
 
-Neither DynamoDB nor DynamoDB Local has been tested.
+DynamoDB itself has not been tested.
 
 ## Tests
 
