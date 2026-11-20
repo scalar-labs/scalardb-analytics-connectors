@@ -1,26 +1,25 @@
 # Databricks connector
 
-The Databricks connector reads Databricks through a SQL warehouse with an
-ADBC driver (ADBC access). Databricks is itself the Data Source: the
-connector reads Unity Catalog through `system.information_schema` and maps
-Databricks SQL types by its [type mapping](#type-mapping), whatever format
-or federated source holds a table's data.
+The Databricks connector reads Databricks through a SQL warehouse with the
+ADBC Driver Foundry Databricks driver (ADBC access). Databricks is itself the
+Data Source: the connector reads Unity Catalog through
+`system.information_schema` and maps Databricks SQL types by its
+[type mapping](#type-mapping), whatever format or federated source holds a
+table's data.
 
-This version is not complete. The connector's options, type mapping, Unity
-Catalog reading, SQL, pushdown, and error table are implemented and tested
-without a workspace. Not yet decided or done: which ADBC driver it ships
-with, how the driver's Arrow output converts to Analytics values, the fixed
-session settings, and the conformance fixture, which needs a workspace. The
-sections below mark each item that waits on them.
+The connector has not yet run against a workspace. Everything below that
+depends on what a workspace returns is marked as to verify, and
+[Known limitations](#known-limitations) lists each item; the
+[conformance suite](#tests) checks them once it runs.
 
 ## Data Source access
 
 | Item | Value |
 | --- | --- |
-| ADBC driver | `adbc_driver_databricks`, the ADBC Driver Foundry Driver for Databricks, loaded through its driver manifest `adbc_driver_databricks.toml` in the library's ADBC driver directory. Not yet decided: see [Known limitations](#known-limitations) |
+| ADBC driver | `adbc_driver_databricks`, the ADBC Driver Foundry Driver for Databricks, loaded through its driver manifest `adbc_driver_databricks.toml` in the library's ADBC driver directory |
 | Supported driver versions | `>=0.4.0, <0.5.0` |
 | Connection options | `host`, `http_path`, `port`, `access_token` (secret), `client_id`, `client_secret` (secret), and `catalog` |
-| Fixed session settings | To be run on each connection: `SET TIME ZONE 'UTC'` and `SET ANSI_MODE = true`. Not yet run |
+| Fixed session settings | `SET TIME ZONE 'UTC'` and `SET ANSI_MODE = true`, run when a session opens |
 | Fixed driver options | None |
 
 `host` is the workspace's host name, without a scheme, port, or path, and
@@ -28,8 +27,10 @@ sections below mark each item that waits on them.
 `/sql/1.0/warehouses/<id>`, which chooses the warehouse. `port` is 443 by
 default. The connector authenticates with exactly one of a personal access
 token, `access_token`, or OAuth machine-to-machine authentication as a
-service principal, `client_id` and `client_secret`; any other combination is
-`invalid settings`. The driver refreshes the OAuth token.
+service principal, `client_id` and `client_secret`, with the scope
+`all-apis`; any other combination is `invalid settings`. The driver
+refreshes the OAuth token. Azure Entra ID tokens and user-to-machine OAuth
+are not offered.
 
 `catalog` limits the namespace list and the table list to one Unity Catalog
 catalog. It does not limit the table metadata request, and generated SQL
@@ -43,24 +44,50 @@ The connection options map to the driver's options in one function,
 `databricks.oauth.client_secret`. The driver has no option that limits
 connecting, so the library's connection timeout does not reach it.
 
+The driver has no option for session settings either, so the connector runs
+them as statements when a session opens. Each ADBC connection of the driver
+holds one database/sql connection, and so one Databricks session, which
+keeps them. The session time zone fixes the time zone `timestamp` values
+arrive in; ANSI mode makes the expressions of a view that is read raise
+errors instead of returning NULL. Generated literals depend on neither.
+The driver itself asks for native Arrow decimals, and databricks-sql-go for
+native timestamps and complex types.
+
+The driver is identified by its driver manifest, which declares its name and
+version, without `GetInfo`, as for every ADBC Driver Foundry driver
+([Data Source access](../../../docs/connector-sdk.md)).
+
+### Warehouse start and cost
+
 Opening a session connects to the warehouse, which starts a stopped
 warehouse: a serverless warehouse starts in seconds, a classic one in
-minutes. Every metadata request runs SQL on the warehouse, so it too starts
-the warehouse and keeps it running until it stops itself.
+minutes, and opening the session waits for it. Every metadata request runs
+SQL on the warehouse, so listing, reading table metadata, and planning a
+read also start the warehouse and keep it running, and billed, until it
+stops itself after its auto-stop time.
+
+### Cloud storage
 
 The driver reads results through CloudFetch, which downloads them from
-presigned cloud storage URLs, so the client must reach the workspace's
-cloud storage as well as the workspace.
+presigned cloud storage URLs, so the client must reach the workspace's cloud
+storage, such as Azure Blob Storage or Amazon S3, as well as the workspace.
 
 ## Dependencies
 
 | Dependency | Used for | Ships with the connector | Tested versions |
 | --- | --- | --- | --- |
-| ADBC Driver Foundry Driver for Databricks (Apache-2.0) | Data Source access | Not yet: the driver is not decided | None |
+| ADBC Driver Foundry Driver for Databricks (Apache-2.0) | Data Source access | Yes | None: no workspace has been tested |
 
-The driver is one self-contained shared library built from Go, as the MySQL
-connector's driver is, with no native dependency. It is not yet in the
-package's dependency declaration or the development shell. Exceptions: none.
+The driver is one self-contained shared library, built from Go with
+databricks-sql-go, Apache Thrift, Apache Arrow for Go, and Go's own TLS; its
+bundled license file lists the licenses of what it contains. All are
+permissive except `hashicorp/go-cleanhttp` and `hashicorp/go-retryablehttp`,
+which are MPL-2.0; the package states where their source code is available
+([Source code availability](../../../packaging/README.md#source-code-availability)).
+The package and the development shell take it from the release's tarballs
+on GitHub (`adbc-drivers/databricks`, tag `go/v0.4.0`). No build is
+published for macOS x86_64. Exceptions: none. No dependency is installed by
+the user.
 
 ## Source metadata
 
@@ -94,7 +121,8 @@ Table metadata derives from the document without settings:
   every column of a table it shows.
 
 An example, `main.sales.orders`, built from `information_schema` rows as
-the tests build them; no document has been read from a workspace yet:
+the unit tests build them; no document has been read from a workspace
+yet:
 
 ```json
 {
@@ -181,19 +209,36 @@ fractional digits is out of the mapping's range. Text that is no type the
 connector reads is not mapped.
 
 Whether a string column has a collation is read from `full_data_type`,
-because `information_schema.columns` has no collation column; a string
-type that names no collation is taken as `UTF8_BINARY`. This must be
-checked against a workspace before text comparisons run remotely in a
-release.
+such as `string collate UTF8_LCASE`, because `information_schema.columns`
+has no collation column; a string type that names no collation is taken as
+`UTF8_BINARY`, the default collation. That a collated string's
+`full_data_type` names its collation is to verify: if it does not, a
+collated column's comparisons would run remotely with another meaning. The
+conformance suite reads such a column's type and filters on it.
 
 ## Coverage
 
-No mapping rule is covered yet: the connector has not read a workspace, and
-it passes the driver's output unchanged, so a column whose Arrow type
-differs from its Analytics storage fails the read as `internal`. Which
-conversions are needed, such as `Decimal128` to the narrower decimals for
-precision up to 18, the time zone of `timestamp` values, and the
-nullability inside nested types, is checked with the chosen driver.
+This version covers every mapping rule in its [type mapping](#type-mapping)
+by converting the driver's output (`src/driver_output.rs`):
+
+| Mapping rule | Driver output | Conversion |
+| --- | --- | --- |
+| `decimal(p,s)` | `Decimal128` of scale s | To the narrowest Arrow decimal of precision p, `Decimal32` up to 9 and `Decimal64` up to 18 |
+| `timestamp` | `Timestamp` in microseconds with the session's time zone | Labelled `UTC`; the instant is unchanged |
+| `timestamp_ntz` | `Timestamp` in microseconds without a time zone | None |
+| `array<T>`, `map<K,V>`, `struct<...>` | `List`, `Map`, `Struct` | Rebuilt with the Analytics fields, each element, key, value, or field converted by its own rule |
+
+Every other mapped type arrives in its Analytics storage type. These driver
+output types are what Databricks documents for Arrow results with native
+types and are to verify: a column that arrives in another form, such as a
+decimal of another scale, a timestamp without a time zone where one is
+expected, or a struct whose fields differ, fails the read as `internal`,
+naming the type that arrived.
+
+No Databricks value is outside its mapped type's range: dates and timestamps
+lie in years 1 to 9999, and decimals have at most 38 digits. A decimal that
+arrives with more digits than its column's precision would be a `data`
+error.
 
 ## Pushdown
 
@@ -209,24 +254,59 @@ values with none, so no session setting changes a comparison.
 
 ## Known limitations
 
-Not yet decided:
+The connector has not run against a workspace, so the conformance fixture
+states no deviation yet. To verify against a workspace, each checked by the
+suite where it can be:
 
-- the driver: the ADBC Driver Foundry Go driver, or a driver of our own over
-  the SQL Statement Execution API. Both are ADBC drivers, so only the
-  driver requirement and `DatabricksOptions::driver_options` change;
-- whether metadata may run SQL on the warehouse or should be read from the
-  Unity Catalog REST API. `information_schema` is one module behind the
-  catalog functions, which a REST source would replace.
-
-Not yet done: running the fixed session settings, the conversion of the
-driver's output, the driver's packaging, and the conformance fixture.
+- the Arrow types the driver returns for decimals, `timestamp`,
+  `timestamp_ntz`, and nested types ([Coverage](#coverage));
+- that `char(n)` values arrive padded with spaces;
+- the `full_data_type` spellings, and that a collated string's names its
+  collation, on which text pushdown under `UTF8_BINARY` depends;
+- that the fixed session settings hold for every statement of a session;
+- the messages the error table reads: the error classes in brackets, and,
+  while connecting, `unexpected HTTP status 401` and `403` and the OAuth
+  token endpoint's `invalid_client`. A closed port and a connection closed
+  at once are seen with the driver's release and are `connection` errors;
+- that cancelling a read or letting it expire stops the statement at the
+  warehouse, also while CloudFetch downloads its results, and that releasing
+  a stream partway stops it: the driver has no cancel of its own and relies
+  on databricks-sql-go cancelling the statement when the Go context ends;
+- whether a broken connection makes the session unusable, and whether
+  CloudFetch's downloads go through `HTTPS_PROXY`, through which the
+  fixture breaks connections ([Tests](#tests));
+- whether `DESCRIBE TABLE ... AS JSON` offers a table identifier, which
+  would let the connector offer source identifiers.
 
 Errors are classified by the error classes and codes Databricks puts in its
 messages, such as `TABLE_OR_VIEW_NOT_FOUND`, `INSUFFICIENT_PERMISSIONS`, and
-`TEMPORARILY_UNAVAILABLE`, and by their SQLSTATE; the messages the driver
-passes on are checked with the chosen driver. A message keeps only its
-first line, and a syntax error's message loses its text, since Databricks
-quotes the statement there.
+`TEMPORARILY_UNAVAILABLE`, by their SQLSTATE, and, for a failure while
+connecting, which the driver reports as `internal` with its cause only in
+the text, by that text. A message keeps only its first line, and a syntax
+error's message loses its text, since Databricks quotes the statement there.
+An error the driver reports in the middle of a result stream reaches the
+connector as text only, so it is `data-source`.
+
+A dropped table is `not found`, not `does not exist`: Unity Catalog reports
+a table the principal holds no privilege on the same way.
+
+The library's connection timeout does not limit opening a session, as the
+contract requires: the driver has no option for it, so opening a session
+waits as long as the driver does. With the driver's release, a host that
+accepts the connection and never answers fails after about 10 seconds; a
+stopped warehouse is waited for until it starts
+([Warehouse start and cost](#warehouse-start-and-cost)).
+
+Metadata requests cannot be made to wait at Databricks: Unity Catalog's
+`information_schema` takes no locks a reader could wait for. The suite's
+checks that a cancelled or expired metadata request stops at the source
+therefore do not run for this connector; cancellation and timeouts of
+reads, which use the same driver cancellation, are checked.
+
+The `hive_metastore` catalog is not read, because `information_schema` does
+not describe it. Reading a table is one `SELECT`, which reads one snapshot
+of a Delta or Iceberg table; views over several tables and foreign tables
+have no such guarantee.
 
 ## Compatibility
 
@@ -234,18 +314,51 @@ Only combinations that passed this crate's tests are listed.
 
 | Databricks | ADBC driver | Platform |
 | --- | --- | --- |
-| None yet | | |
+
+No workspace has been tested.
 
 ## Tests
 
-The unit tests need no driver, network, or container: they cover the
+The unit tests need no driver, network, or workspace: they cover the
 options, the `full_data_type` grammar and type mapping, the
 `information_schema` statements and the conversion of their rows, the
-rendered SQL, pushdown, and the error table.
+rendered SQL, pushdown, the error table, and the conversion of the driver's
+output from hand-built Arrow arrays. `tests/driver.rs` loads the driver from
+`ADBC_DRIVER_DIRECTORY`, which the Nix development shell sets, and opens
+sessions against `127.0.0.1`, on a closed port and on a listener that closes
+every connection, checking that the failures are `connection` errors and
+reveal no credential; it is skipped when the directory is not set. Neither
+needs Docker:
 
 ```sh
 nix develop --command cargo test -p connector-databricks
 ```
 
-The conformance fixture needs a Databricks workspace with a SQL warehouse
-and is not written yet.
+`tests/conformance` runs the SDK's connector conformance suite against a
+Databricks workspace with a SQL warehouse; without these variables it is
+skipped, saying which are missing:
+
+| Variable | Value |
+| --- | --- |
+| `DATABRICKS_TEST_HOST` | The workspace's host name |
+| `DATABRICKS_TEST_HTTP_PATH` | The SQL warehouse's HTTP path |
+| `DATABRICKS_TEST_CATALOG` | A catalog the fixture creates its schemas in |
+| `DATABRICKS_TEST_TOKEN` | A personal access token, or instead: |
+| `DATABRICKS_TEST_CLIENT_ID`, `DATABRICKS_TEST_CLIENT_SECRET` | A service principal's OAuth client ID and secret |
+
+The principal needs `USE CATALOG` and `CREATE SCHEMA` on the catalog and
+"Can Use" on the warehouse. The fixture creates two schemas with a unique
+suffix, loads its tables with the SQL Statement Execution API, and drops
+both schemas when the test ends, also when it fails. A run starts the
+warehouse and runs queries that take minutes until the suite cancels them,
+so it costs warehouse time.
+
+The fixture observes whether a query still runs through the query history
+API, filtered by the run's schema name. Its waiting read is a view that
+counts a hundred billion generated rows in one task, and its long read a
+view of that many rows. It breaks connections with a local HTTPS CONNECT
+proxy that `HTTPS_PROXY` names: the driver checks the workspace's
+certificate against its host name, so a proxy cannot stand in for the host.
+The Go runtime reads the environment when the driver loads, so the test runs
+the suite in a child process with `HTTPS_PROXY` set. One credential cannot
+show permission denied, so that error is not covered.

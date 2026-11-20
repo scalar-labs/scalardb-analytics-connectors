@@ -8,7 +8,7 @@ writes, and how it is tested are in
 | --- | --- |
 | [postgresql](postgresql/README.md) | ADBC, through the Apache Arrow ADBC PostgreSQL driver |
 | [mysql](mysql/README.md) | ADBC, through the ADBC Driver Foundry MySQL driver |
-| [databricks](databricks/README.md) | ADBC; the driver is not yet chosen |
+| [databricks](databricks/README.md) | ADBC, through the ADBC Driver Foundry Databricks driver |
 | [salesforce](salesforce/README.md) | Direct access, through the Salesforce REST API client in [salesforce/client](salesforce/client) |
 | [sqlserver-odbc](sqlserver-odbc/README.md) | Direct access, through ODBC and the Microsoft ODBC Driver 18 for SQL Server |
 
