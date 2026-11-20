@@ -547,6 +547,7 @@ dependencies = [
  "arrow-schema",
  "cbindgen",
  "connector-api",
+ "connector-databricks",
  "connector-mysql",
  "connector-postgresql",
  "connector-salesforce",
