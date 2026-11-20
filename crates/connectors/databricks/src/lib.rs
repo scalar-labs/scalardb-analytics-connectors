@@ -65,12 +65,11 @@ const DRIVER: DriverRequirement = DriverRequirement {
 /// and arithmetic and casts follow ANSI SQL, raising errors instead of
 /// returning NULL.
 ///
+/// The driver has no option for session settings, so they run as
+/// statements when a session opens. Each ADBC connection of the driver holds
+/// one Databricks session, which keeps them for every later statement.
 /// Generated literals depend on neither; the expressions of the views read
 /// are evaluated under them.
-#[expect(
-    dead_code,
-    reason = "run on each new connection once the driver is chosen and can run them"
-)]
 const FIXED_SESSION_STATEMENTS: [&str; 2] = ["SET TIME ZONE 'UTC'", "SET ANSI_MODE = true"];
 
 /// The Databricks Connector.
@@ -155,7 +154,11 @@ impl SqlConnector for DatabricksConnector {
         ExecutionOutput::new(Box::pin(statement), cancel)
     }
 
-    fn session_context(_catalog: &mut CatalogReads<'_, Self>) -> Result<(), ConnectorError> {
+    /// Runs the fixed session settings on the session's connection.
+    fn session_context(catalog: &mut CatalogReads<'_, Self>) -> Result<(), ConnectorError> {
+        for statement in FIXED_SESSION_STATEMENTS {
+            catalog.query(statement)?;
+        }
         Ok(())
     }
 
