@@ -49,21 +49,24 @@ impl ErrorHandler for DatabricksErrorHandler {
     }
 }
 
+/// How the driver begins the message of a failure while it connects, when it
+/// checks the new session with a first request. It reports such failures as
+/// `internal`, whatever their cause, and passes only their text.
+const CONNECT_FAILURE: &str = "failed to ping database:";
+
 /// Classifies a Databricks error by the error classes or codes its message
-/// names and its SQLSTATE; `None` leaves it to the SQLSTATE classes and the
-/// ADBC status.
+/// names, by the HTTP status or OAuth error a failed connection reports, and
+/// by its SQLSTATE; `None` leaves it to the SQLSTATE classes and the ADBC
+/// status.
 ///
 /// A missing table, schema, or catalog is `not found`, not `does not exist`,
 /// because Unity Catalog reports an object the principal holds no privilege
-/// on the same way.
+/// on the same way. Any other failure while connecting is a `connection`
+/// error, since no request reached the workspace's SQL.
 pub(crate) fn classify(sqlstate: &[u8; 5], message: &str) -> Option<ErrorClass> {
     let by_name = error_names(message).find_map(|name| {
         Some(match name {
-            "UNAUTHENTICATED" => ErrorClass::new(
-                ErrorKind::Authentication,
-                false,
-                "the workspace rejected the credentials",
-            ),
+            "UNAUTHENTICATED" => rejected_credentials(),
             "INSUFFICIENT_PERMISSIONS" | "PERMISSION_DENIED" => permission_denied(),
             "TABLE_OR_VIEW_NOT_FOUND" | "SCHEMA_NOT_FOUND" | "CATALOG_NOT_FOUND" => not_found(),
             "TEMPORARILY_UNAVAILABLE" | "RESOURCE_EXHAUSTED" | "REQUEST_LIMIT_EXCEEDED" => {
@@ -81,11 +84,52 @@ pub(crate) fn classify(sqlstate: &[u8; 5], message: &str) -> Option<ErrorClass> 
             _ => return None,
         })
     });
-    by_name.or_else(|| match sqlstate {
-        b"42501" => Some(permission_denied()),
-        b"42P01" => Some(not_found()),
-        _ => None,
-    })
+    by_name
+        .or_else(|| http_failure(message))
+        .or_else(|| match sqlstate {
+            b"42501" => Some(permission_denied()),
+            b"42P01" => Some(not_found()),
+            _ => None,
+        })
+        .or_else(|| {
+            message.starts_with(CONNECT_FAILURE).then(|| {
+                ErrorClass::new(
+                    ErrorKind::Connection,
+                    true,
+                    "the connection to the workspace failed",
+                )
+            })
+        })
+}
+
+/// Classifies the HTTP status that databricks-sql-go reports for a rejected
+/// request, `unexpected HTTP status 401 Unauthorized`, and the OAuth token
+/// endpoint's rejection of the client credentials, as golang.org/x/oauth2
+/// reports it.
+fn http_failure(message: &str) -> Option<ErrorClass> {
+    let status = message
+        .split("unexpected HTTP status ")
+        .nth(1)
+        .and_then(|rest| rest.get(..3));
+    let rejected_client = [
+        "oauth2: \"invalid_client\"",
+        "oauth2: cannot fetch token: 401",
+    ]
+    .iter()
+    .any(|text| message.contains(text));
+    match status {
+        Some("401") => Some(rejected_credentials()),
+        Some("403") => Some(permission_denied()),
+        _ => rejected_client.then(rejected_credentials),
+    }
+}
+
+fn rejected_credentials() -> ErrorClass {
+    ErrorClass::new(
+        ErrorKind::Authentication,
+        false,
+        "the workspace rejected the credentials",
+    )
 }
 
 fn permission_denied() -> ErrorClass {
@@ -274,6 +318,57 @@ mod tests {
         assert_eq!(
             kind(Status::Unknown, b"22003", "[ARITHMETIC_OVERFLOW] overflow"),
             (ErrorKind::DataSource, false)
+        );
+    }
+
+    #[test]
+    fn failures_while_connecting_are_classified_by_their_cause() {
+        let connecting = |cause: &str| {
+            format!(
+                "failed to ping database: databricks: request error: error connecting: \
+                 host=adb-1.2.azuredatabricks.net port=443, httpPath=/sql/1.0/warehouses/abc: \
+                 databricks: request error: open session request error: {cause}"
+            )
+        };
+        for (cause, expected) in [
+            (
+                "Post \"https://adb-1.2.azuredatabricks.net:443/sql/1.0/warehouses/abc\": \
+                 request error after 1 attempt(s): unexpected HTTP status 401 Unauthorized",
+                (ErrorKind::Authentication, false),
+            ),
+            (
+                "request error after 1 attempt(s): unexpected HTTP status 403 Forbidden",
+                (ErrorKind::PermissionDenied, false),
+            ),
+            (
+                "Post \"https://adb-1.2.azuredatabricks.net:443/sql/1.0/warehouses/abc\": \
+                 oauth2: \"invalid_client\" \"Client authentication failed\"",
+                (ErrorKind::Authentication, false),
+            ),
+            (
+                "request error after 1 attempt(s): TEMPORARILY_UNAVAILABLE: warehouse starting",
+                (ErrorKind::Resource, true),
+            ),
+            (
+                "Post \"https://127.0.0.1:4013/sql/1.0/warehouses/abc\": request error after \
+                 1 attempt(s): dial tcp 127.0.0.1:4013: connect: connection refused",
+                (ErrorKind::Connection, true),
+            ),
+            (
+                "Post \"https://127.0.0.1:4013/sql/1.0/warehouses/abc\": EOF",
+                (ErrorKind::Connection, true),
+            ),
+        ] {
+            assert_eq!(
+                kind(Status::Internal, b"\0\0\0\0\0", &connecting(cause)),
+                expected,
+                "{cause}"
+            );
+        }
+        // The same words after a session is open leave the ADBC status.
+        assert_eq!(
+            kind(Status::Internal, b"\0\0\0\0\0", "EOF"),
+            (ErrorKind::Internal, false)
         );
     }
 
