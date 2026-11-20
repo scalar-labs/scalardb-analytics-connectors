@@ -64,15 +64,19 @@ pub trait SqlConnector:
         catalog: &mut CatalogReads<'_, Self>,
     ) -> Result<Self::Context, ConnectorError>;
 
-    /// Lists namespaces whose names match `filter`.
+    /// Lists namespaces whose names match `filter`, within what the Data
+    /// Source's `settings` list.
     fn namespace_list(
         catalog: &mut CatalogReads<'_, Self>,
+        settings: &Self::Settings,
         filter: &NameFilter,
     ) -> Result<Vec<Listed<NamespacePath>>, ConnectorError>;
 
-    /// Lists the matching tables of the matching namespaces.
+    /// Lists the matching tables of the matching namespaces, within what the
+    /// Data Source's `settings` list.
     fn table_list(
         catalog: &mut CatalogReads<'_, Self>,
+        settings: &Self::Settings,
         namespaces: &NameFilter,
         tables: &NameFilter,
     ) -> Result<Vec<Listed<TableEntry>>, ConnectorError>;
@@ -119,10 +123,10 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
         session: &Session<C>,
         filter: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<NamespacePath>>, ConnectorError> {
-        let filter = filter.clone();
+        let (settings, filter) = (session.settings.clone(), filter.clone());
         Ok(catalog_read(
             &C::connection(session.access()),
-            Box::new(move |catalog| C::namespace_list(catalog, &filter)),
+            Box::new(move |catalog| C::namespace_list(catalog, &settings, &filter)),
         ))
     }
 
@@ -131,10 +135,11 @@ impl<C: SqlConnector> Catalog<C> for SqlCatalog<C> {
         namespaces: &NameFilter,
         tables: &NameFilter,
     ) -> Result<ExecutionOutput<Listed<TableEntry>>, ConnectorError> {
-        let (namespaces, tables) = (namespaces.clone(), tables.clone());
+        let (settings, namespaces, tables) =
+            (session.settings.clone(), namespaces.clone(), tables.clone());
         Ok(catalog_read(
             &C::connection(session.access()),
-            Box::new(move |catalog| C::table_list(catalog, &namespaces, &tables)),
+            Box::new(move |catalog| C::table_list(catalog, &settings, &namespaces, &tables)),
         ))
     }
 

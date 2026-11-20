@@ -231,6 +231,7 @@ impl SqlConnector for SqlServerConnector {
 
     fn namespace_list(
         catalog: &mut CatalogReads<'_, Self>,
+        _settings: &Self::Settings,
         filter: &NameFilter,
     ) -> Result<Vec<Listed<NamespacePath>>, ConnectorError> {
         catalog::namespace_list(catalog, filter)
@@ -238,6 +239,7 @@ impl SqlConnector for SqlServerConnector {
 
     fn table_list(
         catalog: &mut CatalogReads<'_, Self>,
+        _settings: &Self::Settings,
         namespaces: &NameFilter,
         tables: &NameFilter,
     ) -> Result<Vec<Listed<TableEntry>>, ConnectorError> {

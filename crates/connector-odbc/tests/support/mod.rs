@@ -135,6 +135,7 @@ impl SqlConnector for OdbcTestConnector {
 
     fn namespace_list(
         _catalog: &mut CatalogReads<'_, Self>,
+        _settings: &Self::Settings,
         _filter: &NameFilter,
     ) -> Result<Vec<Listed<NamespacePath>>, ConnectorError> {
         unreachable!("the tests list no namespaces")
@@ -142,6 +143,7 @@ impl SqlConnector for OdbcTestConnector {
 
     fn table_list(
         _catalog: &mut CatalogReads<'_, Self>,
+        _settings: &Self::Settings,
         _namespaces: &NameFilter,
         _tables: &NameFilter,
     ) -> Result<Vec<Listed<TableEntry>>, ConnectorError> {
