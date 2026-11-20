@@ -1,17 +1,19 @@
 //! The Databricks connector.
 //!
-//! It reads Databricks through a SQL warehouse with an ADBC driver. The
-//! connector declares what is specific to Databricks: its connection options
-//! and their driver options, its Unity Catalog reading and type mapping,
-//! which offered work Databricks runs with the same meaning, its SQL spelling,
-//! and its handling of the driver's errors. The shared ADBC and SQL layers
-//! implement the connector lifecycle, planning, and execution from these
-//! declarations.
+//! It reads Databricks through a SQL warehouse with the ADBC Driver Foundry
+//! Databricks driver. The connector declares what is specific to Databricks:
+//! its connection options and their driver options, its fixed session
+//! settings, its Unity Catalog reading and type mapping, which offered work
+//! Databricks runs with the same meaning, its SQL spelling, the conversion of
+//! the driver's output, and its handling of the driver's errors. The shared
+//! ADBC and SQL layers implement the connector lifecycle, planning, and
+//! execution from these declarations.
 
 #![forbid(unsafe_code)]
 
 mod catalog;
 mod dialect;
+mod driver_output;
 mod error_handler;
 mod options;
 mod pushdown;
@@ -110,17 +112,11 @@ impl Connector for DatabricksConnector {
         }
     }
 
-    /// Returns the driver's output unchanged.
-    ///
-    /// Which Arrow types the driver returns for decimals, timestamps, and
-    /// nested types, and so which conversions reach the Analytics storage,
-    /// is checked against a workspace once the driver is chosen; until then a
-    /// column that arrives in another form fails the read as `internal`.
     fn convert_column(
         column: &ArrayRef,
-        _target: &AnalyticsType,
+        target: &AnalyticsType,
     ) -> Result<ArrayRef, ConnectorError> {
-        Ok(Arc::clone(column))
+        driver_output::convert_column(column, target)
     }
 }
 

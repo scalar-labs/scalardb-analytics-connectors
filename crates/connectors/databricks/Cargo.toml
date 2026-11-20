@@ -17,5 +17,8 @@ connector-sql.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
+[dev-dependencies]
+arrow-buffer.workspace = true
+
 [lib]
 path = "src/lib.rs"
