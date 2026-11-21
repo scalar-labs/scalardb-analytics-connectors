@@ -36,7 +36,9 @@ jobs:
           df -h /
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The development shells, which cache.nixos.org does not fully provide:
-      # flake.nix builds static protobuf and abseil from source. Only main
+      # flake.nix fetches the Rust toolchains, pinned release files such as
+      # DuckDB's and the prebuilt protobuf, and the unfree ODBC driver for SQL
+      # Server, none of which it holds. Only main
       # saves the cache, which pull requests restore. It is saved as soon as
       # the shells are ready, so a later failing step does not lose it.
       - id: nix-cache
