@@ -284,9 +284,11 @@ The extension of the distribution package is built with
 `-DSCALARDB_ANALYTICS_DISTRIBUTION=ON` by `packaging/package.sh`: CMake then
 builds only the extension, finds the connector API library in `../lib` beside
 its own directory, and links DuckDB, protobuf, and abseil statically. It takes
-DuckDB's static library from the DuckDB release, and DuckDB's headers,
-protobuf, abseil, and the Substrait specification from pinned source archives,
-instead of the development shell. The extension exports only its entry point,
+DuckDB's static library from the DuckDB release, and DuckDB's headers and the
+Substrait specification from pinned source archives, instead of the
+development shell. It finds protobuf and abseil, with protoc, through
+`CMAKE_PREFIX_PATH`, where `package.sh` puts their prebuilt artifact
+([Prebuilt dependencies](../../packaging/README.md#prebuilt-dependencies)). The extension exports only its entry point,
 so a process that embeds DuckDB v1.5.6 loads it even when it exports none of
 DuckDB's C++ symbols, as DuckDB's JDBC driver does. The development build
 links the same DuckDB release files the same way, which the development shell
@@ -305,9 +307,11 @@ happens when one process loads the extension from two paths, or loads it
 beside other code with the same Substrait messages, such as the adapter
 embedded through `Register`. The development shell therefore provides
 protobuf and abseil as static libraries too, and the extension of the
-development build carries its own copy as well. Unlike DuckDB, no binary cache
-or release provides them as static libraries, so the development shell builds
-them from source (`flake.nix`).
+development build carries its own copy as well. Unlike DuckDB, neither project
+releases static libraries, so the development shell (`flake.nix`) and the
+distribution package both take the same prebuilt artifact, which
+scalar-labs/scalardb-analytics-third-party-deps builds from their sources. No
+artifact is built for x86_64-darwin, so the adapter does not build there.
 
 The integration tests embed DuckDB through the embedding entry. Against the
 items of [Integration tests](../../docs/adapter-implementation.md#integration-tests):
