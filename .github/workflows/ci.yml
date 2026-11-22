@@ -17,6 +17,17 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Start disk monitor
+        run: |
+          cat > "$RUNNER_TEMP/disk-usage.sh" <<'SH'
+          df -h / /home/runner/work /tmp /nix 2>/dev/null | sort -u
+          sudo du -sh /nix/store 2>/dev/null || true
+          du -sh "$GITHUB_WORKSPACE/target" 2>/dev/null || true
+          du -sh "$HOME/.cargo" 2>/dev/null || true
+          free -m
+          SH
+          bash "$RUNNER_TEMP/disk-usage.sh"
+          nohup bash -c 'while true; do echo "$(date -u +%T) $(df -B1M --output=avail / | tail -1) $(free -m | awk "/Mem:/{print \$7}")"; sleep 2; done' > "$RUNNER_TEMP/disk-monitor.log" 2>&1 &
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The development shells, which cache.nixos.org does not fully provide:
       # flake.nix fetches the Rust toolchains, pinned release files such as
@@ -29,6 +40,9 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('flake.nix', 'flake.lock', 'devshell.toml', 'packaging/dependencies.json') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
+      - name: Disk usage (before Prepare development shells)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Prepare development shells
         run: |
           nix develop --command true
@@ -41,24 +55,60 @@ jobs:
           purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
           purge-created: 0
           purge-primary-key: never
+      - name: Disk usage (before Check formatting)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Check formatting
         run: nix develop --command cargo fmt --all -- --check
+      - name: Disk usage (before Build workspace)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Build workspace
         run: nix develop --command cargo build --workspace --all-targets
+      - name: Disk usage (before Test workspace)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Test workspace
         run: nix develop --command cargo test --workspace --all-features
+      - name: Disk usage (before Build DuckDB adapter)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Build DuckDB adapter
         run: |
           nix develop --command cargo build -p connector-api --features test-connector,postgresql
           nix develop --command cmake -S adapters/duckdb -B target/duckdb-adapter -G Ninja
           nix develop --command cmake --build target/duckdb-adapter
+      - name: Disk usage (before Test DuckDB adapter)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Test DuckDB adapter
         run: nix develop --command ctest --test-dir target/duckdb-adapter --output-on-failure
+      - name: Disk usage (before Lint workspace)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Lint workspace
         run: nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Disk usage (before Check dependency policy)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Check dependency policy
         run: nix develop --command cargo deny check bans licenses
+      - name: Disk usage (before Verify MSRV build)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Verify MSRV build
         run: nix develop .#msrv --command cargo build --workspace --all-targets
+      - name: Disk usage (before Verify MSRV tests)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
       - name: Verify MSRV tests
         run: nix develop .#msrv --command cargo test --workspace
+      - name: Disk usage (end)
+        if: always()
+        run: bash "$RUNNER_TEMP/disk-usage.sh"
+      - name: Disk monitor log (MiB available on /, MiB memory available)
+        if: always()
+        run: |
+          sort -k2 -n "$RUNNER_TEMP/disk-monitor.log" | head -5
+          echo ...
+          cat "$RUNNER_TEMP/disk-monitor.log"
