@@ -15,6 +15,13 @@ jobs:
       contents: read
       # The Nix store cache purges the versions it replaces.
       actions: write
+    # The runner's disk holds the Nix store and every toolchain's and feature
+    # set's build of the workspace. Full debug info and incremental state
+    # filled it until the linker crashed, so CI keeps only the line tables
+    # that panic backtraces need, and builds each crate once from scratch.
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start disk monitor
