@@ -19,7 +19,7 @@ jobs:
     # tests pull, and every toolchain's and feature set's build of the
     # workspace. Full debug info and incremental state filled it until the
     # linker crashed, so CI keeps only the line tables that panic backtraces
-    # need, and builds each crate once from scratch.
+    # need, and no incremental state, which a fresh runner never reuses.
     env:
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -37,22 +37,13 @@ jobs:
           bash "$RUNNER_TEMP/disk-usage.sh"
           nohup bash -c 'while true; do echo "$(date -u +%T) $(df -B1M --output=avail / | tail -1) $(free -m | awk "/Mem:/{print \$7}")"; sleep 2; done' > "$RUNNER_TEMP/disk-monitor.log" 2>&1 &
       # Even so, the job needs more disk than the runner leaves free. Nix
-      # provides every tool the job uses, so the runner's preinstalled SDKs
-      # and tool caches are removed to make room.
+      # provides every tool the job uses, so two preinstalled SDKs, .NET and
+      # GHC, are removed to make room: together about 10 GB in few enough
+      # files to delete in seconds.
       - name: Free disk space
         run: |
           df -h /
-          for p in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache; do
-            before=$(df -B1M --output=avail / | tail -1)
-            files=$(sudo find "$p" -xdev 2>/dev/null | wc -l)
-            start=$(date +%s.%N)
-            sudo rm -rf "$p"
-            end=$(date +%s.%N)
-            after=$(df -B1M --output=avail / | tail -1)
-            echo "MEASURE $p freed_mib=$((after - before)) files=$files rm_seconds=$(echo "$end - $start" | bc)"
-          done
-          sudo du -sh /opt/* /usr/local/lib/* /usr/local/share/* /usr/share/* /usr/lib/* /home/runner/* 2>/dev/null | sort -h | tail -25
-          docker system df || true
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup
           df -h /
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The development shells, which cache.nixos.org does not fully provide:
