@@ -15,10 +15,11 @@ jobs:
       contents: read
       # The Nix store cache purges the versions it replaces.
       actions: write
-    # The runner's disk holds the Nix store and every toolchain's and feature
-    # set's build of the workspace. Full debug info and incremental state
-    # filled it until the linker crashed, so CI keeps only the line tables
-    # that panic backtraces need, and builds each crate once from scratch.
+    # The runner's disk holds the Nix store, the database server images the
+    # tests pull, and every toolchain's and feature set's build of the
+    # workspace. Full debug info and incremental state filled it until the
+    # linker crashed, so CI keeps only the line tables that panic backtraces
+    # need, and builds each crate once from scratch.
     env:
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -35,6 +36,14 @@ jobs:
           SH
           bash "$RUNNER_TEMP/disk-usage.sh"
           nohup bash -c 'while true; do echo "$(date -u +%T) $(df -B1M --output=avail / | tail -1) $(free -m | awk "/Mem:/{print \$7}")"; sleep 2; done' > "$RUNNER_TEMP/disk-monitor.log" 2>&1 &
+      # Even so, the job needs more disk than the runner leaves free. Nix
+      # provides every tool the job uses, so the runner's preinstalled SDKs
+      # and tool caches are removed to make room.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+          df -h /
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The development shells, which cache.nixos.org does not fully provide:
       # flake.nix fetches the Rust toolchains, pinned release files such as
