@@ -42,7 +42,17 @@ jobs:
       - name: Free disk space
         run: |
           df -h /
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+          for p in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache; do
+            before=$(df -B1M --output=avail / | tail -1)
+            files=$(sudo find "$p" -xdev 2>/dev/null | wc -l)
+            start=$(date +%s.%N)
+            sudo rm -rf "$p"
+            end=$(date +%s.%N)
+            after=$(df -B1M --output=avail / | tail -1)
+            echo "MEASURE $p freed_mib=$((after - before)) files=$files rm_seconds=$(echo "$end - $start" | bc)"
+          done
+          sudo du -sh /opt/* /usr/local/lib/* /usr/local/share/* /usr/share/* /usr/lib/* /home/runner/* 2>/dev/null | sort -h | tail -25
+          docker system df || true
           df -h /
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The development shells, which cache.nixos.org does not fully provide:
