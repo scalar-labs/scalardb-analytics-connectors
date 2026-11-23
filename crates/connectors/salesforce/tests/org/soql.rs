@@ -7,7 +7,7 @@
 
 use std::{pin::pin, sync::Arc};
 
-use arrow_array::{Array, StringArray};
+use arrow_array::{Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use connector_salesforce::API_VERSION;
 use connector_salesforce_client::{Client, ClientConfig, Credentials, Secret, Url};
@@ -93,6 +93,37 @@ async fn select(client: &Client, field: &str, condition: &str) -> Vec<String> {
         values.extend(column.iter().map(|value| value.unwrap_or("").to_owned()));
     }
     values
+}
+
+/// How many records `object` holds, as Salesforce counts them in one
+/// aggregate query, which returns a single row however many records there
+/// are.
+pub fn count(object: &str) -> i64 {
+    let runtime = tokio::runtime::Runtime::new().expect("a runtime starts");
+    runtime.block_on(async {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "total",
+            DataType::Int64,
+            false,
+        )]));
+        let soql = format!("SELECT COUNT(Id) total FROM {object}");
+        let mut batches = pin!(
+            client()
+                .query(soql, schema)
+                .unwrap_or_else(|error| panic!("counting {object}: {error}"))
+        );
+        let batch = batches
+            .next()
+            .await
+            .expect("an aggregate query returns a row")
+            .unwrap_or_else(|error| panic!("counting {object}: {error}"));
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("the count is a long")
+            .value(0)
+    })
 }
 
 /// A client with the connection options from the environment, configured as

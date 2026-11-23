@@ -1,14 +1,13 @@
-//! Reads through the connector: boundary values, filters that run remotely,
-//! and cancelling a read while its query waits at Salesforce.
+//! Reads through the connector: boundary values and filters that run
+//! remotely.
 
-use std::{sync::Arc, thread, time::Duration};
+use std::sync::Arc;
 
 use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Decimal32Array, Decimal64Array, RecordBatch,
     StringArray, Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use connector_sdk::{
-    ErrorKind, NameFilter,
     conformance::plan::*,
     runtime::{PlanningOutcome, SessionState, SharedRemoteExecution},
 };
@@ -30,7 +29,6 @@ pub fn check(org: &Org) {
     let session = org.session();
     every_field_reads_its_boundary_values_and_null(&session);
     filters_run_remotely_with_the_offered_result(&session);
-    a_cancelled_read_stops_and_leaves_the_session_usable(&session);
     session.close();
 }
 
@@ -151,29 +149,6 @@ fn filters_run_remotely_with_the_offered_result(session: &Arc<SessionState>) {
         actual.sort();
         assert_eq!(actual, expected, "{name}");
     }
-}
-
-fn a_cancelled_read_stops_and_leaves_the_session_usable(session: &Arc<SessionState>) {
-    let (remote, _) = plan(session, values().build());
-    let operation = session.start_read(remote, None).expect("the read starts");
-    // The query is sent at the first pull; the cancel arrives while its
-    // response is on the way, because a round trip to Salesforce takes
-    // longer than the delay.
-    let result = thread::scope(|scope| {
-        scope.spawn(|| {
-            thread::sleep(Duration::from_millis(5));
-            operation.cancel().expect("the operation cancels");
-        });
-        operation.pull()
-    });
-    match result {
-        Err(error) => assert_eq!(error.kind(), ErrorKind::Cancellation, "a cancelled pull"),
-        Ok(_) => panic!("the first page arrived before the cancel; the check cannot run"),
-    }
-    operation.close();
-    session
-        .table_list(&NameFilter::None, &NameFilter::None, None, None)
-        .expect("the session accepts a request after a cancelled read");
 }
 
 /// The fields of `ConnectorTest__c` that [`values`] reads, in its order.

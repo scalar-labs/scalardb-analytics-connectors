@@ -45,7 +45,7 @@ prepare() {
 	if ! output=$(sf org assign permset --name ConnectorTest --target-org "$org" 2>&1); then
 		case $output in
 		*"Duplicate PermissionSetAssignment"*) ;;
-		*) echo "$output" >&2; exit 1 ;;
+		*) printf '%s\n' "$output" >&2; exit 1 ;;
 		esac
 	fi
 	bulk=$(mktemp -d)
@@ -66,30 +66,44 @@ prepare() {
 	standard_records
 }
 
+# Runs an sf command with --json and prints its output, or stops the script
+# with the command's error message when it fails.
+sf_json() {
+	if ! output=$(sf "$@" --json); then
+		echo "sf $1 $2 failed: $(printf '%s\n' "$output" | jq -r '.message // "no message"')" >&2
+		exit 1
+	fi
+	printf '%s\n' "$output"
+}
+
 # Prints the Id of the first record a SOQL query returns, or nothing.
 first_id() {
-	sf data query --target-org "$org" --json --query "$1" | jq -r '.result.records[0].Id // empty'
+	result=$(sf_json data query --target-org "$org" --query "$1") || exit 1
+	printf '%s\n' "$result" | jq -r '.result.records[0].Id // empty'
 }
 
 # Creates, unless it exists, a Task, whose fields have the types combobox and
-# int that a custom object cannot have. The tests select it by its number,
-# with a filter that runs remotely; the values must match
-# tests/org/standard.rs.
+# int that a custom object cannot have. A Task counts as the fixture only
+# with both its subject and its number, so the script never changes a Task
+# it did not create. The tests select it by its number, with a filter that
+# runs remotely; the values must match tests/org/standard.rs.
 standard_records() {
-	task=$(first_id "SELECT Id FROM Task WHERE Subject = 'Connector Test Task'")
+	task=$(first_id "SELECT Id FROM Task WHERE Subject = 'Connector Test Task' AND CallDurationInSeconds = 87654321") || exit 1
 	if [ -z "$task" ]; then
 		sf data create record --sobject Task --target-org "$org" \
 			--values "Subject='Connector Test Task' CallDurationInSeconds=87654321"
-	else
-		sf data update record --sobject Task --record-id "$task" --target-org "$org" \
-			--values "CallDurationInSeconds=87654321"
 	fi
 }
 
 run_tests() {
 	# The SFDX auth URL is force://<client ID>:<client secret>:<refresh
 	# token>@<instance>; the CLI's own client has no secret.
-	auth=$(sf org auth show-sfdx-auth-url --target-org "$org" --json | jq -r .result.sfdxAuthUrl)
+	result=$(sf_json org auth show-sfdx-auth-url --target-org "$org") || exit 1
+	auth=$(printf '%s\n' "$result" | jq -r '.result.sfdxAuthUrl // empty')
+	if [ -z "$auth" ]; then
+		echo "the Salesforce CLI has no SFDX auth URL for $org; log in with sf org login web" >&2
+		exit 1
+	fi
 	credentials=${auth#force://}
 	instance=https://${credentials##*@}
 	credentials=${credentials%@*}

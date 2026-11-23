@@ -4,46 +4,52 @@
 use std::{sync::Arc, time::Instant};
 
 use arrow_array::{Array, Decimal64Array, RecordBatch};
-use connector_sdk::{NameFilter, conformance::plan::*, runtime::SessionState};
+use connector_sdk::{ErrorKind, NameFilter, conformance::plan::*, runtime::SessionState};
 use substrait::proto::expression::literal::{Decimal, LiteralType};
 
-use super::{NAMESPACE, Org, reads::plan};
+use super::{NAMESPACE, Org, reads::plan, soql};
 
 const BULK: &str = "ConnectorTestBulk__c";
 /// How many records a query page holds when the query does not ask for
 /// fewer, so a read of more records spans several pages.
-const PAGE_SIZE: usize = 2_000;
+const PAGE_SIZE: i64 = 2_000;
 
 pub fn check(org: &Org) {
     let session = org.session();
     every_record_reads_across_pages(&session);
     a_filter_selects_records_remotely(&session);
     releasing_a_read_partway_leaves_the_session_usable(&session);
+    a_read_cancelled_between_pages_stops_and_leaves_the_session_usable(&session);
     session.close();
 }
 
 fn every_record_reads_across_pages(session: &Arc<SessionState>) {
+    // Counted by Salesforce in one query, so a read that misses later pages
+    // cannot also lower the count it is compared with.
+    let total = soql::count(BULK);
+    assert!(
+        total > PAGE_SIZE,
+        "{BULK} holds {total} records; run `run.sh prepare` to load more than one page"
+    );
     let started = Instant::now();
     let batches = read_all(session, seqs().build());
     let mut seqs = values(&batches);
     eprintln!(
-        "{BULK}: {} records in {} batches in {:.1?}",
+        "{BULK}: {} of {total} records in {} batches in {:.1?}",
         seqs.len(),
         batches.len(),
         started.elapsed()
-    );
-    assert!(
-        seqs.len() > PAGE_SIZE,
-        "{BULK} holds {} records; run `run.sh prepare` to load more than one page",
-        seqs.len()
     );
     assert!(
         batches.len() > 1,
         "a read of several pages returns several batches"
     );
     seqs.sort_unstable();
-    let expected: Vec<i64> = (1..=seqs.len() as i64).collect();
-    assert_eq!(seqs, expected, "every record is read once");
+    let expected: Vec<i64> = (1..=total).collect();
+    assert_eq!(
+        seqs, expected,
+        "every one of the {total} records is read once"
+    );
 }
 
 fn a_filter_selects_records_remotely(session: &Arc<SessionState>) {
@@ -77,6 +83,26 @@ fn releasing_a_read_partway_leaves_the_session_usable(session: &Arc<SessionState
     session
         .namespace_list(&NameFilter::None, None, None)
         .expect("the session accepts a request after a read released partway");
+}
+
+/// Cancels a read after its first page, while later pages remain at
+/// Salesforce, so the cancel reaches a read in progress without depending
+/// on timing. A pull already waiting when the cancel arrives is checked
+/// against the mock, which can make a query wait.
+fn a_read_cancelled_between_pages_stops_and_leaves_the_session_usable(session: &Arc<SessionState>) {
+    let (remote, _) = plan(session, seqs().build());
+    let operation = session.start_read(remote, None).expect("the read starts");
+    let first = operation
+        .pull()
+        .unwrap_or_else(|error| panic!("the first pull fails: {error}"));
+    assert!(first.is_some(), "the read returns a first batch");
+    operation.cancel().expect("the operation cancels");
+    let error = operation.pull().expect_err("a pull after the cancel fails");
+    assert_eq!(error.kind(), ErrorKind::Cancellation, "a cancelled read");
+    operation.close();
+    session
+        .namespace_list(&NameFilter::None, None, None)
+        .expect("the session accepts a request after a cancelled read");
 }
 
 /// `Seq__c` of `ConnectorTestBulk__c`.

@@ -245,8 +245,8 @@ only reads:
 | Table metadata: types, nullability, constraints, a field that field-level security hides, and a name describe does not find | The connector | `ConnectorTest__c`, `Task`, `PlatformEventUsageMetric`, and a missing object |
 | Boundary values and NULL of every field | The connector | `ConnectorTest__c` |
 | Values of `combobox` and `int`, selected by a filter that runs remotely | The connector | `Task` |
-| Filters that run remotely, a cancelled read | The connector | `ConnectorTest__c` |
-| A read across several query pages, a filter over it, a read released partway | The connector | `ConnectorTestBulk__c` |
+| Filters that run remotely | The connector | `ConnectorTest__c` |
+| A read across several query pages, compared with the count Salesforce reports; a filter over it; a read released partway; a read cancelled between pages | The connector | `ConnectorTestBulk__c` |
 | A rejected credential is `authentication` and is not revealed | The connector | — |
 | The comparisons the connector keeps local | SOQL through the client | `ConnectorTest__c` |
 
