@@ -296,6 +296,9 @@
             dontFixup = pkgs.stdenv.isDarwin;
             installPhase = "cp -R . $out";
           };
+          # The Salesforce CLI, with which the Salesforce connector's org
+          # tests prepare their org.
+          salesforceCli = pkgs.callPackage ./nix/salesforce-cli.nix { };
         in
         {
           packages = {
@@ -373,6 +376,7 @@
               pkgs.cargo-about
               pkgs.jq
               pkgs.unzip
+              salesforceCli
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
 

@@ -25,6 +25,8 @@ tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"
 
 [dev-dependencies]
 connector-sdk = { workspace = true, features = ["conformance"] }
+# The org tests send offered plans to the runtime as protobuf bytes.
+prost.workspace = true
 substrait.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
