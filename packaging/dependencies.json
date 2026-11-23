@@ -7,6 +7,9 @@
       "dependencies": ["adbc_driver_postgresql"]
     }
   },
+  "extension": {
+    "dependencies": ["protobuf"]
+  },
   "dependencies": {
     "adbc_driver_mysql": {
       "kind": "adbc-driver-archive",
@@ -62,6 +65,42 @@
           "url": "https://files.pythonhosted.org/packages/37/6b/dd22c016305e84b8b9959784e77bbd20c454bd82463dc8de5a839abde206/adbc_driver_postgresql-1.13.0-py3-none-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
           "hash": "sha256-qGgZunx5sdBnxKU0Q1i000a6tY6IjXh57Ssl2XzFm6E="
         }
+      }
+    },
+    "kerberos": {
+      "kind": "prebuilt",
+      "version": "1.22.3",
+      "lib": [
+        "libssl.so.3",
+        "libcrypto.so.3",
+        "libkrb5.so.3",
+        "libgssapi_krb5.so.2",
+        "libk5crypto.so.3",
+        "libkrb5support.so.0",
+        "libcom_err.so.3"
+      ],
+      "artifacts": {
+        "linux_amd64": "sha256-eyDOrCel+lFw64hl6ei/jX+yZHDPUuv0rhzhT0FzMyM=",
+        "linux_arm64": "sha256-PQ1Y4PCcb5IwIJazXfPIBcg7vHyjIIliW/YDTN0Bgco="
+      }
+    },
+    "protobuf": {
+      "kind": "prebuilt",
+      "version": "34.1",
+      "lib": [],
+      "artifacts": {
+        "osx_arm64": "sha256-o2JXVbAO84WT3ZJxjWXluysvAZIZyWn/Qy6NKC4dMYg=",
+        "linux_amd64": "sha256-wah9jaaTQVorAMGZ+UvjSuqNeW/lS+Xw+yvAUthxceQ=",
+        "linux_arm64": "sha256-XTB8uZJ4z1rLTsOWRUK+CPEItYDsfNY7J/PRIy9Xi9c="
+      }
+    },
+    "unixodbc": {
+      "kind": "prebuilt",
+      "version": "2.3.14",
+      "lib": ["libodbc.so.2", "libodbcinst.so.2"],
+      "artifacts": {
+        "linux_amd64": "sha256-831I6CgQElkXhtnC02xRhPRRPXRPWV29DNGXQaE4QK8=",
+        "linux_arm64": "sha256-nmem2SaM92GpFfrU7w5basH6CDudmC5A9zUJnYmY0fI="
       }
     }
   }

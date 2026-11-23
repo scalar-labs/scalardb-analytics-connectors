@@ -15,9 +15,12 @@
 #                  obtain the source code a license requires to be available
 #
 # The library is built with every connector feature of connector-api.
-# packaging/dependencies.json declares the dependencies those connectors ship;
-# each dependency has a kind, and the ship_<kind> function below places it
-# (packaging/README.md).
+# packaging/dependencies.json declares the dependencies those connectors ship
+# and those the DuckDB extension is built with; each dependency has a kind, and
+# the ship_<kind> function below places it (packaging/README.md). Nothing is
+# built from a dependency's sources here: a dependency whose upstream
+# distributes only sources is fetched as the artifact that
+# scalar-labs/scalardb-analytics-third-party-deps built and published.
 #
 # Usage: package.sh
 #
@@ -110,6 +113,45 @@ ship_adbc_driver_archive() {
 	done
 }
 
+# A dependency whose upstream distributes only sources, built from them once
+# and published as the release <dependency>-<version>[-r<revision>] of
+# scalar-labs/scalardb-analytics-third-party-deps: its artifact is fetched into
+# target/prebuilt, where a local build of that repository may also be put, and
+# is used only if it matches its declared hash. Its installation prefix joins
+# the prefixes the DuckDB extension's build searches, the libraries it lists
+# under `lib` go to lib/, and its LICENSES/ (each component's license texts and
+# SOURCES.txt, where the sources are) to LICENSES/<dependency>/.
+ship_prebuilt() {
+	tag=$dependency-$(field '.version')
+	if field '| has("revision")' >/dev/null; then
+		tag=$tag-r$(field '.revision')
+	fi
+	artifact=$tag-$platform
+	file=$root/target/prebuilt/$artifact.tar.gz
+	hash=$(field '.artifacts[$platform] // ""')
+	[ -n "$hash" ] || { echo "$dependency: no artifact hash is declared for $platform" >&2; exit 1; }
+	if [ -f "$file" ]; then
+		# A local build differs from the published artifact byte for byte.
+		actual=sha256-$(openssl dgst -sha256 -binary "$file" | openssl base64 -A)
+		[ "$actual" = "$hash" ] || {
+			echo "$dependency: $file is not the declared artifact ($actual); remove it to download the declared one" >&2
+			exit 1
+		}
+	else
+		mkdir -p "$root/target/prebuilt"
+		fetch "https://github.com/scalar-labs/scalardb-analytics-third-party-deps/releases/download/$tag/$artifact.tar.gz" "$hash" "$file"
+	fi
+	rm -rf "${work:?}/prebuilt/${dependency:?}"
+	mkdir -p "$work/prebuilt/$dependency" "$stage/LICENSES/$dependency"
+	tar -C "$work/prebuilt/$dependency" -xzf "$file"
+	prefix=$work/prebuilt/$dependency/$artifact
+	prefixes="${prefixes:+$prefixes;}$prefix"
+	for shipped in $(field '.lib[]'); do
+		cp -L "$prefix/lib/$shipped" "$stage/lib/"
+	done
+	cp -R "$prefix/LICENSES/." "$stage/LICENSES/$dependency/"
+}
+
 # The connector API library.
 cargo build --release --manifest-path "$root/Cargo.toml" -p connector-api --features "$features"
 library=$target/release/libconnector_api.$suffix
@@ -123,8 +165,10 @@ if [ "$platform" = osx_arm64 ]; then
 fi
 cp "$root/crates/connector-api/include/scalardb_analytics_connector.h" "$stage/include/"
 
-# The dependencies of the shipping connectors, each once.
-for dependency in $(jq -r '[.connectors[].dependencies[]] | unique | .[]' "$declaration"); do
+# The dependencies of the shipping connectors and of the DuckDB extension,
+# each once.
+prefixes=
+for dependency in $(jq -r '[.connectors[].dependencies[], .extension.dependencies[]] | unique | .[]' "$declaration"); do
 	kind=$(field '.kind' | tr - _)
 	command -v "ship_$kind" >/dev/null || { echo "$dependency: no ship_$kind for its kind" >&2; exit 1; }
 	"ship_$kind"
@@ -143,18 +187,18 @@ done
 cmake -S "$root/adapters/duckdb" -B "$work/duckdb" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DSCALARDB_ANALYTICS_DISTRIBUTION=ON \
-	-DSCALARDB_ANALYTICS_CONNECTOR_LIBRARY="$library"
+	-DSCALARDB_ANALYTICS_CONNECTOR_LIBRARY="$library" \
+	-DCMAKE_PREFIX_PATH="$prefixes"
 cmake --build "$work/duckdb" --parallel "$(getconf _NPROCESSORS_ONLN)" --target scalardb_analytics_connectors_extension
 cp "$work/duckdb/scalardb_analytics_connectors.duckdb_extension" "$stage/duckdb/"
 
-# License texts: this repository, the C++ libraries and the Substrait types
-# built into the extension, DuckDB, which the extension carries, and the Rust
-# crates in the library.
+# License texts: this repository, DuckDB, which the extension carries, the
+# Substrait types built into it, and the Rust crates in the library. The
+# dependencies placed their own above.
 cp "$root/LICENSE" "$stage/LICENSES/scalardb-analytics-connectors.txt"
-for source in protobuf absl duckdb substrait; do
+for source in duckdb substrait; do
 	cp "$work/duckdb/_deps/$source-src/LICENSE" "$stage/LICENSES/$source.txt"
 done
-cp "$work/duckdb/_deps/protobuf-src/third_party/utf8_range/LICENSE" "$stage/LICENSES/utf8_range.txt"
 cargo about generate --manifest-path "$root/crates/connector-api/Cargo.toml" \
 	--features "$features" --config "$root/packaging/about.toml" \
 	--output-file "$stage/LICENSES/rust-crates.txt" "$root/packaging/about.hbs"

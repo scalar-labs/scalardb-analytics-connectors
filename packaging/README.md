@@ -6,7 +6,7 @@ platform that works wherever it is unpacked.
 
 | File | Role |
 | --- | --- |
-| `dependencies.json` | The dependencies the connectors ship |
+| `dependencies.json` | The dependencies the connectors ship and the DuckDB extension is built with |
 | `package.sh` | Builds the package of the running platform from that declaration |
 | `linux/package.sh` | Runs `package.sh` for Linux in the pinned manylinux_2_28 image with Docker |
 | `linux/build.sh` | Prepares the manylinux container and runs `package.sh` in it |
@@ -24,14 +24,17 @@ features that enable a connector crate, and its Rust license texts cover them.
 `sqlserver-odbc` is left out until the package ships the ODBC driver manager
 that its library links.
 
-`dependencies.json` declares what those connectors ship beyond the library, in
-two parts:
+`dependencies.json` declares what those connectors ship beyond the library,
+and what the DuckDB extension is built with, in three parts:
 
 - `connectors`: each key is a connector feature, which lists the entries it
   ships under `dependencies`. A connector that ships nothing beyond the
   library has no key.
+- `extension`: the entries the DuckDB extension is built with, under
+  `dependencies`, such as the static protobuf and abseil it links.
 - `dependencies`: each entry has a `kind` and the fields that kind needs.
-  An entry shared by several connectors ships once.
+  An entry listed several times ships once. An entry no connector or the
+  extension lists is not used yet.
 
 A connector's README declares all its dependencies and whether each ships or
 the user installs it
@@ -47,14 +50,18 @@ A dependency the user installs is not listed here.
 | --- | --- | --- |
 | `adbc-driver` | `adbc-drivers/<name>.toml` and the library it names, relative to it; license texts in `LICENSES/<name>/` | `name`, `version`, `library` and `licenses` (paths in the wheel), `wheels.<platform>.url` and `.hash` (SRI sha256) |
 | `adbc-driver-archive` | As `adbc-driver`, from a per-platform tar.gz archive instead of a wheel, such as an ADBC Driver Foundry release | `name`, `version`, `licenses` (file paths in the archive), `archives.<platform>.url`, `.hash` (SRI sha256), and `.library` (path in the archive) |
+| `prebuilt` | The libraries under `lib` in `lib/`; the installation prefix on the DuckDB extension build's `CMAKE_PREFIX_PATH`; the artifact's `LICENSES/` (license texts and `SOURCES.txt`) in `LICENSES/<name>/` ([Prebuilt dependencies](#prebuilt-dependencies)) | `version` and optional `revision` (naming the release), `lib` (file names in the artifact's `lib/`), and `artifacts.<platform>` (the artifact's SRI sha256) |
 
 ### Source code availability
 
-An entry of any kind that contains a component whose license requires its
-source code to be available with a binary, such as MPL-2.0, lists that
-component under `sources`, each with `name`, `version`, `license`, and the
-`url` of its source code at that version. `package.sh` writes the list to
-`LICENSES/<name>/SOURCES.txt`.
+An entry that contains a component whose license requires its source code to
+be available with a binary, such as MPL-2.0, lists that component under
+`sources`, each with `name`, `version`, `license`, and the `url` of its source
+code at that version. `package.sh` writes the list to
+`LICENSES/<name>/SOURCES.txt`. A `prebuilt` entry has no `sources`: its
+artifact carries its own `SOURCES.txt`, naming the upstream sources it was
+built from, which its release holds beside the artifacts
+([Prebuilt dependencies](#prebuilt-dependencies)).
 
 The versions are those built into the shipped binary, so they are read again
 whenever the entry's version changes: for a driver built from Go, from the
@@ -91,3 +98,34 @@ Where a kind places its files depends on what finds them:
   extension. A new such location is a library setting, which changes the C ABI.
 
 Add the kind to the table above.
+
+## Prebuilt dependencies
+
+A dependency is taken as its upstream's official prebuilt binaries when the
+upstream publishes them, as the ADBC drivers are. A dependency whose upstream
+distributes only sources, such as protobuf and abseil, unixODBC, or OpenSSL
+and MIT Kerberos, is built from those unmodified sources once, by
+[scalar-labs/scalardb-analytics-third-party-deps](https://github.com/scalar-labs/scalardb-analytics-third-party-deps),
+which publishes the artifacts with the sources as GitHub Releases. No build
+here builds such a dependency: `package.sh` fetches the artifact of the
+release `<dependency>-<version>[-r<revision>]` and checks it against the hash
+declared under `artifacts`, and the development shell (`flake.nix`) takes the
+same artifact of protobuf. Third-party builds (distribution packages,
+conda-forge) are not used.
+
+To change such a dependency's version or build, release it in that
+repository (its README, Releasing a dependency), then set the entry's
+`version` and `revision` to the release and `artifacts` to the hashes its
+publish step prints: the SHA-256 that the release's `<artifact>.tar.gz.sha256`
+holds, in SRI form (`sha256-<base64>`).
+
+`package.sh` takes an artifact from `target/prebuilt/` before downloading it,
+still checked against its declared hash. A local build of that repository
+differs from the published artifact byte for byte, so it is used only with its
+own hash declared, to try a recipe change before it is released.
+
+| Entry | Components | Platforms | Used by |
+| --- | --- | --- | --- |
+| `protobuf` | abseil, protobuf (static, with protoc) | osx_arm64, linux_amd64, linux_arm64 | The DuckDB extension, which links them statically, in the package and the development shell |
+| `unixodbc` | unixODBC (libodbc, libodbcinst) | linux_amd64, linux_arm64 | Not yet: the ODBC driver manager of `sqlserver-odbc` |
+| `kerberos` | OpenSSL 3, MIT Kerberos (without keyutils) | linux_amd64, linux_arm64 | Not yet: what Microsoft ODBC Driver 18 needs beyond the system |
