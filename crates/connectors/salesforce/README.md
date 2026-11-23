@@ -159,8 +159,19 @@ Other types are not mapped:
 plan.
 
 The comparison column and the null behavior in [Pushdown](#pushdown) state the
-connector's understanding of Salesforce's behavior. They are not yet checked
-against a real org; the fixture's mock org models them.
+connector's understanding of Salesforce's behavior, which the fixture's mock
+org models. The [tests against a real org](#tests-against-a-real-org) checked
+these parts of it: text and email equality ignoring case, a literal keeping
+its trailing spaces, an ID equal to its 15-character form, `!=` true and
+ordering false for null, and the remotely run comparisons of `boolean`, `int`,
+`double`, `percent`, `date`, and `datetime`. Text ordering by locale,
+`multipicklist` set equality, multi-currency conversion, and the comparisons
+of `long` and `time` are not checked against a real org.
+
+A real org stores text without trailing spaces and email addresses in lower
+case, so values that differ from a literal only in those ways do not occur.
+An `encryptedstring` field is not filterable, and it reads masked, one `*` per
+character, unless the user has the View Encrypted Data permission.
 
 ## Coverage
 
@@ -168,11 +179,17 @@ Version 0.1.0 covers every mapping rule in its [type mapping](#type-mapping)
 except `double`, `percent`, and `currency` above 38 digits, which are
 unsupported (mapping not implemented): the client decodes decimals into Arrow
 `Decimal32`, `Decimal64`, and `Decimal128`, the width the Analytics decimal of
-each precision takes, but not `Decimal256`. Salesforce number fields hold at
-most 18 digits. A
-value with more digits than its field's precision or scale, which a formula
-field could return, cannot be carried exactly and is a `data` error when a
-read returns it.
+each precision takes, but not `Decimal256`. Salesforce number fields have at
+most 18 digits of precision, but Salesforce holds their values as doubles: it
+refuses `9999999999999999.99` in a `double(18,2)` field, whose double exceeds
+the field's 16 integer digits, and stores `99999999999999.99` as
+`99999999999999.98`. The connector reads the stored value exactly as
+Salesforce returns it. A value with more digits than its field's precision or
+scale, which a formula field could return, cannot be carried exactly and is a
+`data` error when a read returns it.
+
+A `datetime` field holds instants from 1700-01-01T00:00:00Z to
+4000-12-31T00:00:00Z; Salesforce refuses a later instant on that last day.
 
 ## Pushdown
 
@@ -193,11 +210,18 @@ Only combinations that passed this crate's tests are listed.
 
 | Salesforce | REST API version | Platform |
 | --- | --- | --- |
-| The fixture's mock org | 62.0 | macOS arm64 |
-
-No real org has been tested.
+| The fixture's mock org | 62.0 | macOS arm64, Linux arm64 |
+| A sandbox of an Enterprise Edition org, Winter '27, through [`tests/org`](#tests-against-a-real-org) with the `refresh_token` flow | 62.0 | macOS arm64, Linux arm64 |
+| The same sandbox with the `jwt_bearer` flow | 62.0 | macOS arm64 |
 
 ## Tests
+
+| Test | Runs against | Runs by default |
+| --- | --- | --- |
+| `tests/conformance` | A mock org served over HTTP on a local port | Yes |
+| `tests/org` | A real org: a Developer Edition org or a sandbox | No: only when `SALESFORCE_TEST_AUTH_FLOW` is set |
+
+### Conformance suite against a mock org
 
 `tests/conformance` runs the SDK's connector conformance suite with this
 connector's fixture against a mock org that the test serves over HTTP on a
@@ -210,3 +234,97 @@ nix develop --command cargo test -p connector-salesforce
 The mock's model of Salesforce is in `tests/conformance/soql.rs`: text compares
 without regard to case, `!=` is true for null, and every other comparison with
 null is false.
+
+### Tests against a real org
+
+`tests/org` checks the mock's model and the connector against a real org. It
+only reads:
+
+| Check | Through | Object |
+| --- | --- | --- |
+| Table metadata: types, nullability, constraints, a field that field-level security hides, and a name describe does not find | The connector | `ConnectorTest__c`, `Task`, `PlatformEventUsageMetric`, and a missing object |
+| Boundary values and NULL of every field | The connector | `ConnectorTest__c` |
+| Values of `combobox` and `int`, selected by a filter that runs remotely | The connector | `Task` |
+| Filters that run remotely, a cancelled read | The connector | `ConnectorTest__c` |
+| A read across several query pages, a filter over it, a read released partway | The connector | `ConnectorTestBulk__c` |
+| A rejected credential is `authentication` and is not revealed | The connector | — |
+| The comparisons the connector keeps local | SOQL through the client | `ConnectorTest__c` |
+
+Without `SALESFORCE_TEST_AUTH_FLOW`, the test skips, so the default test run
+does not reach an org.
+
+Every mapped Data Source type is checked against a real org. The types a
+custom field cannot have come from standard fields: `combobox` and `int` from
+`Task.Subject` and `Task.CallDurationInSeconds`, whose values the test also
+reads, and `long` from `PlatformEventUsageMetric.Value`, which is read-only, so
+`long` values are checked only with the mock. Other `long` fields that REST API
+version 62.0 describes come with an org's own features, such as Data Cloud.
+An object the user may not see describes as one that does not exist, so the
+missing name covers both. What a real org cannot be made to do on request stays with the mock:
+`REQUEST_LIMIT_EXCEEDED`, `QUERY_TIMEOUT`, an expired query locator, a renewed
+access token, and describe refused with `INSUFFICIENT_ACCESS`.
+
+`tests/org/run.sh` prepares the org and runs the test with the credential of
+the Salesforce CLI's login. The user needs the permissions to deploy metadata
+and assign permission sets: Modify Metadata Through Metadata API Functions,
+Customize Application, Manage Profiles and Permission Sets, and Assign
+Permission Sets.
+
+#### Preparing the org
+
+Log in once, which opens a browser, then prepare the org. `prepare` deploys
+`tests/org/sfdx`, which holds the objects and a permission set that grants
+their fields except the hidden one, assigns the permission set to the user,
+upserts the records, with as many records in `ConnectorTestBulk__c` as its
+second argument gives (10000 when omitted), and creates a Task with the
+subject `Connector Test Task`. Running it again leaves the same org:
+
+```sh
+nix develop --command sf org login web --instance-url <My Domain URL> --alias connector-test
+nix develop --command crates/connectors/salesforce/tests/org/run.sh prepare connector-test
+```
+
+To remove what it created, delete the Task, then the objects
+`ConnectorTest__c` and `ConnectorTestBulk__c` and the permission set
+`ConnectorTest` in Setup.
+
+#### Running
+
+`test` reads the client ID, client secret, and refresh token of the CLI's login
+from `sf org auth show-sfdx-auth-url`, without printing them, and passes them
+to the test as `SALESFORCE_TEST_` followed by each connection option's key in
+upper case:
+
+```sh
+nix develop --command crates/connectors/salesforce/tests/org/run.sh test connector-test -- --nocapture
+```
+
+#### The JWT bearer flow
+
+To run the test with the `jwt_bearer` flow as well, create an external client
+app in the org once:
+
+1. Create a key and a self-signed certificate outside the repository:
+
+   ```sh
+   openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
+     -days 365 -subj /CN=connector-org-test
+   ```
+
+2. In Setup, open External Client App Manager and create an app: enable OAuth
+   with the scopes `api` and `refresh_token, offline_access`, any callback
+   URL, and JWT bearer flow with `cert.pem` as its certificate.
+3. In the app's policies, set Permitted Users to Admin approved users are
+   pre-authorized and select the permission set `ConnectorTest`.
+4. Copy the app's consumer key.
+
+Then give the app and the key to `test`, which runs the test again with the
+`jwt_bearer` flow, its audience the login server of the org's kind
+(`https://test.salesforce.com` for a sandbox):
+
+```sh
+SALESFORCE_TEST_JWT_CLIENT_ID=<consumer key> \
+SALESFORCE_TEST_JWT_USERNAME=<username> \
+SALESFORCE_TEST_JWT_PRIVATE_KEY_FILE=<path to key.pem> \
+nix develop --command crates/connectors/salesforce/tests/org/run.sh test connector-test
+```

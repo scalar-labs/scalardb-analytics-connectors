@@ -617,6 +617,7 @@ dependencies = [
  "connector-sdk",
  "futures-core",
  "futures-util",
+ "prost",
  "schemars 1.2.3",
  "serde",
  "serde_json",

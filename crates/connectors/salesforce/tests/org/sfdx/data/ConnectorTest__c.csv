@@ -1,0 +1,5 @@
+Key__c,Name,LongTextArea__c,Picklist__c,MultiPicklist__c,Email__c,Phone__c,Url__c,Encryptedstring__c,Reference__r.Seq__c,Checkbox__c,Number18_2__c,Percent5_2__c,Currency18_2__c,Date__c,DateTime__c,Time__c
+min,Ünïcode ✓,"line one
+line two",Prospecting,Red;Blue,someone@example.com,+81 3-0000-0000,https://example.com,secret-1234,1,true,-99999999999999.99,-999.99,0.01,1700-01-01,1700-01-01T00:00:00.000Z,00:00:00.000Z
+max,trailing space ,x,Closed Won,Green,SOMEONE@example.com,0,http://example.org/a?b=c,9,,false,99999999999999.99,999.99,1234.5,4000-12-31,4000-12-31T00:00:00.000Z,23:59:59.999Z
+null,null,,,,,,,,,false,,,,,,
