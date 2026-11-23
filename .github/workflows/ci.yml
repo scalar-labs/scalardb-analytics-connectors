@@ -15,8 +15,25 @@ jobs:
       contents: read
       # The Nix store cache purges the versions it replaces.
       actions: write
+    # The runner's disk holds the Nix store, the database server images the
+    # tests pull, and every toolchain's and feature set's build of the
+    # workspace. Full debug info and incremental state filled it until the
+    # linker crashed, so CI keeps only the line tables that panic backtraces
+    # need, and no incremental state, which a fresh runner never reuses.
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Even so, the job needs more disk than the runner leaves free. Nix
+      # provides every tool the job uses, so two preinstalled SDKs, .NET and
+      # GHC, are removed to make room: together about 10 GB, in far fewer
+      # files than the Android SDK or the tool cache, so they delete quickly.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup
+          df -h /
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The development shells, which cache.nixos.org does not fully provide:
       # flake.nix builds static protobuf and abseil from source. Only main
