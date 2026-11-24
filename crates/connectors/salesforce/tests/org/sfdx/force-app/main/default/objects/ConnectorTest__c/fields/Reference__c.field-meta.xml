@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Reference__c</fullName>
+    <deleteConstraint>SetNull</deleteConstraint>
+    <description>Refers to a ConnectorTestBulk__c record rather than an Account, because an org's automation can refuse to create an Account.</description>
+    <label>Reference</label>
+    <referenceTo>ConnectorTestBulk__c</referenceTo>
+    <relationshipLabel>Connector Tests</relationshipLabel>
+    <relationshipName>ConnectorTestReferences</relationshipName>
+    <required>false</required>
+    <type>Lookup</type>
+</CustomField>

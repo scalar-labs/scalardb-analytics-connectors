@@ -119,14 +119,30 @@ lib/           The connector API library, with the connectors whose dependencies
                and the native libraries it links that ship
 duckdb/        The DuckDB v1.5.6 loadable extension, which finds ../lib
 adbc-drivers/  The ADBC drivers that ship, with their manifests
+odbc-drivers/  The ODBC drivers, each in its own directory with the libraries it
+               needs beyond the system
+downloads/     A manifest for each dependency the package may not carry
+bin/           fetch-dependencies, which fetches those dependencies from their
+               vendors
 include/       The C header of the connector API library
 LICENSES/      The license texts of everything in the package, and where to
                obtain the source code a license requires to be available
 ```
 
-The extension uses the package's `adbc-drivers` unless
-`SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY` names another directory
+A directory is present when a connector in the package uses it. The extension
+uses the package's `adbc-drivers` and `odbc-drivers` unless
+`SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY` or
+`SCALARDB_ANALYTICS_ODBC_DRIVER_DIRECTORY` names another directory
 ([Entry points](adapters/duckdb/README.md#entry-points)).
+
+A dependency whose license does not let the package carry it is fetched by
+the user, who names it and accepts its license:
+
+```sh
+bin/fetch-dependencies list                              # what can be fetched, what uses it, and whether it is
+bin/fetch-dependencies license <name>                    # read its license
+bin/fetch-dependencies fetch <name> --accept-license     # accept it and fetch the dependency
+```
 
 CI builds and checks the package of every platform for each pull request and
 `main` push and keeps it as a workflow artifact
@@ -160,7 +176,8 @@ The repository has one [semantic version](https://semver.org), held by
 `[workspace.package]` in `Cargo.toml`. Every crate, the connector API library,
 and the DuckDB adapter release under it, because the connectors are built into
 one library and ship together. Before 1.0, a breaking change increases the
-minor version.
+minor version. The changes in each version are recorded in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License and dependency policy
 

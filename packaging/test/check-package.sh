@@ -3,7 +3,8 @@
 # directory, outside the development environment.
 #
 # 1. Every shipped binary loads only system libraries and the libraries in
-#    the package's lib/, searches for them only relative to itself, and is
+#    the package's lib/ or its own directory, searches for them only relative
+#    to itself, and is
 #    named either relative to its search path or without a path; on
 #    Linux, no glibc symbol is newer than the 2.28 baseline. A native library
 #    that is neither is a dependency packaging/dependencies.json does not ship.
@@ -15,6 +16,14 @@
 #    library and ADBC driver by itself, and queries PostgreSQL
 #    (adapters/duckdb/test/e2e.sh: in Docker, or the local server that
 #    POSTGRESQL_TEST_PORT names).
+# 4. In a package with bin/fetch-dependencies, for each dependency it lists:
+#    its license is shown, fetching it without --accept-license changes
+#    nothing in the package, and fetching it with --accept-license makes it
+#    fetched.
+# 5. Each connector's package test, crates/connectors/<connector>/tests/package/e2e.sh,
+#    run with the unpacked package, its dependencies fetched, and the DuckDB
+#    CLI. The test decides whether the package carries its connector and what
+#    its Data Source needs, and prints its own TAP lines.
 #
 # Usage: check-package.sh <package .tgz> <DuckDB v1.5.6 CLI> <DuckDB JDBC 1.5.6.0 jar>
 set -eu
@@ -38,10 +47,12 @@ fail() {
 	failures=$((failures + 1))
 }
 
-# Every file but the header, the license texts, and driver manifests.
-binaries=$(find "$home" -type f ! -path "$home/include/*" ! -path "$home/LICENSES/*" ! -name '*.toml')
-# Whether a library of this file name ships in the package's lib/.
-shipped() { [ -f "$home/lib/$1" ]; }
+# Every file but the header, the license texts, driver manifests, and the
+# scripts in bin/.
+binaries=$(find "$home" -type f ! -path "$home/include/*" ! -path "$home/LICENSES/*" ! -path "$home/bin/*" ! -name '*.toml')
+# Whether a library of this file name ships in the package's lib/ or beside
+# the binary that references it, as the libraries an ODBC driver needs do.
+shipped() { [ -f "$home/lib/$1" ] || [ -f "$(dirname "$binary")/$1" ]; }
 case "$(uname -s)" in
 Darwin)
 	for binary in $binaries; do
@@ -125,5 +136,40 @@ fi
 env -u ADBC_DRIVER_DIRECTORY -u SCALARDB_ANALYTICS_ADBC_DRIVER_DIRECTORY \
 	sh "$root/adapters/duckdb/test/e2e.sh" "$duckdb" "$extension" ||
 	fail "the packaged extension queries PostgreSQL with the packaged driver"
+
+fetch=$home/bin/fetch-dependencies
+if [ -f "$fetch" ]; then
+	# The names are the first field of the lines that list one.
+	names=$("$fetch" list | awk -F '\t' '$1 != "" { print $1 }')
+	[ -n "$names" ] || fail "fetch-dependencies lists its dependencies"
+	for name in $names; do
+		if "$fetch" license "$name" | grep -q .; then
+			echo "ok - fetch-dependencies shows the license of $name"
+		else
+			fail "fetch-dependencies shows the license of $name"
+		fi
+		find "$home" | sort >"$unpacked/before"
+		if "$fetch" fetch "$name" >/dev/null 2>&1; then
+			fail "fetch-dependencies fetches nothing of $name without --accept-license"
+		elif find "$home" | sort | cmp -s - "$unpacked/before"; then
+			echo "ok - fetch-dependencies fetches nothing of $name without --accept-license"
+		else
+			fail "fetch-dependencies fetches nothing of $name without --accept-license"
+		fi
+		if "$fetch" fetch "$name" --accept-license &&
+			"$fetch" list | awk -F '\t' -v name="$name" '$1 == name && /: fetched$/ { found = 1 } END { exit !found }'; then
+			echo "ok - fetch-dependencies fetches $name with --accept-license"
+		else
+			fail "fetch-dependencies fetches $name with --accept-license"
+		fi
+	done
+fi
+
+for test in "$root"/crates/connectors/*/tests/package/e2e.sh; do
+	[ -f "$test" ] || continue
+	connector=${test#"$root"/crates/connectors/}
+	connector=${connector%%/*}
+	sh "$test" "$home" "$duckdb" || fail "the package test of $connector passes"
+done
 
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed" >&2; exit 1; }

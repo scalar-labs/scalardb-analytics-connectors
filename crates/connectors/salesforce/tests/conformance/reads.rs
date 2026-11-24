@@ -75,13 +75,14 @@ fn instants(values: Vec<Option<i64>>) -> ArrayRef {
     Arc::new(TimestampMicrosecondArray::from(values).with_timezone("UTC"))
 }
 
-/// The first and the last instant Salesforce holds.
+/// The first and the last instant Salesforce holds: the start of the first
+/// day and the start of the last day.
 fn first_instant() -> i64 {
     i64::from(FIRST_DAY) * MICROS_PER_DAY
 }
 
 fn last_instant() -> i64 {
-    i64::from(LAST_DAY) * MICROS_PER_DAY + MICROS_PER_DAY - 1_000
+    i64::from(LAST_DAY) * MICROS_PER_DAY
 }
 
 /// Every field of `Values__c`.
@@ -91,24 +92,24 @@ fn values() -> ReadPlan {
         vec![
             ("Id", text(false)),
             ("Name", text(true)),
-            ("Notes__c", text(true)),
-            ("Stage__c", text(true)),
-            ("Tags__c", text(true)),
-            ("Kind__c", text(true)),
+            ("LongTextArea__c", text(true)),
+            ("Picklist__c", text(true)),
+            ("MultiPicklist__c", text(true)),
+            ("Combobox__c", text(true)),
             ("Email__c", text(true)),
             ("Phone__c", text(true)),
-            ("Site__c", text(true)),
-            ("Code__c", text(true)),
-            ("Owner__c", text(true)),
-            ("Flag__c", boolean(false)),
-            ("Count__c", i32(true)),
-            ("Big__c", i64(true)),
-            ("Amount__c", decimal(18, 2, true)),
-            ("Rate__c", decimal(5, 2, true)),
-            ("Price__c", decimal(18, 2, true)),
-            ("Day__c", date(true)),
-            ("Moment__c", timestamp_tz(true)),
-            ("Clock__c", time(true)),
+            ("Url__c", text(true)),
+            ("Encryptedstring__c", text(true)),
+            ("Reference__c", text(true)),
+            ("Checkbox__c", boolean(false)),
+            ("Int__c", i32(true)),
+            ("Long__c", i64(true)),
+            ("Number18_2__c", decimal(18, 2, true)),
+            ("Percent5_2__c", decimal(5, 2, true)),
+            ("Currency18_2__c", decimal(18, 2, true)),
+            ("Date__c", date(true)),
+            ("DateTime__c", timestamp_tz(true)),
+            ("Time__c", time(true)),
         ],
     )
 }
@@ -118,7 +119,7 @@ fn value_rows() -> Vec<ArrayRef> {
         ids(&[1, 2, 3]),
         texts(vec![
             Some("\u{dc}n\u{ef}code \u{2713}"),
-            Some("trailing space "),
+            Some("Mixed Case"),
             None,
         ]),
         texts(vec![Some("line one\nline two"), Some(""), None]),
@@ -127,7 +128,7 @@ fn value_rows() -> Vec<ArrayRef> {
         texts(vec![Some("Other"), Some("Partner"), None]),
         texts(vec![
             Some("someone@example.com"),
-            Some("SOMEONE@example.com"),
+            Some("someone@example.org"),
             None,
         ]),
         texts(vec![Some("+81 3-0000-0000"), Some("0"), None]),
@@ -147,8 +148,8 @@ fn value_rows() -> Vec<ArrayRef> {
         Arc::new(Int64Array::from(vec![Some(i64::MIN), Some(i64::MAX), None])),
         decimals(
             vec![
-                Some(-999_999_999_999_999_999),
-                Some(999_999_999_999_999_999),
+                Some(-9_999_999_999_999_998),
+                Some(9_999_999_999_999_998),
                 None,
             ],
             18,
@@ -171,22 +172,22 @@ fn value_rows() -> Vec<ArrayRef> {
 }
 
 /// The fields of `Values__c` the filter cases read: `Id` 0, `Name` 1,
-/// `Notes__c` 2, `Flag__c` 3, `Count__c` 4, `Big__c` 5, `Amount__c` 6,
-/// `Price__c` 7, `Day__c` 8, and `Moment__c` 9.
+/// `LongTextArea__c` 2, `Checkbox__c` 3, `Int__c` 4, `Long__c` 5, `Number18_2__c` 6,
+/// `Currency18_2__c` 7, `Date__c` 8, and `DateTime__c` 9.
 fn filtered() -> ReadPlan {
     ReadPlan::new(
         [NAMESPACE, "Values__c"],
         vec![
             ("Id", text(false)),
             ("Name", text(true)),
-            ("Notes__c", text(true)),
-            ("Flag__c", boolean(false)),
-            ("Count__c", i32(true)),
-            ("Big__c", i64(true)),
-            ("Amount__c", decimal(18, 2, true)),
-            ("Price__c", decimal(18, 2, true)),
-            ("Day__c", date(true)),
-            ("Moment__c", timestamp_tz(true)),
+            ("LongTextArea__c", text(true)),
+            ("Checkbox__c", boolean(false)),
+            ("Int__c", i32(true)),
+            ("Long__c", i64(true)),
+            ("Number18_2__c", decimal(18, 2, true)),
+            ("Currency18_2__c", decimal(18, 2, true)),
+            ("Date__c", date(true)),
+            ("DateTime__c", timestamp_tz(true)),
         ],
     )
 }
@@ -389,7 +390,7 @@ pub fn read_cases() -> Vec<ReadCase> {
         ),
         local_filter(
             "text equality stays local: Salesforce ignores case",
-            call("equal", vec![column(1), string("TRAILING SPACE ")]),
+            call("equal", vec![column(1), string("MIXED CASE")]),
             (1, 3),
         ),
         local_filter(
@@ -441,7 +442,7 @@ pub fn read_cases() -> Vec<ReadCase> {
                 "and",
                 vec![
                     call("gt", vec![column(4), int(0)]),
-                    call("equal", vec![column(1), string("trailing space ")]),
+                    call("equal", vec![column(1), string("Mixed Case")]),
                 ],
             ),
             (2, 2),
