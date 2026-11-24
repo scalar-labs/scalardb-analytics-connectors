@@ -108,7 +108,8 @@ impl Connector for OracleConnector {
                     false,
                     true,
                     None,
-                    "Host name or address of the Oracle listener.",
+                    "Host name or address of the Oracle listener; an IPv6 address may be given \
+                     with or without brackets.",
                 ),
                 option(
                     "port",
@@ -148,7 +149,9 @@ impl OdbcConnector for OracleConnector {
 
     /// Builds the connection string from the validated options: the Easy
     /// Connect string `//host:port/service_name` as the database, with the
-    /// driver's fixed attributes.
+    /// driver's fixed attributes. Easy Connect takes an IPv6 address only in
+    /// brackets, so a host containing `:` is enclosed in them unless it
+    /// already is.
     ///
     /// An option containing `;` is `invalid settings`: the driver ends a
     /// value at `;` however it is written.
@@ -167,9 +170,14 @@ impl OdbcConnector for OracleConnector {
                 ));
             }
         }
+        let host = plain("host").unwrap_or_default();
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host
+        };
         let database = format!(
-            "//{}:{}/{}",
-            plain("host").unwrap_or_default(),
+            "//{host}:{}/{}",
             plain("port").unwrap_or_else(|| DEFAULT_PORT.to_owned()),
             plain("service_name").unwrap_or_default()
         );
@@ -281,5 +289,45 @@ impl SqlConnector for OracleConnector {
 
     fn runs_remotely(expression: &LogicalExpression, _facts: &()) -> bool {
         pushdown::runs_remotely(expression)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Easy Connect string of the connection string built from `host`.
+    fn database(host: &str) -> String {
+        let options = ConnectionOptions::parse(
+            &OracleConnector::descriptor(),
+            [
+                ("host", host),
+                ("service_name", "FREEPDB1"),
+                ("user", "reader"),
+                ("password", "secret"),
+            ]
+            .map(|(key, value)| (key.to_owned(), SecretString::new(value.to_owned()))),
+        )
+        .unwrap();
+        let attributes = OracleConnector::connection_string(options)
+            .unwrap()
+            .attributes;
+        attributes
+            .strip_prefix(&format!("{FIXED_ATTRIBUTES};DBQ="))
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_host_name_or_ipv4_address_is_written_as_given() {
+        assert_eq!(database("db.example.com"), "//db.example.com:1521/FREEPDB1");
+        assert_eq!(database("192.0.2.1"), "//192.0.2.1:1521/FREEPDB1");
+    }
+
+    #[test]
+    fn an_ipv6_address_is_enclosed_in_brackets_once() {
+        assert_eq!(database("::1"), "//[::1]:1521/FREEPDB1");
+        assert_eq!(database("[::1]"), "//[::1]:1521/FREEPDB1");
+        assert_eq!(database("2001:db8::5"), "//[2001:db8::5]:1521/FREEPDB1");
     }
 }

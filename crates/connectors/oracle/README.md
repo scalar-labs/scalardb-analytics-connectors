@@ -16,7 +16,10 @@ catalog, and its values from the ODBC driver.
 | Fixed driver options | The driver `instantclient/libsqora` in the library's ODBC driver directory and `FEN=F`, so that the driver's failover does not reopen a broken connection behind the session; statements are passed and text is fetched as UTF-16; each column is read as the [value conversion](#coverage) expects |
 
 The connector connects to the database `//host:port/service_name`, Oracle's
-Easy Connect form, and authenticates with a database user and password. The
+Easy Connect form, and authenticates with a database user and password. Easy
+Connect takes an IPv6 address only in brackets, so a `host` containing `:`,
+such as `::1`, is written as `[::1]`; one given in brackets is written as
+given. The
 driver keeps braces as part of a connection string value, so a value with a
 character the connection string grammar gives meaning, such as `=` in a
 password, is written in double quotes. The driver ends a value at `;` however
