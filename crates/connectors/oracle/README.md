@@ -87,8 +87,15 @@ an inline PL/SQL function as UTF-8 bytes in pieces of 2000 bytes and joins
 them. Each is `{"text": ...}`, or the reason it is not read: `"too_long"`
 when it is longer than the connector reads (see
 [Known limitations](#known-limitations)), or `"not_utf8"` when its UTF-8
-conversion is not valid UTF-8, which leaves only that item unread. A NOT
-NULL constraint, which Oracle stores as the CHECK condition
+conversion is not valid UTF-8, which leaves only that item unread. A value
+longer than the connector reads is never read, so it is `"too_long"` even
+when it is not valid UTF-8. Oracle documents a replacement character in
+`CONVERT` only for a character the destination character set lacks, and
+`AL32UTF8` represents every character of the database character set, so a
+value is `"not_utf8"` only when its stored bytes are not valid in the database
+character set and pass through the conversion. Oracle does not document what
+`CONVERT` does with such bytes, and this has not been tested on a database
+whose character set is not `AL32UTF8`. A NOT NULL constraint, which Oracle stores as the CHECK condition
 `"<column>" IS NOT NULL` on its one column, is the column's
 nullability and is not among `checks` when the column is not nullable. Oracle
 marks a column not nullable only for an enabled and validated NOT NULL

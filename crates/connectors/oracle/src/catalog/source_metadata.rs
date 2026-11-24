@@ -174,7 +174,17 @@ pub struct OracleCheck {
 /// The connector reads a value in PL/SQL and converts it to UTF-8 there, so it
 /// reads one that fits in a PL/SQL `LONG`, 32,760 bytes in the database
 /// character set, and in 32,767 bytes once converted to UTF-8. In an
-/// `AL32UTF8` database, the limit is 32,760 bytes of UTF-8.
+/// `AL32UTF8` database, the limit is 32,760 bytes of UTF-8. A longer value is
+/// never read, so it is [`OracleLongText::TooLong`] even when it is not valid
+/// UTF-8.
+///
+/// Oracle documents a replacement character in `CONVERT` only for a character
+/// the destination character set lacks, and `AL32UTF8` represents every
+/// character of the database character set, so a value is
+/// [`OracleLongText::NotUtf8`] only when its stored bytes are not valid in the
+/// database character set and pass through the conversion. Oracle does not
+/// document what `CONVERT` does with such bytes, and this has not been tested
+/// on a database whose character set is not `AL32UTF8`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OracleLongText {
