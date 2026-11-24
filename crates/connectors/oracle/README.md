@@ -92,8 +92,11 @@ NULL constraint, which Oracle stores as the CHECK condition
 `"<column>" IS NOT NULL` on its one column, is the column's
 nullability and is not among `checks` when the column is not nullable. Oracle
 marks a column not nullable only for an enabled and validated NOT NULL
-constraint, so one that is disabled or not validated, or that condition
-written as a CHECK constraint, is among `checks`. A constraint that involves
+constraint, so one that is disabled or not validated is among `checks`. The
+condition cannot tell a NOT NULL constraint from a CHECK constraint written
+as `CHECK ("X" IS NOT NULL)`, so such a CHECK constraint is among `checks`
+only when its column is nullable; on a column that is not nullable it is
+redundant and not read. A constraint that involves
 a hidden column, such as an invisible one, is not read, because the columns do
 not list that column: a key or CHECK constraint with any of its columns
 hidden, the NOT NULL constraint of a hidden column, and a foreign key that

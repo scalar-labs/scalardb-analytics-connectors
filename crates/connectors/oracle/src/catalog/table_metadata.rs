@@ -324,8 +324,10 @@ impl ConstraintRow {
     /// the column is not nullable, because the column's nullability states
     /// it. Oracle marks a column not nullable only for an enabled and
     /// validated NOT NULL constraint, so one that is disabled or not
-    /// validated, or such a condition written as a CHECK constraint, is
-    /// added.
+    /// validated is added. The condition cannot tell a NOT NULL constraint
+    /// from a CHECK constraint written as `CHECK ("X" IS NOT NULL)`, so such a
+    /// CHECK constraint is not added either when its column is not nullable,
+    /// where it is redundant, and is added when the column is nullable.
     fn add_to(self, table: &mut OracleTable, texts: &LongTexts) {
         match self.kind.as_str() {
             "P" => {

@@ -35,9 +35,10 @@ pub struct OracleTable {
     /// Foreign keys in name order.
     pub foreign_keys: Vec<OracleForeignKey>,
     /// CHECK constraints in name order, without the NOT NULL constraints that
-    /// the columns' nullability states. A NOT NULL constraint that is
-    /// disabled or not validated leaves its column nullable and is among
-    /// them.
+    /// the columns' nullability states, nor a CHECK constraint written as
+    /// `CHECK ("X" IS NOT NULL)` on a column that is not nullable, which is
+    /// redundant. A NOT NULL constraint that is disabled or not validated
+    /// leaves its column nullable and is among them.
     pub checks: Vec<OracleCheck>,
 }
 
