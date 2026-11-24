@@ -36,6 +36,9 @@ names by code point.
 | Oracle Instant Client Basic and ODBC packages (Oracle Technology Network License, not free) | Data Source access | No: installed by the user in the ODBC driver directory, because its license does not allow us to redistribute it | 23.3.0.23.09 and 23.26.4.0.0 |
 | ODBC driver manager: unixODBC on Linux and macOS (LGPL-2.1) | Loading the ODBC driver; the ODBC driver also links its installer library, `libodbcinst` | No: installed by the user, and linked dynamically | 2.3.14 |
 
+The connector is not built into the distribution packages yet
+([Packaging](../../../packaging/README.md)).
+
 Exceptions: the ODBC driver manager is a native library the connector links
 dynamically, which the guideline of keeping native dependencies in ADBC drivers
 does not cover

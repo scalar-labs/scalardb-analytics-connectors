@@ -146,6 +146,18 @@ impl OdbcConnector for SqlServerConnector {
     /// `lib` holds the resources it loads relative to itself.
     const DRIVER: &'static str = "msodbcsql18/lib/msodbcsql18";
 
+    /// On Linux, the libraries the driver names without a search path: MIT
+    /// Kerberos, which it links, and OpenSSL 3, which it loads by file name
+    /// even without encryption. They are kept beside the driver, each finding
+    /// the others relative to itself.
+    #[cfg(target_os = "linux")]
+    const DRIVER_LIBRARIES: &'static [&'static str] = &[
+        "msodbcsql18/lib/libkrb5.so.3",
+        "msodbcsql18/lib/libgssapi_krb5.so.2",
+        "msodbcsql18/lib/libcrypto.so.3",
+        "msodbcsql18/lib/libssl.so.3",
+    ];
+
     /// Builds the connection string from the validated options, with the
     /// driver's fixed attributes.
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError> {

@@ -23,9 +23,21 @@ and the other date and time types none.
 
 | Dependency | Used for | Ships with the connector | Tested versions |
 | --- | --- | --- | --- |
-| Microsoft ODBC Driver 18 for SQL Server (Microsoft license, not free) | Data Source access | No: installed by the user in the ODBC driver directory, because its license does not allow us to redistribute it | 18.1.1.1 |
-| ODBC driver manager: unixODBC on Linux and macOS (LGPL-2.1) | Loading the ODBC driver | No: installed by the user, and linked dynamically | 2.3.14 |
-| OpenSSL 1.0, 1.1, or 3 | The ODBC driver's encryption, loaded by the driver at run time | No: installed by the user | 3.6.5 |
+| Microsoft ODBC Driver 18 for SQL Server (Microsoft license, not free) | Data Source access | Downloaded: the package's `bin/fetch-dependencies fetch msodbcsql18 --accept-license` fetches it from Microsoft into the ODBC driver directory, because its license does not allow us to redistribute it | 18.1.1.1 |
+| ODBC driver manager: unixODBC (LGPL-2.1) | Loading the ODBC driver | Yes, on Linux: in the package's `lib/`, linked dynamically | 2.3.14 |
+| MIT Kerberos (MIT) | Linked by the ODBC driver, which the connector authenticates without | Yes, on Linux: beside the driver | 1.22.2 |
+| OpenSSL 3 (Apache-2.0) | The ODBC driver's encryption, loaded by the driver at run time, also without encryption | Yes, on Linux: beside the driver | 3.6.5 |
+
+The tested versions are those of the development shell, which the
+[conformance suite](#tests) runs with. The Linux packages pin their own:
+driver 18.7.1.1, unixODBC 2.3.14, MIT Kerberos 1.22.3, and OpenSSL 3.5.9
+(`packaging/dependencies.json`), with which the package check reads SQL
+Server 2022 ([Packaging](../../../packaging/README.md)).
+
+The connector is built into the Linux packages only. On macOS the driver
+refers to its driver manager by an absolute Homebrew path, so it cannot be
+placed in a package without rewriting it; there the development shell provides
+the driver and its dependencies.
 
 Exceptions: the ODBC driver manager is a native library the connector links
 dynamically, which the guideline of keeping native dependencies in ADBC drivers
@@ -36,8 +48,11 @@ The connector loads the ODBC driver from the library's ODBC driver directory
 as `msodbcsql18/lib/msodbcsql18`, the driver's shared library or a link to it;
 the driver manager's registered drivers are not used. The driver finds its
 resources relative to that path, so the driver's `share` directory is
-`msodbcsql18/share` beside it. The driver loads OpenSSL by its file name, so
-OpenSSL must be on the library search path.
+`msodbcsql18/share` beside it. On Linux the driver names Kerberos, OpenSSL,
+and the driver manager's `libodbcinst` without a search path, so before the
+driver loads, the connector loads `libkrb5.so.3`, `libgssapi_krb5.so.2`,
+`libcrypto.so.3`, and `libssl.so.3` from `msodbcsql18/lib/` and
+`libodbcinst.so.2` from beside the library, and the driver uses those.
 
 ## Source metadata
 
@@ -247,6 +262,12 @@ the connector:
 The [conformance suite](#tests) checks the first as a known deviation and
 fails once the connector meets the contract.
 
+In the Linux packages, the OpenSSL the package carries looks for the trusted
+certificates under `/etc/ssl`, as it was built. Where the system keeps them
+elsewhere, as Red Hat Enterprise Linux keeps them under `/etc/pki`, verifying
+the server's certificate (`trust_server_certificate` `no`, the default) may
+fail. Certificate verification with the packaged OpenSSL has not been tested.
+
 ## Compatibility
 
 Only combinations that passed this crate's tests are listed.
@@ -270,3 +291,13 @@ nix develop --command cargo test -p connector-sqlserver-odbc
 
 `SQLSERVER_TEST_IMAGE` selects another server image. The container is kept
 between runs and can be removed with `docker rm -f`.
+
+`tests/package/e2e.sh` checks the connector in a Linux distribution package,
+run by the package check (`packaging/test/check-package.sh`) after the driver
+was fetched: the packaged DuckDB extension reads SQL Server with and without
+encryption, and the driver uses the package's ODBC driver manager, Kerberos,
+and OpenSSL, whatever the system has. It uses the same container, or the
+server that `SQLSERVER_TEST_PORT` names, set up with `tests/package/setup.sql`,
+as `packaging/linux/check.sh` provides. Without either, an arm64 host skips
+it, since the server image is `linux/amd64` only and the package check runs
+without emulation; CI runs it on linux_amd64.

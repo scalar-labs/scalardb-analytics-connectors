@@ -94,7 +94,9 @@ A connector for a new Connector is built in this order:
    available to the development shell's `ADBC_DRIVER_DIRECTORY` in
    `flake.nix`, where the tests load it. With ODBC access, put the ODBC driver
    in the development shell's `ODBC_DRIVER_DIRECTORY` at the path the
-   connector's `OdbcConnector::DRIVER` names. Build it into the artifact and run the
+   connector's `OdbcConnector::DRIVER` names, with the libraries it needs
+   beyond the system at the paths `OdbcConnector::DRIVER_LIBRARIES` names.
+   Build it into the artifact and run the
    [dependency policy check](#dependency-policy-check) to confirm that
    the connector brings in no native dependency, no ADBC driver loading of its own,
    and no license that prevents distribution.
@@ -739,17 +741,21 @@ dependency with:
 
 - A connector built into the product's distribution ships its dependencies with
   it as far as their licenses permit.
-- A dependency whose license or vendor does not permit that, as with some
-  vendor client libraries and ODBC drivers, is installed by the user. The
-  connector's README states its requirements and installation.
-- Shipped dependencies are bundled into this repository's distribution
-  package, one per platform, which the product application's distribution
-  takes as a whole ([Distribution package](../README.md#distribution-package)).
-  A connector declares the dependencies it ships in
-  `packaging/dependencies.json`, and each kind of dependency has its place in
-  the package ([Packaging](../packaging/README.md)): ADBC drivers in
-  `adbc-drivers/` with their manifests, and native libraries the library links
-  in `lib/`.
+- A dependency whose license or vendor does not permit that, but which the
+  vendor lets anyone download, as with Microsoft ODBC Driver 18 for SQL
+  Server, is downloaded: the package carries a script that fetches it from the
+  vendor at a pinned version and hash after the user accepts its license.
+- Any other dependency, as with some vendor client libraries, is installed by
+  the user. The connector's README states its requirements and installation.
+- Shipped dependencies, bundled or downloaded, are part of this repository's
+  distribution package, one per platform, which the product application's
+  distribution takes as a whole
+  ([Distribution package](../README.md#distribution-package)). A connector
+  declares them in `packaging/dependencies.json`, and each kind of dependency
+  has its place in the package ([Packaging](../packaging/README.md)): ADBC
+  drivers in `adbc-drivers/` with their manifests, ODBC drivers in
+  `odbc-drivers/<driver>/` with the libraries they need beyond the system, and
+  native libraries the library links in `lib/`.
 
 ## Isolating native dependencies
 

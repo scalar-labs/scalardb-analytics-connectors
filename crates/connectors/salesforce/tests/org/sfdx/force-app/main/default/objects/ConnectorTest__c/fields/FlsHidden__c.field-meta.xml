@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>FlsHidden__c</fullName>
+    <description>No permission set grants this field, so field-level security hides it from the test user.</description>
+    <label>FlsHidden</label>
+    <length>20</length>
+    <required>false</required>
+    <type>Text</type>
+</CustomField>

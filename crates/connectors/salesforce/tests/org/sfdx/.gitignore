@@ -1,0 +1,3 @@
+# State the Salesforce CLI keeps per org it deploys to.
+.sf/
+.sfdx/

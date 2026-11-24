@@ -18,6 +18,8 @@ arrow-odbc = { version = "=27.0.0", features = ["wide"] }
 arrow-schema.workspace = true
 connector-sdk.workspace = true
 futures-core.workspace = true
+# Loads the libraries an ODBC driver needs before the driver manager loads it.
+libloading = "0.8.9"
 
 [dev-dependencies]
 analytics-types.workspace = true
