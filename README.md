@@ -170,7 +170,8 @@ The repository has one [semantic version](https://semver.org), held by
 `[workspace.package]` in `Cargo.toml`. Every crate, the connector API library,
 and the DuckDB adapter release under it, because the connectors are built into
 one library and ship together. Before 1.0, a breaking change increases the
-minor version.
+minor version. The changes in each version are recorded in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License and dependency policy
 
