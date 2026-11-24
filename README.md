@@ -141,7 +141,8 @@ bin/fetch-dependencies fetch <name> --accept-license     # accept it and fetch t
 CI builds and checks the package of every platform for each pull request and
 `main` push and keeps it as a workflow artifact
 (`.github/workflows/package.yml`). Pushing a tag `v<version>` that equals the
-workspace version publishes the packages as a GitHub Release. The library
+workspace version publishes the packages as a GitHub Release, whose notes
+are that version's section of `CHANGELOG.md`. The library
 ships the connectors that `connector-api` has features for, and the
 dependencies they ship are declared in `packaging/dependencies.json`
 ([Packaging](packaging/README.md)). The packages are built with
