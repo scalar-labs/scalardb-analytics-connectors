@@ -19,8 +19,8 @@ mod odbc_output;
 mod pushdown;
 
 pub use catalog::{
-    OracleCheck, OracleColumn, OracleForeignKey, OracleKey, OracleReferencedTable, OracleTable,
-    OracleTableKind, OracleUniqueKey, OracleUniqueKind, OracleValueSource,
+    OracleCheck, OracleColumn, OracleForeignKey, OracleKey, OracleLongText, OracleReferencedTable,
+    OracleTable, OracleTableKind, OracleUniqueKey, OracleUniqueKind, OracleValueSource,
 };
 pub use error_handler::OracleErrorHandler;
 

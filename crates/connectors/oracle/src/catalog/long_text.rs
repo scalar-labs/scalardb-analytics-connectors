@@ -4,19 +4,26 @@
 //! `arrow-odbc` reads each column into a buffer of a fixed length, so it
 //! cannot read a `LONG` value, and the `VARCHAR2` copies Oracle keeps beside
 //! them, such as `TEXT_VC`, are cut at 4000 bytes. The statement here reads
-//! each value in an inline PL/SQL function, which holds a `LONG` of up to
-//! 32,760 bytes, and returns its UTF-8 bytes in pieces of at most 2000 bytes,
-//! one row per piece; the pieces are joined and decoded here. Splitting bytes
-//! rather than characters keeps the value exact whatever characters it holds.
-//! A longer value is not read.
+//! each value in an inline PL/SQL function, converts it to UTF-8 there, and
+//! returns its UTF-8 bytes in pieces of at most 2000 bytes, one row per piece;
+//! the pieces are joined and decoded here. Splitting bytes rather than
+//! characters keeps the value exact whatever characters it holds.
+//!
+//! The function holds a value of up to 32,760 bytes in the database character
+//! set, a PL/SQL `LONG`, whose UTF-8 conversion fits in 32,767 bytes, the
+//! longest PL/SQL `VARCHAR2` and `RAW`; a longer value is not read and is
+//! [`OracleLongText::TooLong`]. Reading longer values would take reading the
+//! `LONG` columns piecewise with `SQLGetData`, outside the Arrow catalog
+//! reads. A value whose bytes are not valid UTF-8 is
+//! [`OracleLongText::NotUtf8`], for its item only.
 
 use std::collections::HashMap;
 
 use arrow_array::{Array, BinaryArray};
-use connector_sdk::{ConnectorError, ErrorKind};
+use connector_sdk::ConnectorError;
 use connector_sql::catalog::{column, required, text, unexpected_catalog_result};
 
-use super::Catalog;
+use super::{Catalog, OracleLongText};
 
 /// The bytes of one piece; `RAW(2000)` is the longest `RAW` in SQL.
 const PIECE_BYTES: u32 = 2000;
@@ -72,7 +79,7 @@ impl TextKind {
 }
 
 /// The function that reads one `LONG` value as UTF-8 bytes, or NULL when it
-/// is longer than a PL/SQL `LONG` holds.
+/// or its UTF-8 conversion is longer than PL/SQL holds.
 const LONG_TEXT_FUNCTION: &str = "FUNCTION long_text(kind VARCHAR2, owner_name VARCHAR2, \
          table_name VARCHAR2, item VARCHAR2) RETURN BLOB IS \
        value LONG; \
@@ -92,9 +99,9 @@ const LONG_TEXT_FUNCTION: &str = "FUNCTION long_text(kind VARCHAR2, owner_name V
      EXCEPTION WHEN VALUE_ERROR THEN RETURN NULL; \
      END;";
 
-/// The long text values of the requested tables, keyed by kind, owner, table
-/// name, and item. A value longer than 32,760 bytes is absent.
-pub(crate) struct LongTexts(HashMap<(TextKind, String, String, String), String>);
+/// The long text values of the requested tables that were read, keyed by
+/// kind, owner, table name, and item. A value too long to read is absent.
+pub(crate) struct LongTexts(HashMap<(TextKind, String, String, String), OracleLongText>);
 
 impl LongTexts {
     /// Reads every long text value of the tables `requested` selects, in one
@@ -146,33 +153,28 @@ impl LongTexts {
                     .extend_from_slice(pieces.value(row));
             }
         }
-        let texts = bytes
-            .into_iter()
-            .map(|(key, bytes)| {
-                let text = String::from_utf8(bytes).map_err(|_| {
-                    ConnectorError::new(
-                        ErrorKind::Data,
-                        false,
-                        "a catalog text is not valid Unicode and cannot be returned exactly",
-                    )
-                })?;
-                Ok((key, text))
-            })
-            .collect::<Result<_, ConnectorError>>()?;
-        Ok(Self(texts))
+        Ok(Self(
+            bytes
+                .into_iter()
+                .map(|(key, bytes)| (key, OracleLongText::from_utf8(bytes)))
+                .collect(),
+        ))
     }
 
-    /// The value of `kind` for `item` of table `name` of `owner`, if it was
-    /// read.
+    /// The value of `kind` for `item` of table `name` of `owner`, an item
+    /// that has such a value. Every value of the requested tables is read
+    /// unless it is too long, so one that was not read is
+    /// [`OracleLongText::TooLong`].
     pub(crate) fn get(
         &self,
         kind: TextKind,
         owner: &str,
         name: &str,
         item: &str,
-    ) -> Option<String> {
+    ) -> OracleLongText {
         self.0
             .get(&(kind, owner.to_owned(), name.to_owned(), item.to_owned()))
             .cloned()
+            .unwrap_or(OracleLongText::TooLong)
     }
 }

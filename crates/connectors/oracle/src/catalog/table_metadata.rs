@@ -15,8 +15,8 @@ use connector_sql::catalog::{required, text, unexpected_catalog_result};
 
 use super::{
     Catalog, LISTED_OBJECTS, LISTED_SCHEMA, OracleCheck, OracleColumn, OracleForeignKey, OracleKey,
-    OracleReferencedTable, OracleTable, OracleTableKind, OracleUniqueKey, OracleUniqueKind,
-    OracleValueSource, integer,
+    OracleLongText, OracleReferencedTable, OracleTable, OracleTableKind, OracleUniqueKey,
+    OracleUniqueKind, OracleValueSource, integer,
     long_text::{LongTexts, TextKind},
     required_integer,
 };
@@ -110,12 +110,14 @@ fn source_metadata(
     Ok(tables
         .into_iter()
         .map(|(key, mut table)| {
-            table.definition = texts.get(
-                TextKind::Definition,
-                &table.namespace,
-                &table.name,
-                &table.name,
-            );
+            if table.kind == OracleTableKind::View {
+                table.definition = Some(texts.get(
+                    TextKind::Definition,
+                    &table.namespace,
+                    &table.name,
+                    &table.name,
+                ));
+            }
             table.unique_keys.sort_by(|a, b| a.name.cmp(&b.name));
             table.foreign_keys.sort_by(|a, b| a.name.cmp(&b.name));
             table.checks.sort_by(|a, b| a.name.cmp(&b.name));
@@ -350,7 +352,7 @@ impl ConstraintRow {
             _ => {
                 let expression = texts.get(TextKind::Check, &self.owner, &table.name, &self.name);
                 let not_null = match (self.columns.as_slice(), &expression) {
-                    ([column], Some(expression)) => {
+                    ([column], OracleLongText::Text(expression)) => {
                         *expression == format!("\"{column}\" IS NOT NULL")
                             && table
                                 .columns

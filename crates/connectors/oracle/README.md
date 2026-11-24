@@ -84,9 +84,12 @@ Definitions and expressions are as Oracle stores them, such as `"AMOUNT"*2`.
 Oracle keeps them as `LONG` values, which `arrow-odbc` cannot read, and cuts
 the `VARCHAR2` copies beside them at 4000 bytes, so the connector reads each in
 an inline PL/SQL function as UTF-8 bytes in pieces of 2000 bytes and joins
-them. A PL/SQL `LONG` holds at most 32,760 bytes; a longer definition or
-expression is `null`. A NOT NULL constraint, which Oracle stores as the CHECK
-condition `"<column>" IS NOT NULL` on its one column, is the column's
+them. Each is `{"text": ...}`, or the reason it is not read: `"too_long"`
+when it is longer than the connector reads (see
+[Known limitations](#known-limitations)), or `"not_utf8"` when its UTF-8
+conversion is not valid UTF-8, which leaves only that item unread. A NOT
+NULL constraint, which Oracle stores as the CHECK condition
+`"<column>" IS NOT NULL` on its one column, is the column's
 nullability and is not among `checks` when the column is not nullable. Oracle
 marks a column not nullable only for an enabled and validated NOT NULL
 constraint, so one that is disabled or not validated, or that condition
@@ -103,8 +106,8 @@ the derivation. A column's ordinal is its `COLUMN_ID`. A column has no source
 identifier: Oracle renumbers the columns after a dropped one, so no column
 number identifies a column across changes; the table's is its `object_id`.
 Constraints are those of the document. They are missing when a foreign key's
-referenced table is not visible or a CHECK expression is longer than 32,760
-bytes.
+referenced table is not visible or a CHECK expression is not read, and the
+reason says whether it is too long or not valid UTF-8.
 
 The `ALL_*` views show only the tables the credential has a privilege on,
 such as `SELECT`, `READ`, or `INSERT`, or a system privilege such as `SELECT
@@ -164,7 +167,7 @@ as Oracle stores it:
       "char_length": 0,
       "char_used": null,
       "comment": "Order total",
-      "value_source": { "kind": "default", "expression": "0 ", "on_null": false }
+      "value_source": { "kind": "default", "expression": { "text": "0 " }, "on_null": false }
     },
     {
       "name": "DOUBLED",
@@ -178,14 +181,19 @@ as Oracle stores it:
       "char_length": 0,
       "char_used": null,
       "comment": null,
-      "value_source": { "kind": "virtual", "expression": "\"AMOUNT\"*2" }
+      "value_source": { "kind": "virtual", "expression": { "text": "\"AMOUNT\"*2" } }
     }
   ],
   "primary_key": { "name": "ORDERS_PKEY", "columns": ["ID"], "enforced": true, "validated": true },
   "unique_keys": [],
   "foreign_keys": [],
   "checks": [
-    { "name": "ORDERS_AMOUNT_CHECK", "expression": "amount >= 0", "enforced": true, "validated": true }
+    {
+      "name": "ORDERS_AMOUNT_CHECK",
+      "expression": { "text": "amount >= 0" },
+      "enforced": true,
+      "validated": true
+    }
   ]
 }
 ```
@@ -286,6 +294,16 @@ These come from Oracle's calendar, and are not yet handled by the connector:
 - A Julian leap day that the proleptic Gregorian calendar does not have, such
   as 1500-02-29, has no timestamp with the same fields: `arrow-odbc` panics
   converting it, and the read fails with an `internal` error.
+
+A view definition, CHECK condition, or column expression is read only up to
+the length a PL/SQL value holds: 32,760 bytes in the database character set,
+and 32,767 bytes once converted to UTF-8. In an `AL32UTF8` database, the
+default, that is 32,760 bytes of UTF-8; in a database with another character
+set, a value within 32,760 bytes can still exceed 32,767 bytes in UTF-8. A
+longer value is `"too_long"` in the source metadata, and a longer CHECK
+condition leaves the table's constraints missing. Reading longer values would
+take reading the `LONG` columns piecewise with `SQLGetData`, outside the
+Arrow reads the catalog uses.
 
 Metadata requests cannot be made to wait at Oracle: the data dictionary views
 are read consistently without locks, so the conformance suite does not check

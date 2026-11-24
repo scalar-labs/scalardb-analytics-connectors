@@ -22,8 +22,8 @@ mod type_mapping;
 
 pub(crate) use listing::{namespace_list, table_list};
 pub use source_metadata::{
-    OracleCheck, OracleColumn, OracleForeignKey, OracleKey, OracleReferencedTable, OracleTable,
-    OracleTableKind, OracleUniqueKey, OracleUniqueKind, OracleValueSource,
+    OracleCheck, OracleColumn, OracleForeignKey, OracleKey, OracleLongText, OracleReferencedTable,
+    OracleTable, OracleTableKind, OracleUniqueKey, OracleUniqueKind, OracleValueSource,
 };
 pub(crate) use table_metadata::table_metadata;
 

@@ -24,9 +24,8 @@ pub struct OracleTable {
     pub kind: OracleTableKind,
     /// The table's comment, from `ALL_TAB_COMMENTS`.
     pub comment: Option<String>,
-    /// A view's definition, from `ALL_VIEWS.TEXT`; `None` for a table, or
-    /// for a definition longer than 32,760 bytes, which is not read.
-    pub definition: Option<String>,
+    /// A view's definition, from `ALL_VIEWS.TEXT`; `None` for a table.
+    pub definition: Option<OracleLongText>,
     /// Columns in `COLUMN_ID` order.
     pub columns: Vec<OracleColumn>,
     pub primary_key: Option<OracleKey>,
@@ -89,21 +88,20 @@ pub struct OracleColumn {
 }
 
 /// Where Oracle takes a column's value from, other than the row itself; the
-/// three are exclusive for one column. An expression is `None` when it is
-/// longer than 32,760 bytes, which is not read.
+/// three are exclusive for one column.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OracleValueSource {
     /// A default, used when a row omits the column, and with `on_null` also
     /// when it gives NULL.
     Default {
-        expression: Option<String>,
+        expression: OracleLongText,
         on_null: bool,
     },
     /// An identity column, numbered by Oracle.
     Identity,
     /// A virtual column, computed by `expression` and not stored.
-    Virtual { expression: Option<String> },
+    Virtual { expression: OracleLongText },
 }
 
 /// A primary key.
@@ -161,13 +159,38 @@ pub struct OracleReferencedTable {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OracleCheck {
     pub name: String,
-    /// `SEARCH_CONDITION` as Oracle stores it; `None` when it is longer than
-    /// 32,760 bytes, which is not read.
-    pub expression: Option<String>,
+    /// `SEARCH_CONDITION`.
+    pub expression: OracleLongText,
     /// `STATUS` is `ENABLED`.
     pub enforced: bool,
     /// `VALIDATED`: false when existing rows were not checked.
     pub validated: bool,
+}
+
+/// A definition or expression Oracle keeps as a `LONG` value: the value as
+/// Oracle stores it, or why it was not read.
+///
+/// The connector reads a value in PL/SQL and converts it to UTF-8 there, so it
+/// reads one that fits in a PL/SQL `LONG`, 32,760 bytes in the database
+/// character set, and in 32,767 bytes once converted to UTF-8. In an
+/// `AL32UTF8` database, the limit is 32,760 bytes of UTF-8.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleLongText {
+    /// The value as Oracle stores it.
+    Text(String),
+    /// The value is longer than the connector reads.
+    TooLong,
+    /// The value's UTF-8 conversion is not valid UTF-8, so it cannot be
+    /// returned exactly.
+    NotUtf8,
+}
+
+impl OracleLongText {
+    /// The value whose UTF-8 conversion is `bytes`.
+    pub(crate) fn from_utf8(bytes: Vec<u8>) -> Self {
+        String::from_utf8(bytes).map_or(Self::NotUtf8, Self::Text)
+    }
 }
 
 /// Why the constraints of a table are missing when a foreign key's
@@ -175,9 +198,14 @@ pub struct OracleCheck {
 const REFERENCE_HIDDEN: &str =
     "Oracle hides the table a foreign key references when the credential has no privilege on it";
 
+/// Why the constraints of a table are missing when a CHECK expression is
+/// longer than the connector reads.
+const CHECK_TOO_LONG: &str = "a CHECK expression is longer than the connector reads: 32,760 bytes \
+     in the database character set or 32,767 bytes in UTF-8";
+
 /// Why the constraints of a table are missing when a CHECK expression is not
-/// read.
-const CHECK_TOO_LONG: &str = "a CHECK expression is longer than 32,760 bytes, which is not read";
+/// valid UTF-8.
+const CHECK_NOT_UTF8: &str = "a CHECK expression is not valid UTF-8 and cannot be returned exactly";
 
 impl OracleTable {
     pub(crate) fn reference(&self) -> TableReference {
@@ -188,7 +216,7 @@ impl OracleTable {
     /// The table's constraints as table metadata states them.
     ///
     /// They are missing when a foreign key's referenced table is not visible
-    /// or a CHECK expression is not read.
+    /// or a CHECK expression is not read, which the reason states.
     fn table_constraints(&self) -> Reported<Vec<Constraint>> {
         let mut constraints: Vec<Constraint> = self
             .primary_key
@@ -235,10 +263,18 @@ impl OracleTable {
             });
         }
         for check in &self.checks {
-            let Some(expression) = &check.expression else {
-                return Reported::Missing {
-                    reason: CHECK_TOO_LONG.to_owned(),
-                };
+            let expression = match &check.expression {
+                OracleLongText::Text(expression) => expression,
+                OracleLongText::TooLong => {
+                    return Reported::Missing {
+                        reason: CHECK_TOO_LONG.to_owned(),
+                    };
+                }
+                OracleLongText::NotUtf8 => {
+                    return Reported::Missing {
+                        reason: CHECK_NOT_UTF8.to_owned(),
+                    };
+                }
             };
             constraints.push(Constraint {
                 name: check.name.clone(),
@@ -272,5 +308,76 @@ impl OracleTable {
             false,
             self.table_constraints(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_text_is_its_utf8_value_or_not_utf8() {
+        assert_eq!(
+            OracleLongText::from_utf8("amount >= 0 😀".as_bytes().to_vec()),
+            OracleLongText::Text("amount >= 0 😀".to_owned())
+        );
+        assert_eq!(
+            OracleLongText::from_utf8(vec![b'a', 0xFF]),
+            OracleLongText::NotUtf8
+        );
+    }
+
+    /// A table with one check of `expression`.
+    fn checked(expression: OracleLongText) -> OracleTable {
+        OracleTable {
+            namespace: "SALES".to_owned(),
+            name: "ORDERS".to_owned(),
+            object_id: 1,
+            kind: OracleTableKind::Table,
+            comment: None,
+            definition: None,
+            columns: Vec::new(),
+            primary_key: None,
+            unique_keys: Vec::new(),
+            foreign_keys: Vec::new(),
+            checks: vec![OracleCheck {
+                name: "ORDERS_CHECK".to_owned(),
+                expression,
+                enforced: true,
+                validated: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_check_expression_that_is_not_read_leaves_constraints_missing_with_its_reason() {
+        let constraints = |expression| {
+            checked(expression)
+                .to_table_metadata()
+                .constraints()
+                .clone()
+        };
+        assert_eq!(
+            constraints(OracleLongText::Text("AMOUNT >= 0".to_owned())),
+            Reported::Value(vec![Constraint {
+                name: "ORDERS_CHECK".to_owned(),
+                enforced: true,
+                kind: ConstraintKind::Check {
+                    expression: "AMOUNT >= 0".to_owned()
+                },
+            }])
+        );
+        assert_eq!(
+            constraints(OracleLongText::TooLong),
+            Reported::Missing {
+                reason: CHECK_TOO_LONG.to_owned()
+            }
+        );
+        assert_eq!(
+            constraints(OracleLongText::NotUtf8),
+            Reported::Missing {
+                reason: CHECK_NOT_UTF8.to_owned()
+            }
+        );
     }
 }
