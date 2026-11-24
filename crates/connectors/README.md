@@ -46,7 +46,7 @@ of direct access.>
 
 | Dependency | Used for | Ships with the connector | Tested versions |
 | --- | --- | --- | --- |
-| <Name and license> | <What the connector uses it for> | <"Yes", or "No: installed by the user" and why> | <Versions the conformance suite passed with> |
+| <Name and license> | <What the connector uses it for> | <"Yes", "Downloaded: fetched by the package's script" and why, or "No: installed by the user" and why, with the platforms where it differs> | <Versions the conformance suite passed with> |
 
 <Any exception to the acceptance rules and why it is accepted, or "None". For
 each dependency the user installs, its requirements and installation.>

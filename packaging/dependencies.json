@@ -5,6 +5,10 @@
     },
     "postgresql": {
       "dependencies": ["adbc_driver_postgresql"]
+    },
+    "sqlserver-odbc": {
+      "platforms": ["linux_amd64", "linux_arm64"],
+      "dependencies": ["unixodbc", "kerberos", "msodbcsql18"]
     }
   },
   "extension": {
@@ -70,6 +74,7 @@
     "kerberos": {
       "kind": "prebuilt",
       "version": "1.22.3",
+      "directory": "odbc-drivers/msodbcsql18/lib",
       "lib": [
         "libssl.so.3",
         "libcrypto.so.3",
@@ -82,6 +87,44 @@
       "artifacts": {
         "linux_amd64": "sha256-eyDOrCel+lFw64hl6ei/jX+yZHDPUuv0rhzhT0FzMyM=",
         "linux_arm64": "sha256-PQ1Y4PCcb5IwIJazXfPIBcg7vHyjIIliW/YDTN0Bgco="
+      }
+    },
+    "msodbcsql18": {
+      "kind": "odbc-driver",
+      "delivery": "downloaded",
+      "name": "Microsoft ODBC Driver 18 for SQL Server",
+      "version": "18.7.1.1",
+      "license": "https://aka.ms/odbc18eula",
+      "downloads": {
+        "linux_amd64": [
+          {
+            "url": "https://packages.microsoft.com/debian/12/prod/pool/main/m/msodbcsql18/msodbcsql18_18.7.1.1-1_amd64.deb",
+            "hash": "sha256-9QbLPeizTNlOkBTSR7Oenf1+/6157a06tnCW3Dwbaw4=",
+            "format": "deb"
+          },
+          {
+            "url": "https://packages.microsoft.com/rhel/8/prod/Packages/m/msodbcsql18-18.7.1.1-1.x86_64.rpm",
+            "hash": "sha256-L3Z0xefZ32qDsX1qEzJlJM4CmZrDesZzm/omFqoIh3c=",
+            "format": "rpm"
+          }
+        ],
+        "linux_arm64": [
+          {
+            "url": "https://packages.microsoft.com/debian/12/prod/pool/main/m/msodbcsql18/msodbcsql18_18.7.1.1-1_arm64.deb",
+            "hash": "sha256-akyvte/muJmutnTeVv3O7iOAkw8aRsNpO6cPQSkcges=",
+            "format": "deb"
+          },
+          {
+            "url": "https://packages.microsoft.com/rhel/8/prod/Packages/m/msodbcsql18-18.7.1.1-1.aarch64.rpm",
+            "hash": "sha256-O9UQUYvj6qh+ayH6PXTmxGmsSx5xsOJUrP9H/EbdibE=",
+            "format": "rpm"
+          }
+        ]
+      },
+      "files": {
+        "opt/microsoft/msodbcsql18/lib64/libmsodbcsql-18.7.so.1.1": "lib/msodbcsql18",
+        "opt/microsoft/msodbcsql18/share": "share",
+        "usr/share/doc/msodbcsql18/LICENSE.txt": "LICENSE.txt"
       }
     },
     "protobuf": {

@@ -160,13 +160,33 @@
           # connector-odbc's tests reach a server through, and the Microsoft
           # ODBC Driver 18 for SQL Server that the SQL Server through ODBC
           # connector's tests use, with its `share` beside its `lib` because
-          # it loads its resources relative to its own path.
+          # it loads its resources relative to its own path. On Linux, the
+          # Kerberos and OpenSSL libraries the connector loads for the driver
+          # are beside it, as in the distribution package: those nixpkgs
+          # patched the driver to use.
           msodbcsql = pkgs.unixodbcDrivers.msodbcsql18;
-          odbcDriverDirectory = pkgs.linkFarm "odbc-drivers" {
-            psqlodbcw = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
-            "msodbcsql18/lib/msodbcsql18" = "${msodbcsql}/${msodbcsql.driver}";
-            "msodbcsql18/share" = "${msodbcsql}/share";
-          };
+          odbcDriverDirectory = pkgs.linkFarm "odbc-drivers" (
+            {
+              psqlodbcw = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
+              "msodbcsql18/lib/msodbcsql18" = "${msodbcsql}/${msodbcsql.driver}";
+              "msodbcsql18/share" = "${msodbcsql}/share";
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux (
+              pkgs.lib.listToAttrs (
+                map
+                  (
+                    { package, file }:
+                    pkgs.lib.nameValuePair "msodbcsql18/lib/${file}" "${pkgs.lib.getLib package}/lib/${file}"
+                  )
+                  [
+                    { package = pkgs.libkrb5; file = "libkrb5.so.3"; }
+                    { package = pkgs.libkrb5; file = "libgssapi_krb5.so.2"; }
+                    { package = pkgs.openssl; file = "libcrypto.so.3"; }
+                    { package = pkgs.openssl; file = "libssl.so.3"; }
+                  ]
+              )
+            )
+          );
           # The driver loads OpenSSL at run time by its file name; on macOS it
           # finds it only through `DYLD_LIBRARY_PATH`, which holds nothing but
           # OpenSSL.
