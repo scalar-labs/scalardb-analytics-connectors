@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DynamoDB connector, through the AWS SDK for Rust.
+
+### Changed
+
+- The minimum supported Rust version is 1.94.1, which the AWS SDK for Rust
+  requires.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added
