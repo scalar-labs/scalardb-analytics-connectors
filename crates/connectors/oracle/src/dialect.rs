@@ -1,16 +1,15 @@
 //! Oracle spelling of identifiers and typed literals.
 //!
 //! Every literal is written in a form whose type and value do not depend on
-//! the session's NLS settings: numbers in plain decimal notation, which Oracle
-//! reads as an exact `NUMBER`, floating-point numbers with the `f` and `d`
-//! suffixes of `BINARY_FLOAT` and `BINARY_DOUBLE`, and dates and timestamps as
-//! ANSI `DATE` and `TIMESTAMP` literals.
+//! the session's NLS settings: decimals in plain decimal notation, which
+//! Oracle reads as an exact `NUMBER`, and timestamps as ANSI `TIMESTAMP`
+//! literals.
 
 use analytics_types::AnalyticsType;
 use connector_sdk::LiteralValue;
 use connector_sql::{
     SqlDialect,
-    literal::{self, MICROS_PER_DAY, cast, civil_from_days, decimal_text, quote_string, time_text},
+    literal::{self, MICROS_PER_DAY, cast, civil_from_days, decimal_text, time_text},
 };
 
 use crate::OracleConnector;
@@ -29,26 +28,13 @@ impl SqlDialect for OracleConnector {
 
 /// The Oracle literal of `literal`.
 ///
-/// Oracle reads an empty string or byte string as NULL, so an empty `Text` or
-/// `Blob` literal is NULL there; no comparison of either type runs remotely.
+/// It is written only for a remote plan that pushdown approved, and pushdown
+/// accepts only `Timestamp`, `TimestampTz`, `Decimal`, and `Null` literals
+/// (`literal_runs_remotely` in [`crate::pushdown`]), so the other arms are
+/// unreachable. A literal pushdown comes to accept gets its rendering in the
+/// same change.
 fn literal_sql(literal: &LiteralValue) -> String {
     match literal {
-        LiteralValue::Boolean(value) => (if *value { "TRUE" } else { "FALSE" }).to_owned(),
-        LiteralValue::Byte(value) => value.to_string(),
-        LiteralValue::SmallInt(value) => value.to_string(),
-        LiteralValue::Int(value) => value.to_string(),
-        LiteralValue::BigInt(value) => value.to_string(),
-        LiteralValue::Float(value) => float_text(f64::from(*value), "f", "BINARY_FLOAT"),
-        LiteralValue::Double(value) => float_text(*value, "d", "BINARY_DOUBLE"),
-        LiteralValue::Text(value) => format!("N{}", quote_string(value)),
-        LiteralValue::Blob(value) => {
-            let hex: String = value.iter().map(|byte| format!("{byte:02X}")).collect();
-            format!("HEXTORAW('{hex}')")
-        }
-        LiteralValue::Date(days) => format!("DATE '{}'", date_text(i64::from(*days))),
-        LiteralValue::Time(micros) => {
-            format!("INTERVAL '{}' HOUR TO SECOND(6)", time_text(*micros))
-        }
         LiteralValue::Timestamp(micros) => format!("TIMESTAMP '{}'", timestamp_text(*micros)),
         LiteralValue::TimestampTz(micros) => {
             format!("TIMESTAMP '{} +00:00'", timestamp_text(*micros))
@@ -58,13 +44,24 @@ fn literal_sql(literal: &LiteralValue) -> String {
             Some(type_name) => cast("NULL", type_name),
             None => "NULL".to_owned(),
         },
-        // No column maps to a logical type, so no comparison with one runs at
-        // Oracle; it is written as its carrier.
-        LiteralValue::Logical { carrier, .. } => literal_sql(carrier),
-        // No column maps to these types, so no comparison with one runs at
-        // Oracle; they are still written as values of their meaning.
-        LiteralValue::Duration(micros) => micros.to_string(),
-        LiteralValue::Interval { .. } => "NULL".to_owned(),
+        LiteralValue::Boolean(_)
+        | LiteralValue::Byte(_)
+        | LiteralValue::SmallInt(_)
+        | LiteralValue::Int(_)
+        | LiteralValue::BigInt(_)
+        | LiteralValue::Float(_)
+        | LiteralValue::Double(_)
+        | LiteralValue::Text(_)
+        | LiteralValue::Blob(_)
+        | LiteralValue::Date(_)
+        | LiteralValue::Time(_)
+        | LiteralValue::Duration(_)
+        | LiteralValue::Interval { .. }
+        | LiteralValue::Logical { .. } => {
+            unreachable!(
+                "Oracle pushdown runs no literal of this type remotely, so none is written"
+            )
+        }
     }
 }
 
@@ -101,20 +98,6 @@ fn type_name(data_type: &AnalyticsType) -> Option<&'static str> {
     Some(name)
 }
 
-/// The shortest literal that reads back as `value` in the floating-point type
-/// whose literals take `suffix`, or the named constant of a NaN or an
-/// infinity, such as `BINARY_DOUBLE_NAN`.
-fn float_text(value: f64, suffix: &str, type_name: &str) -> String {
-    if value.is_nan() {
-        format!("{type_name}_NAN")
-    } else if value.is_infinite() {
-        let sign = if value < 0.0 { "-" } else { "" };
-        format!("{sign}{type_name}_INFINITY")
-    } else {
-        format!("{value:e}{suffix}")
-    }
-}
-
 /// Formats days from the Unix epoch as `YYYY-MM-DD`.
 fn date_text(days: i64) -> String {
     let (year, month, day) = civil_from_days(days);
@@ -139,17 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn identifiers_and_strings_are_quoted_and_escaped() {
+    fn identifiers_are_quoted() {
         assert_eq!(
             OracleConnector::quote_identifier("Mixed Case"),
             "\"Mixed Case\""
         );
-        assert_eq!(literal(LiteralValue::Text("it's".to_owned())), "N'it''s'");
     }
 
     #[test]
-    fn temporal_literals_use_ansi_forms() {
-        assert_eq!(literal(LiteralValue::Date(-719_162)), "DATE '0001-01-01'");
+    fn timestamps_use_ansi_literals() {
         assert_eq!(
             literal(LiteralValue::Timestamp(-1)),
             "TIMESTAMP '1969-12-31 23:59:59.999999'"
@@ -161,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_literals_keep_their_exact_values() {
+    fn decimals_keep_their_exact_values() {
         assert_eq!(
             literal(LiteralValue::Decimal {
                 value: -5,
@@ -170,11 +151,15 @@ mod tests {
             }),
             "-0.005"
         );
-        assert_eq!(literal(LiteralValue::Double(0.1)), "1e-1d");
-        assert_eq!(literal(LiteralValue::Float(f32::NAN)), "BINARY_FLOAT_NAN");
+    }
+
+    #[test]
+    fn nulls_are_typed() {
         assert_eq!(
-            literal(LiteralValue::Double(f64::NEG_INFINITY)),
-            "-BINARY_DOUBLE_INFINITY"
+            literal(LiteralValue::Null {
+                data_type: AnalyticsType::Timestamp
+            }),
+            "CAST(NULL AS TIMESTAMP(6))"
         );
     }
 }
