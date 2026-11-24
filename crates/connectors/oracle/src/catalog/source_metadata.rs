@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 /// derives from, it carries what states a table's meaning, such as comments,
 /// view definitions, and column expressions, for the Semantic Catalog to
 /// interpret. Expressions and definitions are as Oracle stores them.
+/// Constraints and unique indexes that involve a hidden column, which
+/// `columns` does not list, are left out.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OracleTable {
     /// The owner, the schema the table belongs to.

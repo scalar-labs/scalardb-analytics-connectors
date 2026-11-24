@@ -74,7 +74,7 @@ types, with that rustdoc as its descriptions.
 | Table: `definition`, for views | `ALL_VIEWS.TEXT` |
 | Column: `name`, `column_id`, `nullable`, `data_type`, `data_type_owner`, `data_length`, `data_precision`, `data_scale`, `char_length`, `char_used` | `ALL_TAB_COLS`, without hidden columns |
 | Column: `value_source` | An identity column (`IDENTITY_COLUMN`), a virtual column with its expression (`VIRTUAL_COLUMN` and `DATA_DEFAULT`), or a default with its expression and `DEFAULT_ON_NULL` (`DATA_DEFAULT`) |
-| `primary_key`, `unique_keys`, `foreign_keys`, `checks` | `ALL_CONSTRAINTS` of type `P`, `U`, `R`, and `C`, their columns in `ALL_CONS_COLUMNS`, `STATUS` as `enforced`, `VALIDATED` as `validated`, and a CHECK's `SEARCH_CONDITION` |
+| `primary_key`, `unique_keys`, `foreign_keys`, `checks` | `ALL_CONSTRAINTS` of type `P`, `U`, `R`, and `C` that involve no hidden column, their columns in `ALL_CONS_COLUMNS`, `STATUS` as `enforced`, `VALIDATED` as `validated`, and a CHECK's `SEARCH_CONDITION` |
 | `unique_keys` of kind `index` | `ALL_INDEXES` that are unique, on columns the table's columns list (virtual columns among them), and back no primary key or unique constraint, with their columns in `ALL_IND_COLUMNS` |
 
 Definitions and expressions are as Oracle stores them, such as `"AMOUNT"*2`.
@@ -87,7 +87,11 @@ condition `"<column>" IS NOT NULL` on its one column, is the column's
 nullability and is not among `checks` when the column is not nullable. Oracle
 marks a column not nullable only for an enabled and validated NOT NULL
 constraint, so one that is disabled or not validated, or that condition
-written as a CHECK constraint, is among `checks`. Statistics, storage,
+written as a CHECK constraint, is among `checks`. A constraint that involves
+a hidden column, such as an invisible one, is not read, because the columns do
+not list that column: a key or CHECK constraint with any of its columns
+hidden, the NOT NULL constraint of a hidden column, and a foreign key that
+references a key on a hidden column. Statistics, storage,
 partitions, privileges, triggers, non-unique indexes, and unique indexes on
 expressions, including descending ones, are not read.
 

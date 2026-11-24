@@ -377,6 +377,13 @@ impl ConstraintRow {
 ///
 /// A foreign key whose referenced constraint the credential cannot see has
 /// no referenced table.
+///
+/// A constraint that involves a hidden column, such as an invisible one, is
+/// not read, as [`read_unique_indexes`] does not read an index on one: the
+/// table's columns do not list the column, so the constraint cannot be stated
+/// over them. This covers a key or CHECK constraint with any of its columns
+/// hidden, among them the NOT NULL constraint of a hidden column, and a
+/// foreign key that references a key on a hidden column of its table.
 fn read_constraints(
     catalog: Catalog<'_, '_>,
     requested: &str,
@@ -388,7 +395,13 @@ fn read_constraints(
          LEFT JOIN all_constraints r ON r.owner = c.r_owner \
            AND r.constraint_name = c.r_constraint_name \
          WHERE c.constraint_type IN ('P', 'U', 'R', 'C') \
-           AND (c.owner, c.table_name) IN ({requested})"
+           AND (c.owner, c.table_name) IN ({requested}) \
+           AND NOT EXISTS (SELECT 1 FROM all_cons_columns h \
+                           JOIN all_tab_cols t ON t.owner = h.owner \
+                             AND t.table_name = h.table_name AND t.column_name = h.column_name \
+                           WHERE ((h.owner = c.owner AND h.constraint_name = c.constraint_name) \
+                                  OR (h.owner = c.r_owner AND h.constraint_name = c.r_constraint_name)) \
+                             AND t.hidden_column = 'YES')"
     ))?;
     let mut constraints: HashMap<(String, String), (TableKey, ConstraintRow)> = HashMap::new();
     for batch in &batches {
@@ -450,10 +463,10 @@ fn read_constraints(
                 required(owners[row])?.to_owned(),
                 required(names[row])?.to_owned(),
             );
-            let (_, constraint) = constraints
-                .get_mut(&key)
-                .ok_or_else(unexpected_catalog_result)?;
-            if let Some(referenced) = constraint.referenced.as_mut() {
+            // A foreign key that involves a hidden column is not read.
+            if let Some((_, constraint)) = constraints.get_mut(&key)
+                && let Some(referenced) = constraint.referenced.as_mut()
+            {
                 referenced.columns.push(required(columns[row])?.to_owned());
             }
         }

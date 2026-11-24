@@ -156,6 +156,22 @@ ALTER TABLE conformance.conditions MODIFY unvalidated
 CREATE UNIQUE INDEX conformance.conditions_doubled_key ON conformance.conditions (doubled);
 CREATE UNIQUE INDEX conformance.conditions_id_key ON conformance.conditions (id DESC);
 
+-- Constraints on invisible columns, which the table's columns do not list:
+-- a primary key, a NOT NULL constraint, a unique key, a CHECK constraint, and
+-- foreign keys from and to an invisible column. Only the unique key on
+-- visible columns is read.
+CREATE TABLE conformance.invisible_keys (
+    id NUMBER(10) INVISIBLE CONSTRAINT invisible_keys_pkey PRIMARY KEY,
+    code NUMBER(10) INVISIBLE NOT NULL
+        CONSTRAINT invisible_keys_code_fkey REFERENCES conformance.parent (id),
+    value NUMBER(10) NOT NULL CONSTRAINT invisible_keys_value_key UNIQUE,
+    pair NUMBER(10),
+    parent_ref NUMBER(10)
+        CONSTRAINT invisible_keys_ref_fkey REFERENCES conformance.invisible_keys (id),
+    CONSTRAINT invisible_keys_pair_key UNIQUE (pair, code),
+    CONSTRAINT invisible_keys_pair_check CHECK (pair > code)
+);
+
 -- Tables the outsider may see without reading them, or not at all.
 CREATE TABLE conformance.hidden (
     id NUMBER(10) NOT NULL CONSTRAINT hidden_pkey PRIMARY KEY,

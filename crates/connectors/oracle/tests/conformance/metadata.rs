@@ -75,6 +75,7 @@ pub fn cases() -> Vec<MetadataCase> {
                     reference(SCHEMA, "CHILD"),
                     reference(SCHEMA, "PARENT_VIEW"),
                     reference(SCHEMA, "CONDITIONS"),
+                    reference(SCHEMA, "INVISIBLE_KEYS"),
                     reference(OTHER_SCHEMA, "PARENT"),
                     reference(SCHEMA, "MISSING"),
                     reference("SYS", "OBJ$"),
@@ -89,6 +90,7 @@ pub fn cases() -> Vec<MetadataCase> {
                     ExpectedRecord::Read(child()),
                     ExpectedRecord::Read(parent_view()),
                     ExpectedRecord::Read(conditions()),
+                    ExpectedRecord::Read(invisible_keys()),
                     ExpectedRecord::Read(single_column(
                         OTHER_SCHEMA,
                         "PARENT",
@@ -476,6 +478,26 @@ fn conditions() -> TableMetadata {
             check("CONDITIONS_DISABLED_NN", "DISABLED", false),
             check("CONDITIONS_UNVALIDATED_NN", "UNVALIDATED", true),
         ]),
+    )
+}
+
+/// Of the constraints, only the one on visible columns: those that involve
+/// an invisible column, including its NOT NULL constraint and a foreign key
+/// that references one, would name a column the columns do not list.
+fn invisible_keys() -> TableMetadata {
+    table(
+        "INVISIBLE_KEYS",
+        TableKind::Table,
+        columns(vec![
+            ("VALUE", false, key()),
+            ("PAIR", true, key()),
+            ("PARENT_REF", true, key()),
+        ]),
+        Reported::Value(vec![unique(
+            "INVISIBLE_KEYS_VALUE_KEY",
+            "VALUE",
+            UniqueKind::Constraint,
+        )]),
     )
 }
 
