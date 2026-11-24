@@ -34,7 +34,7 @@ if(NOT EXISTS "${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
   message(FATAL_ERROR "build the connector API library first: ${SCALARDB_ANALYTICS_CONNECTOR_LIBRARY}")
 endif()
 option(SCALARDB_ANALYTICS_DISTRIBUTION
-  "Build only the loadable extension for the distribution package: it finds the connector API library in ../lib, carries DuckDB, protobuf and abseil inside, and takes them from pinned sources and DuckDB release libraries instead of the development environment"
+  "Build only the loadable extension for the distribution package: it finds the connector API library in ../lib, carries DuckDB, protobuf and abseil inside, and takes DuckDB from its pinned release files instead of the development environment and protobuf and abseil from CMAKE_PREFIX_PATH"
   OFF)
 
 if(SCALARDB_ANALYTICS_DISTRIBUTION)
@@ -69,30 +69,10 @@ if(SCALARDB_ANALYTICS_DISTRIBUTION)
     URL https://github.com/substrait-io/substrait/archive/refs/tags/v0.69.0.tar.gz
     URL_HASH SHA256=7995cd3c63cb4eed9b68f1d2bef9ab5a6688aadd1846d525be3b5518749691d1
     SOURCE_SUBDIR proto-only)
-  # The protobuf and abseil versions of the development environment, built
-  # as static libraries that link into the extension.
-  set(BUILD_SHARED_LIBS OFF)
-  set(ABSL_PROPAGATE_CXX_STD ON)
-  set(ABSL_ENABLE_INSTALL OFF)
-  set(protobuf_BUILD_SHARED_LIBS OFF)
-  set(protobuf_BUILD_TESTS OFF)
-  set(protobuf_INSTALL OFF)
-  set(protobuf_WITH_ZLIB OFF)
-  set(protobuf_LOCAL_DEPENDENCIES_ONLY ON)
-  FetchContent_Declare(absl
-    URL https://github.com/abseil/abseil-cpp/releases/download/20260107.1/abseil-cpp-20260107.1.tar.gz
-    URL_HASH SHA256=4314e2a7cbac89cac25a2f2322870f343d81579756ceff7f431803c2c9090195)
-  FetchContent_Declare(protobuf
-    URL https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protobuf-34.1.tar.gz
-    URL_HASH SHA256=e4e6ff10760cf747a2decd1867741f561b216bd60cc4038c87564713a6da1848)
-  FetchContent_MakeAvailable(duckdb duckdb_static substrait absl protobuf)
-  include("${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake")
+  FetchContent_MakeAvailable(duckdb duckdb_static substrait)
   set(DUCKDB_SOURCE_DIR "${duckdb_SOURCE_DIR}")
   set(DUCKDB_STATIC_DIR "${duckdb_static_SOURCE_DIR}")
   set(SUBSTRAIT_PROTO_DIR "${substrait_SOURCE_DIR}/proto")
-  # An installed protoc finds the well-known types by itself; one built here
-  # finds them in its source tree.
-  set(PROTOBUF_IMPORT_DIRS "${protobuf_SOURCE_DIR}/src")
 else()
   # The same DuckDB v1.5.6 release files, unpacked by the development shell
   # (flake.nix), with the shared library and CLI the tests use beside them.
@@ -105,11 +85,14 @@ else()
   set(DUCKDB_STATIC_DIR "${DUCKDB_DIR}/static")
   set(SUBSTRAIT_PROTO_DIR "$ENV{SUBSTRAIT_PROTO_DIR}" CACHE PATH
       "The proto directory of the Substrait specification the connector API pins")
-  find_package(Protobuf CONFIG REQUIRED)
   if(NOT SUBSTRAIT_PROTO_DIR)
     message(FATAL_ERROR "SUBSTRAIT_PROTO_DIR must name the Substrait proto directory")
   endif()
 endif()
+# Static protobuf and abseil, which link into the extension: the development
+# shell's, or for the distribution package the prebuilt artifact that
+# packaging/package.sh puts on CMAKE_PREFIX_PATH.
+find_package(Protobuf CONFIG REQUIRED)
 # The adapter's C++ API use is tied to this DuckDB version.
 set(DuckDB_VERSION v1.5.6)
 set(DuckDB_INCLUDE_DIRS "${DUCKDB_SOURCE_DIR}/src/include")
@@ -127,7 +110,7 @@ file(MAKE_DIRECTORY "${SUBSTRAIT_GENERATED_DIR}")
 protobuf_generate(
   TARGET substrait_proto
   LANGUAGE cpp
-  IMPORT_DIRS "${SUBSTRAIT_PROTO_DIR}" ${PROTOBUF_IMPORT_DIRS}
+  IMPORT_DIRS "${SUBSTRAIT_PROTO_DIR}"
   PROTOC_OUT_DIR "${SUBSTRAIT_GENERATED_DIR}")
 target_include_directories(substrait_proto PUBLIC "${SUBSTRAIT_GENERATED_DIR}")
 

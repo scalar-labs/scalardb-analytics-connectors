@@ -160,13 +160,33 @@
           # connector-odbc's tests reach a server through, and the Microsoft
           # ODBC Driver 18 for SQL Server that the SQL Server through ODBC
           # connector's tests use, with its `share` beside its `lib` because
-          # it loads its resources relative to its own path.
+          # it loads its resources relative to its own path. On Linux, the
+          # Kerberos and OpenSSL libraries the connector loads for the driver
+          # are beside it, as in the distribution package: those nixpkgs
+          # patched the driver to use.
           msodbcsql = pkgs.unixodbcDrivers.msodbcsql18;
-          odbcDriverDirectory = pkgs.linkFarm "odbc-drivers" {
-            psqlodbcw = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
-            "msodbcsql18/lib/msodbcsql18" = "${msodbcsql}/${msodbcsql.driver}";
-            "msodbcsql18/share" = "${msodbcsql}/share";
-          };
+          odbcDriverDirectory = pkgs.linkFarm "odbc-drivers" (
+            {
+              psqlodbcw = "${pkgs.unixodbcDrivers.psql}/lib/psqlodbcw.so";
+              "msodbcsql18/lib/msodbcsql18" = "${msodbcsql}/${msodbcsql.driver}";
+              "msodbcsql18/share" = "${msodbcsql}/share";
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux (
+              pkgs.lib.listToAttrs (
+                map
+                  (
+                    { package, file }:
+                    pkgs.lib.nameValuePair "msodbcsql18/lib/${file}" "${pkgs.lib.getLib package}/lib/${file}"
+                  )
+                  [
+                    { package = pkgs.libkrb5; file = "libkrb5.so.3"; }
+                    { package = pkgs.libkrb5; file = "libgssapi_krb5.so.2"; }
+                    { package = pkgs.openssl; file = "libcrypto.so.3"; }
+                    { package = pkgs.openssl; file = "libssl.so.3"; }
+                  ]
+              )
+            )
+          );
           # The driver loads OpenSSL at run time by its file name; on macOS it
           # finds it only through `DYLD_LIBRARY_PATH`, which holds nothing but
           # OpenSSL.
@@ -267,28 +287,38 @@
           # restriction, as the distribution build's does: generated Substrait
           # code registers its descriptors in the protobuf it links when it is
           # loaded, and a second registration in one shared protobuf aborts.
-          # `abseil-cpp` only names `abseil-cpp_202601`, which takes the option.
           #
-          # Unlike DuckDB, these are built from source. No binary cache holds
-          # the static variants, and neither project publishes static
-          # libraries: protobuf releases only protoc, and conda-forge's static
-          # protobuf links a shared abseil. CI keeps the build in its Nix store
-          # cache, and a build without the cache takes a few minutes.
-          abseilStatic = pkgs.abseil-cpp_202601.override { static = true; };
-          # protobuf's own tests are not run: no binary cache holds this
-          # variant, and one of them fails to write its temporary file in the
-          # macOS Nix builder. It is built without zlib, as the distribution
-          # build's is: the static library would otherwise require consumers
-          # to find a zlib, which the development shell does not provide.
-          protobufStatic =
-            (pkgs.protobuf.override {
-              enableShared = false;
-              abseil-cpp = abseilStatic;
-            }).overrideAttrs
-              (previousAttrs: {
-                cmakeFlags = previousAttrs.cmakeFlags ++ [ "-Dprotobuf_WITH_ZLIB=OFF" ];
-                doCheck = false;
-              });
+          # Neither project publishes static libraries, so they come, as for
+          # the distribution package, from the prebuilt artifact that
+          # scalar-labs/scalardb-analytics-third-party-deps built from their
+          # sources, at the version and hash packaging/dependencies.json
+          # declares. No artifact is built for x86_64-darwin, where the
+          # adapter's build therefore finds no protobuf.
+          protobufPin =
+            (builtins.fromJSON (builtins.readFile ./packaging/dependencies.json)).dependencies.protobuf;
+          # The release <dependency>-<version>[-r<revision>], as package.sh names it.
+          protobufTag =
+            "protobuf-${protobufPin.version}"
+            + pkgs.lib.optionalString (protobufPin ? revision) "-r${toString protobufPin.revision}";
+          protobufArtifact = pkgs.stdenvNoCC.mkDerivation {
+            pname = "protobuf-prebuilt";
+            version = protobufPin.version;
+            src = pkgs.fetchurl {
+              url = "https://github.com/scalar-labs/scalardb-analytics-third-party-deps/releases/download/${protobufTag}/${protobufTag}-${duckdbPlatform}.tar.gz";
+              hash = protobufPin.artifacts.${duckdbPlatform};
+            };
+            # protoc, which the build runs, is built for manylinux_2_28 and
+            # needs libstdc++, which Nix-built processes do not find on the
+            # host.
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
+            dontBuild = true;
+            dontFixup = pkgs.stdenv.isDarwin;
+            installPhase = "cp -R . $out";
+          };
+          # The Salesforce CLI, with which the Salesforce connector's org
+          # tests prepare their org.
+          salesforceCli = pkgs.callPackage ./nix/salesforce-cli.nix { };
         in
         {
           packages = {
@@ -325,11 +355,10 @@
               }
               {
                 name = "CMAKE_PREFIX_PATH";
-                value = pkgs.lib.makeSearchPath "" [
-                  protobufStatic
-                  (pkgs.lib.getDev abseilStatic)
-                  pkgs.catch2_3
-                ];
+                value = pkgs.lib.makeSearchPath "" (
+                  pkgs.lib.optionals (protobufPin.artifacts ? ${duckdbPlatform}) [ protobufArtifact ]
+                  ++ [ pkgs.catch2_3 ]
+                );
               }
               {
                 name = "LIBRARY_PATH";
@@ -367,13 +396,14 @@
               pkgs.cargo-about
               pkgs.jq
               pkgs.unzip
+              salesforceCli
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           };
 
           # What the distribution package script (packaging/package.sh) needs
           # on macOS, without the DuckDB adapter's development inputs: the
-          # distribution build takes DuckDB, protobuf, and abseil from pinned
-          # release files and sources itself.
+          # distribution build takes DuckDB from pinned release files and
+          # protobuf and abseil from their prebuilt artifact itself.
           devShells.package = pkgs.mkShellNoCC {
             name = "scalardb-analytics-connectors-package";
             shellHook = ''

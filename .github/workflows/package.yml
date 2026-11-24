@@ -46,8 +46,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
       # The packaging shell builds nothing from source, so the job keeps no
-      # Nix store cache: the distribution build takes DuckDB, protobuf, and
-      # abseil itself.
+      # Nix store cache: the distribution build takes DuckDB, and protobuf and
+      # abseil as their prebuilt artifact, itself.
       - name: Build package
         run: nix develop .#package --command packaging/package.sh
       # Docker is unavailable on macOS runners, so the e2e uses a local server.
