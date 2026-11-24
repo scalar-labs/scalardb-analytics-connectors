@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Databricks connector, through the ADBC Driver Foundry Databricks driver,
+  which the `osx_arm64`, `linux_amd64`, and `linux_arm64` packages contain.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added
