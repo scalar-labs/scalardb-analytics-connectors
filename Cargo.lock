@@ -586,6 +586,7 @@ dependencies = [
  "connector-sdk",
  "connector-sql",
  "futures-core",
+ "libloading",
 ]
 
 [[package]]

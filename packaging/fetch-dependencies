@@ -1,0 +1,300 @@
+#!/bin/sh
+# Fetches the dependencies that this package uses but may not carry, from
+# their vendors, at the versions and hashes the package pins. Each is fetched
+# only when named, once you accept its license.
+#
+# Usage:
+#   bin/fetch-dependencies list
+#       The dependencies, what uses each, its license, and whether it is
+#       fetched.
+#   bin/fetch-dependencies license <name>
+#       The license of a dependency: its URL and its text, fetched from there.
+#   bin/fetch-dependencies fetch <name>... --accept-license
+#       Fetches the named dependencies, accepting their licenses, and places
+#       them in the package. Fetching one again replaces it.
+#
+# Each dependency is described by the package's downloads/<name>.toml, which
+# packaging/package.sh writes from packaging/dependencies.json:
+#
+#   name, version     what it is
+#   used_by           the connectors that use it
+#   license           the URL of its license
+#   directory         where it goes, relative to the package
+#   [files]           each path in the unpacked download = its path below
+#                     directory
+#   [[downloads]]     the downloads of the same files for the package's
+#                     platform, each with format, url, and sha256; the first
+#                     that this host can unpack is used
+#
+# Only that TOML is read: string values, bare or quoted keys, the [files]
+# table, and the [[downloads]] array of tables.
+#
+# A download is unpacked by its format with what the host has:
+#
+#   deb    dpkg-deb, as on Debian and Ubuntu
+#   rpm    rpm2archive, tar, and gzip, as on Red Hat Enterprise Linux and
+#          Amazon Linux; or rpm2cpio and cpio, as on SUSE
+#
+# Also requires curl, awk, and sha256sum or shasum.
+set -eu
+
+home=$(cd "$(dirname "$0")/.." && pwd)
+manifests=$home/downloads
+tab=$(printf '\t')
+
+usage() {
+	sed -n 's/^#   bin/  bin/p' "$0" >&2
+	exit 2
+}
+
+# The dependencies, in the order list shows them.
+names() {
+	for manifest in "$manifests"/*.toml; do
+		[ -f "$manifest" ] && basename "$manifest" .toml
+	done
+}
+
+# Prints the records of a manifest, tab-separated: "field <key> <value>" for
+# each top-level key, "file <from> <to>" for each [files] entry, and
+# "download <n> <key> <value>" for each key of the nth [[downloads]] table.
+records() {
+	awk '
+	function fail(message) {
+		printf "%s:%d: %s\n", FILENAME, FNR, message > "/dev/stderr"
+		failed = 1
+		exit 1
+	}
+	function blank() {
+		while (substr(line, at, 1) == " " || substr(line, at, 1) == "\t") at++
+	}
+	# A basic string starting at the opening quote, with its escapes.
+	function text(   out, c) {
+		out = ""
+		at++
+		while (at <= length(line)) {
+			c = substr(line, at, 1)
+			if (c == "\\") {
+				at++
+				c = substr(line, at, 1)
+				if (c == "n") c = "\n"
+				else if (c == "t") c = "\t"
+				else if (c != "\\" && c != "\"") fail("unsupported escape \\" c)
+			} else if (c == "\"") {
+				at++
+				return out
+			}
+			out = out c
+			at++
+		}
+		fail("unterminated string")
+	}
+	/^[ \t]*(#.*)?$/ { next }
+	/^[ \t]*\[files\][ \t]*$/ { section = "file"; next }
+	/^[ \t]*\[\[downloads\]\][ \t]*$/ { section = "download"; downloads++; next }
+	/^[ \t]*\[/ { fail("unsupported table " $0) }
+	{
+		line = $0
+		at = 1
+		blank()
+		if (substr(line, at, 1) == "\"") {
+			key = text()
+		} else if (match(substr(line, at), /^[A-Za-z0-9_-]+/)) {
+			key = substr(line, at, RLENGTH)
+			at += RLENGTH
+		} else {
+			fail("expected a key")
+		}
+		blank()
+		if (substr(line, at, 1) != "=") fail("expected =")
+		at++
+		blank()
+		if (substr(line, at, 1) != "\"") fail("expected a string value")
+		value = text()
+		blank()
+		if (at <= length(line) && substr(line, at, 1) != "#") fail("unexpected text after the value")
+		if (section == "") print "field\t" key "\t" value
+		else if (section == "file") print "file\t" key "\t" value
+		else print "download\t" downloads "\t" key "\t" value
+	}
+	END { if (failed) exit 1 }
+	' "$1"
+}
+
+# Sets the fields of dependency $1 from its manifest: title, version, used_by,
+# license, directory, files (lines of "<from><tab><to>"), and downloads (the
+# number of its downloads). Fails naming the dependencies when there is none.
+load() {
+	name=$1
+	manifest=$manifests/$name.toml
+	if [ ! -f "$manifest" ]; then
+		echo "no dependency is named $name; the dependencies are: $(names | paste -sd ' ' -)" >&2
+		exit 2
+	fi
+	loaded=$(records "$manifest")
+	title=$(value name)
+	version=$(value version)
+	used_by=$(value used_by)
+	license=$(value license)
+	directory=$(value directory)
+	files=$(printf '%s\n' "$loaded" | awk -F '\t' '$1 == "file" { print $2 "\t" $3 }')
+	downloads=$(printf '%s\n' "$loaded" | awk -F '\t' '$1 == "download" && $2 > n { n = $2 } END { print n + 0 }')
+}
+
+# The value of a top-level key of the loaded manifest.
+value() {
+	printf '%s\n' "$loaded" | awk -F '\t' -v key="$1" -v manifest="$manifest" '
+		$1 == "field" && $2 == key { print $3; found = 1 }
+		END { if (!found) { print manifest ": no " key > "/dev/stderr"; exit 1 } }'
+}
+
+# The value of a key of the loaded manifest's download $1.
+download_value() {
+	printf '%s\n' "$loaded" | awk -F '\t' -v n="$1" -v key="$2" -v manifest="$manifest" '
+		$1 == "download" && $2 == n && $3 == key { print $4; found = 1 }
+		END { if (!found) { print manifest ": download " n " has no " key > "/dev/stderr"; exit 1 } }'
+}
+
+# Whether the host has every named tool.
+have() {
+	for tool; do
+		command -v "$tool" >/dev/null || return 1
+	done
+}
+
+# The way this host unpacks a download of format $1, or nothing when it
+# cannot.
+unpacker() {
+	case $1 in
+	deb) if have dpkg-deb; then echo dpkg-deb; fi ;;
+	rpm)
+		if have rpm2archive tar gzip; then
+			echo rpm2archive
+		elif have rpm2cpio cpio; then
+			echo rpm2cpio
+		fi
+		;;
+	esac
+}
+
+# What a host needs to unpack a download of format $1.
+needs() {
+	case $1 in
+	deb) echo "deb: dpkg-deb" ;;
+	rpm) echo "rpm: rpm2archive, tar, and gzip, or rpm2cpio and cpio" ;;
+	*) echo "$1: nothing this script can use" ;;
+	esac
+}
+
+# Chooses the first download of the loaded dependency this host can unpack,
+# setting url, sha256, and unpack; fails naming what each download needs.
+choose() {
+	n=1
+	while [ "$n" -le "$downloads" ]; do
+		format=$(download_value "$n" format)
+		unpack=$(unpacker "$format")
+		if [ -n "$unpack" ]; then
+			url=$(download_value "$n" url)
+			sha256=$(download_value "$n" sha256)
+			return
+		fi
+		n=$((n + 1))
+	done
+	{
+		echo "fetch-dependencies cannot unpack any download of $name here; install the tools of one:"
+		n=1
+		while [ "$n" -le "$downloads" ]; do
+			echo "  $(needs "$(download_value "$n" format)")"
+			n=$((n + 1))
+		done
+	} >&2
+	exit 1
+}
+
+# Whether every file of the loaded dependency is in place.
+fetched() {
+	printf '%s\n' "$files" | while IFS=$tab read -r from to; do
+		[ -e "$home/$directory/$to" ] || exit 1
+	done
+}
+
+# Fetches the chosen download of the loaded dependency into $work, checks it,
+# unpacks it, and places its files. The package's other files in its
+# directory stay.
+fetch() {
+	download=$work/$name.download
+	curl -fsSL -o "$download" "$url"
+	actual=$($hasher "$download" | cut -d ' ' -f 1)
+	[ "$actual" = "$sha256" ] || { echo "$url does not match its hash: $actual" >&2; exit 1; }
+	unpacked=$work/$name
+	mkdir "$unpacked"
+	case $unpack in
+	dpkg-deb) dpkg-deb -x "$download" "$unpacked" ;;
+	rpm2archive) rpm2archive - <"$download" | tar -xzf - -C "$unpacked" ;;
+	rpm2cpio) (cd "$unpacked" && rpm2cpio "$download" | cpio -idm --quiet) ;;
+	esac
+	printf '%s\n' "$files" | while IFS=$tab read -r from to; do
+		target=$home/$directory/$to
+		rm -rf "$target"
+		mkdir -p "$(dirname "$target")"
+		cp -R "$unpacked/$from" "$target"
+	done
+	echo "fetched $name $version from $url into $home/$directory"
+}
+
+case ${1:-} in
+list)
+	[ $# -eq 1 ] || usage
+	for name in $(names); do
+		load "$name"
+		if fetched; then state=fetched; else state="not fetched"; fi
+		printf '%s\t%s %s, used by %s: %s\n\tlicense: %s\n' "$name" "$title" "$version" "$used_by" "$state" "$license"
+	done
+	;;
+license)
+	[ $# -eq 2 ] || usage
+	have curl || { echo "fetch-dependencies requires curl" >&2; exit 1; }
+	load "$2"
+	printf '%s %s is under the license at %s:\n\n' "$title" "$version" "$license"
+	curl -fsSL "$license"
+	;;
+fetch)
+	shift
+	accepted=no
+	selected=
+	for argument; do
+		case $argument in
+		--accept-license) accepted=yes ;;
+		-*) usage ;;
+		*) load "$argument"; selected="$selected $argument" ;;
+		esac
+	done
+	[ -n "$selected" ] || usage
+	if [ "$accepted" = no ]; then
+		echo "Fetching accepts the license of each dependency. Read it with $0 license <name>, then run $0 fetch$selected --accept-license." >&2
+		exit 2
+	fi
+	have curl || { echo "fetch-dependencies requires curl" >&2; exit 1; }
+	# GNU systems name the SHA-256 tool sha256sum, macOS shasum.
+	if have sha256sum; then
+		hasher=sha256sum
+	elif have shasum; then
+		hasher="shasum -a 256"
+	else
+		echo "fetch-dependencies requires sha256sum or shasum" >&2
+		exit 1
+	fi
+	# Every named dependency can be unpacked before any is fetched.
+	for name in $selected; do
+		load "$name"
+		choose
+	done
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' EXIT
+	for name in $selected; do
+		load "$name"
+		choose
+		fetch
+	done
+	;;
+*) usage ;;
+esac
