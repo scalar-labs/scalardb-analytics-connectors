@@ -92,13 +92,7 @@ jobs:
             exit 1
           fi
       - name: Take the release notes from the changelog
-        run: |
-          version=${GITHUB_REF_NAME#v}
-          awk -v heading="## [$version]" -f packaging/release-notes.awk CHANGELOG.md > "$RUNNER_TEMP/notes.md"
-          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
-            echo "CHANGELOG.md has no section for $version" >&2
-            exit 1
-          fi
+        run: python3 packaging/release-notes.py "${GITHUB_REF_NAME#v}" CHANGELOG.md > "$RUNNER_TEMP/notes.md"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: package-*
