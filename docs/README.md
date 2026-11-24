@@ -42,8 +42,9 @@ The focused decisions under [design](design/) explain why the type model is
 flat, why one connector interprets each source, why the boundary is a typed C
 ABI rather than ADBC, why pushdown planning separates its Substrait interchange
 representation from its internal representation, why a blocking ADBC poll
-temporarily owns its query resources, and why the library rather than each
-receiver compares table metadata.
+temporarily owns its query resources, why the library rather than each
+receiver compares table metadata, and why the repository's version follows
+semantic rather than calendar versioning.
 
 Use the documentation layers for distinct purposes:
 
