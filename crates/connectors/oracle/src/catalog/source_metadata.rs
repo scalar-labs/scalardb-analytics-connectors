@@ -1,8 +1,7 @@
 //! Oracle source metadata for one table and the table metadata derived from it.
 
 use connector_sdk::{
-    Column, ColumnType, Constraint, ConstraintKind, Reported, TableKind, TableMetadata,
-    TableReference, UniqueKind,
+    Constraint, ConstraintKind, Reported, TableKind, TableMetadata, TableReference, UniqueKind,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -186,29 +185,6 @@ impl OracleTable {
             .expect("Oracle owner and object names are never empty")
     }
 
-    /// A column as table metadata states it. Oracle has no column identifier
-    /// that survives a dropped column, so none is offered.
-    fn table_column(column: &OracleColumn) -> Column {
-        let data_source_type = column.data_source_type();
-        let ty = match column.map_type() {
-            Ok(analytics_type) => ColumnType::Mapped {
-                data_source_type,
-                analytics_type,
-            },
-            Err(reason) => ColumnType::Unsupported {
-                data_source_type,
-                reason,
-            },
-        };
-        Column {
-            name: column.name.clone(),
-            ordinal: u32::try_from(column.column_id).expect("Oracle has at most 1000 columns"),
-            nullable: column.nullable,
-            source_id: Reported::NotOffered,
-            ty,
-        }
-    }
-
     /// The table's constraints as table metadata states them.
     ///
     /// They are missing when a foreign key's referenced table is not visible
@@ -289,7 +265,10 @@ impl OracleTable {
             self.reference(),
             kind,
             Reported::Value(self.object_id.to_string()),
-            self.columns.iter().map(Self::table_column).collect(),
+            self.columns
+                .iter()
+                .map(OracleColumn::table_column)
+                .collect(),
             false,
             self.table_constraints(),
         )

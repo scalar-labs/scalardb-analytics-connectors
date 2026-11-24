@@ -1,12 +1,13 @@
-//! The Oracle type mapping (`crates/connectors/oracle/README.md#type-mapping`)
-//! and the spelling of Data Source types.
+//! The Oracle type mapping (`crates/connectors/oracle/README.md#type-mapping`),
+//! the spelling of Data Source types, and a column as table metadata states
+//! it.
 //!
 //! A column's rule is looked up by `ALL_TAB_COLS.DATA_TYPE`, with its
 //! parameters from the same row. An object type, such as `SDO_GEOMETRY` or a
 //! user's own, has an owner and is not mapped.
 
 use analytics_types::{AnalyticsType, DecimalType};
-use connector_sdk::UnsupportedReason;
+use connector_sdk::{Column, ColumnType, Reported, UnsupportedReason};
 
 use super::OracleColumn;
 
@@ -45,6 +46,29 @@ impl OracleColumn {
             "NCHAR" | "NVARCHAR2" => format!("{name}({})", self.char_length),
             "RAW" => format!("{name}({})", self.data_length),
             _ => name.to_owned(),
+        }
+    }
+
+    /// The column as table metadata states it. Oracle has no column
+    /// identifier that survives a dropped column, so none is offered.
+    pub(crate) fn table_column(&self) -> Column {
+        let data_source_type = self.data_source_type();
+        let ty = match self.map_type() {
+            Ok(analytics_type) => ColumnType::Mapped {
+                data_source_type,
+                analytics_type,
+            },
+            Err(reason) => ColumnType::Unsupported {
+                data_source_type,
+                reason,
+            },
+        };
+        Column {
+            name: self.name.clone(),
+            ordinal: u32::try_from(self.column_id).expect("Oracle has at most 1000 columns"),
+            nullable: self.nullable,
+            source_id: Reported::NotOffered,
+            ty,
         }
     }
 
