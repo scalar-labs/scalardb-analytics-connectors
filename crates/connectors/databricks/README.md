@@ -7,9 +7,11 @@ Data Source: the connector reads Unity Catalog through
 [type mapping](#type-mapping), whatever format or federated source holds a
 table's data.
 
-The connector has not yet run against a workspace. Everything below that
-depends on what a workspace returns is marked as to verify, and
-[Known limitations](#known-limitations) lists each item; the
+The connector has not yet run against a workspace. What the driver does
+was read from its source and its dependencies at the shipped version, and
+what Databricks returns from its documentation and from the responses
+databricks-sql-go records in its tests. What neither settles is marked as
+to verify, and [Known limitations](#known-limitations) lists each item; the
 [conformance suite](#tests) checks them once it runs.
 
 ## Data Source access
@@ -44,14 +46,22 @@ The connection options map to the driver's options in one function,
 `databricks.oauth.client_secret`. The driver has no option that limits
 connecting, so the library's connection timeout does not reach it.
 
-The driver has no option for session settings either, so the connector runs
-them as statements when a session opens. Each ADBC connection of the driver
-holds one database/sql connection, and so one Databricks session, which
-keeps them. The session time zone fixes the time zone `timestamp` values
-arrive in; ANSI mode makes the expressions of a view that is read raise
-errors instead of returning NULL. Generated literals depend on neither.
-The driver itself asks for native Arrow decimals, and databricks-sql-go for
-native timestamps and complex types.
+The connector runs the session settings as statements when a session
+opens. Each ADBC connection of the driver holds one database/sql connection
+for its lifetime, and databricks-sql-go opens one Thrift session for each
+such connection, so one Databricks session runs every statement of an ADBC
+connection and keeps the settings, whose scope Databricks documents as the
+session. When databricks-sql-go reports the session gone, database/sql
+closes that connection rather than replace it, so a later statement fails
+instead of running in a session without the settings. The driver passes
+session settings to the session's opening only from its `uri` option,
+which excludes every other option and would carry the credentials inside a
+URI, so the connector does not use it. The session time zone fixes the
+time zone `timestamp` values arrive in; ANSI mode makes the expressions of
+a view that is read raise errors instead of returning NULL. Generated
+literals depend on neither. The driver itself asks for native Arrow
+decimals, and databricks-sql-go for native timestamps and complex types,
+leaving intervals to arrive as text.
 
 The driver is identified by its driver manifest, which declares its name and
 version, without `GetInfo`, as for every ADBC Driver Foundry driver
@@ -61,7 +71,10 @@ version, without `GetInfo`, as for every ADBC Driver Foundry driver
 
 Opening a session connects to the warehouse, which starts a stopped
 warehouse: a serverless warehouse starts in seconds, a classic one in
-minutes, and opening the session waits for it. Every metadata request runs
+minutes. Whether opening the session waits for it or the workspace answers
+`503 Service Unavailable` while it starts is to verify: the driver makes no
+HTTP retries unless told to, so a `503` fails opening the session at once
+as a retryable `connection` error. Every metadata request runs
 SQL on the warehouse, so listing, reading table metadata, and planning a
 read also start the warehouse and keep it running, and billed, until it
 stops itself after its auto-stop time.
@@ -71,6 +84,8 @@ stops itself after its auto-stop time.
 The driver reads results through CloudFetch, which downloads them from
 presigned cloud storage URLs, so the client must reach the workspace's cloud
 storage, such as Azure Blob Storage or Amazon S3, as well as the workspace.
+Both the workspace's requests and the downloads honour `HTTPS_PROXY`,
+`HTTP_PROXY`, and `NO_PROXY`, read once, at the driver's first request.
 
 ## Dependencies
 
@@ -178,8 +193,10 @@ a table named with upper-case letters is not found.
 
 Data Source types are read from `information_schema.columns.full_data_type`,
 such as `decimal(10,2)`, `string collate UTF8_LCASE`, or
-`array<struct<a:int,b:string>>`; a struct field name may be quoted with
-backticks.
+`array<struct<a:int,b:string>>`. Keywords are read in any case and with
+any spacing. As Databricks' `STRUCT` syntax allows, a struct field name may
+be quoted with backticks, its colon may be left out, and its type may be
+followed by `NOT NULL` and `COMMENT`, which are dropped.
 
 | Data Source type | Analytics type | Databricks' comparison | Runs remotely |
 | --- | --- | --- | --- |
@@ -212,9 +229,11 @@ Whether a string column has a collation is read from `full_data_type`,
 such as `string collate UTF8_LCASE`, because `information_schema.columns`
 has no collation column; a string type that names no collation is taken as
 `UTF8_BINARY`, the default collation. That a collated string's
-`full_data_type` names its collation is to verify: if it does not, a
-collated column's comparisons would run remotely with another meaning. The
-conformance suite reads such a column's type and filters on it.
+`full_data_type` names its collation is to verify: Databricks documents
+`full_data_type` as the type as specified in the column definition and
+shows no collated example. If it does not, a collated column's comparisons
+would run remotely with another meaning. The conformance suite reads such a
+column's type and filters on it.
 
 ## Coverage
 
@@ -224,16 +243,19 @@ by converting the driver's output (`src/driver_output.rs`):
 | Mapping rule | Driver output | Conversion |
 | --- | --- | --- |
 | `decimal(p,s)` | `Decimal128` of scale s | To the narrowest Arrow decimal of precision p, `Decimal32` up to 9 and `Decimal64` up to 18 |
-| `timestamp` | `Timestamp` in microseconds with the session's time zone | Labelled `UTC`; the instant is unchanged |
+| `timestamp` | `Timestamp` in microseconds labelled with the session's time zone, such as `Etc/UTC` | Labelled `UTC`; the instant is unchanged |
 | `timestamp_ntz` | `Timestamp` in microseconds without a time zone | None |
 | `array<T>`, `map<K,V>`, `struct<...>` | `List`, `Map`, `Struct` | Rebuilt with the Analytics fields, each element, key, value, or field converted by its own rule |
 
-Every other mapped type arrives in its Analytics storage type. These driver
-output types are what Databricks documents for Arrow results with native
-types and are to verify: a column that arrives in another form, such as a
-decimal of another scale, a timestamp without a time zone where one is
-expected, or a struct whose fields differ, fails the read as `internal`,
-naming the type that arrived.
+Every other mapped type arrives in its Analytics storage type: `float` as
+`Float32`, `double` as `Float64`, `date` as `Date32`, `binary` as `Binary`,
+and `string`, `varchar(n)`, and `char(n)` as `Utf8`, without their length.
+The driver passes on the warehouse's Arrow IPC streams unchanged. The Arrow
+schemas the warehouse returns, as databricks-sql-go's recorded responses
+keep them, show these types; `timestamp_ntz` arrives without a time zone,
+as Spark's Arrow conversion writes it. A column that arrives in another
+form, such as a decimal of another scale or a struct whose fields differ,
+fails the read as `internal`, naming the type that arrived.
 
 No Databricks value is outside its mapped type's range: dates and timestamps
 lie in years 1 to 9999, and decimals have at most 38 digits. A decimal that
@@ -258,44 +280,62 @@ The connector has not run against a workspace, so the conformance fixture
 states no deviation yet. To verify against a workspace, each checked by the
 suite where it can be:
 
-- the Arrow types the driver returns for decimals, `timestamp`,
-  `timestamp_ntz`, and nested types ([Coverage](#coverage));
 - that `char(n)` values arrive padded with spaces;
 - the `full_data_type` spellings, and that a collated string's names its
   collation, on which text pushdown under `UTF8_BINARY` depends;
-- that the fixed session settings hold for every statement of a session;
-- the messages the error table reads: the error classes in brackets, and,
-  while connecting, `unexpected HTTP status 401` and `403` and the OAuth
-  token endpoint's `invalid_client`. A closed port and a connection closed
-  at once are seen with the driver's release and are `connection` errors;
-- that cancelling a read or letting it expire stops the statement at the
-  warehouse, also while CloudFetch downloads its results, and that releasing
-  a stream partway stops it: the driver has no cancel of its own and relies
-  on databricks-sql-go cancelling the statement when the Go context ends;
-- whether a broken connection makes the session unusable, and whether
-  CloudFetch's downloads go through `HTTPS_PROXY`, through which the
-  fixture breaks connections ([Tests](#tests));
+- the HTTP statuses the error table reads: which of `401` and `403` the
+  workspace answers a rejected personal access token with, since `403` is
+  read as `permission denied`; that the OAuth token endpoint answers a
+  rejected service principal with `invalid_client`; and what an HTTP path
+  that names no warehouse is answered with, which is a retryable
+  `connection` error unless it is `401` or `403`;
+- whether opening a session waits for a stopped warehouse to start
+  ([Warehouse start and cost](#warehouse-start-and-cost));
 - whether `DESCRIBE TABLE ... AS JSON` offers a table identifier, which
   would let the connector offer source identifiers.
 
 Errors are classified by the error classes and codes Databricks puts in its
 messages, such as `TABLE_OR_VIEW_NOT_FOUND`, `INSUFFICIENT_PERMISSIONS`, and
-`TEMPORARILY_UNAVAILABLE`, by their SQLSTATE, and, for a failure while
-connecting, which the driver reports as `internal` with its cause only in
-the text, by that text. A message keeps only its first line, and a syntax
-error's message loses its text, since Databricks quotes the statement there.
-An error the driver reports in the middle of a result stream reaches the
-connector as text only, so it is `data-source`.
+`TEMPORARILY_UNAVAILABLE`, by their SQLSTATE, and by the text of the
+driver's other failures, which it reports as `internal` with their cause
+only in the text: a failure while connecting, and any HTTP request to the
+workspace that failed, such as one whose connection broke, are
+`connection` errors, and make the session unusable. A message keeps only
+its first line, and a syntax error's message loses its text, since
+Databricks quotes the statement there. Any other error the driver reports
+in the middle of a result stream reaches the connector as text only, so it
+is `data-source`.
 
 A dropped table is `not found`, not `does not exist`: Unity Catalog reports
 a table the principal holds no privilege on the same way.
 
+The driver stops a statement at the warehouse only while it waits for the
+statement to finish, by sending `CancelOperation` when its call is
+cancelled; the statement has finished at the warehouse before the first
+batch is read. Cancelling a read or letting it expire therefore stops the
+statement while it runs, and afterwards ends the read at its next pull. A
+pull already waiting for a result page or a CloudFetch download completes
+that batch first, since the driver cannot interrupt it; releasing the read
+then closes the operation with `CloseOperation` and aborts the downloads
+still in flight. A cancel that comes while the request sending the
+statement is in flight ends the read but cannot reach the statement, which
+runs to its end at the warehouse; one that comes the instant before the
+driver starts executing the statement is lost to the driver, so the read
+returns the stop only once the statement has finished.
+
 The library's connection timeout does not limit opening a session, as the
 contract requires: the driver has no option for it, so opening a session
-waits as long as the driver does. With the driver's release, a host that
-accepts the connection and never answers fails after about 10 seconds; a
-stopped warehouse is waited for until it starts
-([Warehouse start and cost](#warehouse-start-and-cost)).
+waits as long as the driver does. The driver gives up connecting a TCP
+connection after 30 seconds and a TLS handshake after 10, makes no HTTP
+retries, and waits for each request's response up to 15 minutes; its
+check of the new session waits up to 60 seconds. A host that accepts the
+connection and never answers therefore fails after about 10 seconds, and
+one that completes the TLS handshake and never answers after 15 minutes.
+
+A warehouse that accepts only the Statement Execution API and rejects the
+Thrift protocol, such as a real-time warehouse, cannot be read: the
+shipped driver is built without the databricks-sql-go backend that reads
+such warehouses, and opening a session fails.
 
 Metadata requests cannot be made to wait at Databricks: Unity Catalog's
 `information_schema` takes no locks a reader could wait for. The suite's

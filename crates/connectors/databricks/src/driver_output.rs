@@ -13,9 +13,15 @@
 //! | `timestamp_ntz` | `Timestamp` without a time zone | Aligned to microseconds |
 //! | `array<T>`, `map<K,V>`, `struct<...>` | `List`, `Map`, `Struct` | Rebuilt with the Analytics fields, each element, key, value, or field converted by its own rule |
 //!
-//! These driver output types are what Databricks documents for its Arrow
-//! results and have not been read from a workspace. A column in any other
-//! form fails the read as `internal`, naming the type that arrived.
+//! The driver passes on the warehouse's Arrow IPC streams unchanged, and
+//! databricks-sql-go asks for native decimals, timestamps, and complex types
+//! but not intervals, which arrive as text. The Arrow schemas the warehouse
+//! returns for such requests, as databricks-sql-go's recorded responses keep
+//! them, show these types: `Decimal128`, `Timestamp` in microseconds labelled
+//! with the session time zone, such as `Etc/UTC`, and `List`, `Map`, and
+//! `Struct`. `timestamp_ntz` arrives without a time zone, as Spark's Arrow
+//! conversion writes it. A column in any other form fails the read as
+//! `internal`, naming the type that arrived.
 
 use std::sync::Arc;
 

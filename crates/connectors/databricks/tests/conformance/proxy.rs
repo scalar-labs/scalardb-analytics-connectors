@@ -5,10 +5,9 @@
 //! a proxy cannot stand in for the host. Instead the suite runs with
 //! `HTTPS_PROXY` naming this proxy, which databricks-sql-go's HTTP transport
 //! honours: each connection asks the proxy to open a tunnel with `CONNECT`,
-//! and TLS runs end to end through it. Whether CloudFetch's downloads from
-//! cloud storage use the same transport, and so the proxy, is not verified;
-//! if they bypass it, breaking connections does not interrupt a download in
-//! progress.
+//! and TLS runs end to end through it. CloudFetch's downloads from cloud
+//! storage use Go's default HTTP client, which honours `HTTPS_PROXY` too, so
+//! they also go through the proxy and breaking connections interrupts them.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
