@@ -27,16 +27,20 @@ pub use pushdown::PlanningFacts;
 
 use std::{sync::Arc, time::Duration};
 
-use adbc_core::options::{OptionDatabase, OptionValue as AdbcOptionValue};
+use adbc_core::{
+    error::{Error as AdbcError, Status},
+    options::{OptionDatabase, OptionValue as AdbcOptionValue},
+};
 use analytics_types::AnalyticsType;
 use arrow_array::ArrayRef;
 use connector_adbc::{
-    Adbc, AdbcConnection, AdbcConnector, AdbcSession, DriverRequirement, DriverVersion, query,
+    Adbc, AdbcConnection, AdbcConnector, AdbcQueryCancelHandle, AdbcSession, DriverRequirement,
+    DriverVersion, query,
 };
 use connector_sdk::{
-    Access, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ExecutionOutput,
-    Listed, LogicalExpression, LogicalPlan, NameFilter, NamespacePath, PlanningError, Session,
-    TableEntry, TableMetadata, TableRecord, TableReference,
+    Access, ConnectionOptions, Connector, ConnectorDescriptor, ConnectorError, ExecutionCancel,
+    ExecutionOutput, Listed, LogicalExpression, LogicalPlan, NameFilter, NamespacePath,
+    PlanningError, Session, TableEntry, TableMetadata, TableRecord, TableReference,
 };
 use connector_sql::{
     SqlCatalog, SqlConnector, SqlExecutor, SqlPlanner, SqlRead, catalog::CatalogReads,
@@ -133,6 +137,32 @@ impl AdbcConnector for DatabricksConnector {
     }
 }
 
+/// Stops one statement the driver runs.
+///
+/// The driver cancels a statement only while `ExecuteQuery` waits for it: it
+/// then sends `CancelOperation` to the warehouse. `ExecuteQuery` returns only
+/// once the statement has finished at the warehouse, so afterwards only its
+/// result remains to be fetched, and the driver answers a cancel with
+/// `invalid state`, having no statement to stop. The read is stopped all the
+/// same: its next pull returns the stop, and releasing its stream closes the
+/// operation and aborts the result's downloads in flight.
+struct QueryCancel(AdbcQueryCancelHandle<DatabricksConnector>);
+
+impl ExecutionCancel for QueryCancel {
+    fn cancel(&self) -> Result<(), ConnectorError> {
+        cancel_outcome(self.0.try_cancel())
+    }
+}
+
+/// The outcome of a cancel the driver answered with `result`: `invalid
+/// state` means that no statement was running at the warehouse.
+fn cancel_outcome(result: Result<(), AdbcError>) -> Result<(), ConnectorError> {
+    match result {
+        Err(error) if error.status == Status::InvalidState => Ok(()),
+        result => result.map_err(|error| DatabricksConnector::classify(error.into())),
+    }
+}
+
 impl SqlConnector for DatabricksConnector {
     type Connection = AdbcConnection<Self>;
     type Table = DatabricksTable;
@@ -146,7 +176,7 @@ impl SqlConnector for DatabricksConnector {
     /// Runs the statement through the ADBC driver.
     fn query(connection: &AdbcConnection<Self>, sql: String) -> ExecutionOutput {
         let statement = query(connection, sql);
-        let cancel = Arc::new(statement.cancel_handle());
+        let cancel = Arc::new(QueryCancel(statement.cancel_handle()));
         ExecutionOutput::new(Box::pin(statement), cancel)
     }
 
@@ -199,5 +229,30 @@ impl SqlConnector for DatabricksConnector {
 
     fn runs_remotely(expression: &LogicalExpression, facts: &PlanningFacts) -> bool {
         pushdown::runs_remotely(expression, facts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use connector_sdk::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn a_cancel_that_finds_no_running_statement_succeeds() {
+        let no_query = AdbcError::with_message_and_status(
+            "AdbcStatementCancel: no active query to cancel",
+            Status::InvalidState,
+        );
+        assert!(cancel_outcome(Err(no_query)).is_ok());
+        assert!(cancel_outcome(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn other_cancel_failures_are_classified() {
+        let failed =
+            AdbcError::with_message_and_status("query state is poisoned", Status::Internal);
+        let error = cancel_outcome(Err(failed)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Internal);
     }
 }
