@@ -54,6 +54,21 @@ impl ErrorHandler for DatabricksErrorHandler {
 /// `internal`, whatever their cause, and passes only their text.
 const CONNECT_FAILURE: &str = "failed to ping database:";
 
+/// How databricks-sql-go names a Thrift call whose HTTP request to the
+/// workspace failed, whether the connection broke or the response was not
+/// `200 OK`; it names a call that the workspace answered with an error
+/// otherwise. The driver reports such failures as `internal`.
+const FAILED_REQUESTS: [&str; 8] = [
+    "open session request error",
+    "close session request error",
+    "execute statement request error",
+    "get operation status request error",
+    "get result set metadata request error",
+    "fetch results request error",
+    "cancel operation request error",
+    "close operation request error",
+];
+
 /// Classifies a Databricks error by the error classes or codes its message
 /// names, by the HTTP status or OAuth error a failed connection reports, and
 /// by its SQLSTATE; `None` leaves it to the SQLSTATE classes and the ADBC
@@ -61,8 +76,9 @@ const CONNECT_FAILURE: &str = "failed to ping database:";
 ///
 /// A missing table, schema, or catalog is `not found`, not `does not exist`,
 /// because Unity Catalog reports an object the principal holds no privilege
-/// on the same way. Any other failure while connecting is a `connection`
-/// error, since no request reached the workspace's SQL.
+/// on the same way. Any other failure while connecting, and any HTTP request
+/// to the workspace that failed, is a `connection` error, which makes the
+/// session unusable: the driver has lost track of the statement it ran.
 pub(crate) fn classify(sqlstate: &[u8; 5], message: &str) -> Option<ErrorClass> {
     let by_name = error_names(message).find_map(|name| {
         Some(match name {
@@ -92,7 +108,9 @@ pub(crate) fn classify(sqlstate: &[u8; 5], message: &str) -> Option<ErrorClass> 
             _ => None,
         })
         .or_else(|| {
-            message.starts_with(CONNECT_FAILURE).then(|| {
+            let failed = message.starts_with(CONNECT_FAILURE)
+                || FAILED_REQUESTS.iter().any(|call| message.contains(call));
+            failed.then(|| {
                 ErrorClass::new(
                     ErrorKind::Connection,
                     true,
@@ -365,10 +383,78 @@ mod tests {
                 "{cause}"
             );
         }
-        // The same words after a session is open leave the ADBC status.
+        // The same words without a failed request leave the ADBC status.
         assert_eq!(
             kind(Status::Internal, b"\0\0\0\0\0", "EOF"),
             (ErrorKind::Internal, false)
+        );
+    }
+
+    /// The driver's message for a statement that failed, as it words it:
+    /// its own prefix, then databricks-sql-go's execution error around
+    /// `cause`.
+    fn failed_statement(cause: &str) -> String {
+        format!(
+            "[Databricks] failed to execute query: databricks: execution error: \
+             failed to execute query: {cause}"
+        )
+    }
+
+    #[test]
+    fn statement_failures_are_classified_as_the_driver_words_them() {
+        for (sqlstate, cause, expected) in [
+            (
+                b"42P01",
+                "unexpected operation state ERROR_STATE: [TABLE_OR_VIEW_NOT_FOUND] The table \
+                 or view `main`.`s`.`t` cannot be found. SQLSTATE: 42P01; line 1 pos 14",
+                (ErrorKind::NotFound, false),
+            ),
+            (
+                b"42501",
+                "unexpected operation state ERROR_STATE: [INSUFFICIENT_PERMISSIONS] \
+                 Insufficient privileges: User does not have SELECT on Table 'main.s.t'. \
+                 SQLSTATE: 42501",
+                (ErrorKind::PermissionDenied, false),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "databricks: request error: get operation status request error: Post \
+                 \"https://adb-1.2.azuredatabricks.net:443/sql/1.0/warehouses/abc\": \
+                 request error after 1 attempt(s): EOF",
+                (ErrorKind::Connection, true),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "databricks: request error: execute statement request error: Invalid \
+                 SessionHandle",
+                (ErrorKind::Connection, true),
+            ),
+            (
+                b"\0\0\0\0\0",
+                "databricks: request error: execute statement request error: Post \
+                 \"https://adb-1.2.azuredatabricks.net:443/sql/1.0/warehouses/abc\": \
+                 request error after 1 attempt(s): unexpected HTTP status 401 Unauthorized",
+                (ErrorKind::Authentication, false),
+            ),
+        ] {
+            let message = failed_statement(cause);
+            assert_eq!(
+                kind(Status::Internal, sqlstate, &message),
+                expected,
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_request_in_a_result_stream_is_a_broken_connection() {
+        let message = "databricks: request error: databricks: Rows instance failed to retrieve \
+                       results: databricks: request error: fetch results request error: Post \
+                       \"https://adb-1.2.azuredatabricks.net:443/sql/1.0/warehouses/abc\": read \
+                       tcp 10.0.0.1:50000->10.0.0.2:443: read: connection reset by peer";
+        assert_eq!(
+            kind(Status::Unknown, b"\0\0\0\0\0", message),
+            (ErrorKind::Connection, true)
         );
     }
 
@@ -435,6 +521,21 @@ mod tests {
         let message = error.data_source_message().unwrap();
         assert!(!message.contains("secret"), "{message}");
         assert!(message.contains("UNRESOLVED_COLUMN"), "{message}");
+    }
+
+    #[test]
+    fn a_syntax_error_loses_its_text_after_the_driver_prefix() {
+        let error = DatabricksConnector::classify(diagnostic(
+            Status::Internal,
+            b"42601",
+            &failed_statement(
+                "unexpected operation state ERROR_STATE: [PARSE_SYNTAX_ERROR] Syntax error at \
+                 or near ''secret''. SQLSTATE: 42601 (line 1, pos 40)",
+            ),
+        ));
+        let message = error.data_source_message().unwrap();
+        assert!(!message.contains("secret"), "{message}");
+        assert!(message.ends_with("[PARSE_SYNTAX_ERROR]: the statement's text was removed"));
     }
 
     #[test]
