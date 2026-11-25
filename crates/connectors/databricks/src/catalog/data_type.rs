@@ -250,6 +250,11 @@ impl<'a> Parser<'a> {
 
     /// Reads `name:type, ...` up to the closing `>`; a struct may have no
     /// fields.
+    ///
+    /// As Databricks' `STRUCT` syntax allows, the colon may be left out, and
+    /// a field's type may be followed by `NOT NULL` and by `COMMENT` with a
+    /// string literal. Neither is kept: a field stays nullable, which every
+    /// value of a `NOT NULL` field also is.
     fn struct_fields(&mut self) -> Option<Vec<StructField>> {
         let mut fields = Vec::new();
         self.skip_whitespace();
@@ -258,15 +263,43 @@ impl<'a> Parser<'a> {
         }
         loop {
             let name = self.field_name()?;
-            self.eat(':').then_some(())?;
-            fields.push(StructField {
-                name,
-                data_type: self.data_type()?,
-            });
+            self.eat(':');
+            let data_type = self.data_type()?;
+            if self.eat_keyword("not") {
+                self.eat_keyword("null").then_some(())?;
+            }
+            if self.eat_keyword("comment") {
+                self.string_literal()?;
+            }
+            fields.push(StructField { name, data_type });
             if !self.eat(',') {
                 return Some(fields);
             }
         }
+    }
+
+    /// Consumes a string literal in single quotes, in which a backslash
+    /// escapes the next character and a doubled quote stands for one.
+    fn string_literal(&mut self) -> Option<()> {
+        self.skip_whitespace();
+        let quoted = self.rest.strip_prefix('\'')?;
+        let mut characters = quoted.char_indices();
+        while let Some((index, character)) = characters.next() {
+            match character {
+                '\\' => {
+                    characters.next()?;
+                }
+                '\'' if quoted[index + 1..].starts_with('\'') => {
+                    characters.next();
+                }
+                '\'' => {
+                    self.rest = &quoted[index + 1..];
+                    return Some(());
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Reads a field name, bare or quoted with backticks.
@@ -462,6 +495,29 @@ mod tests {
     }
 
     #[test]
+    fn struct_fields_may_omit_the_colon_and_carry_not_null_and_comments() {
+        assert_eq!(
+            parse(
+                "STRUCT<a: INT NOT NULL COMMENT 'the a, field>', b STRING COLLATE UTF8_LCASE \
+                 COMMENT 'it''s \\'quoted\\'', c ARRAY<STRUCT<d: DATE NOT NULL>>>"
+            ),
+            DataType::Struct(vec![
+                field("a", DataType::Int),
+                field(
+                    "b",
+                    DataType::String {
+                        collation: Some("UTF8_LCASE".to_owned())
+                    }
+                ),
+                field(
+                    "c",
+                    DataType::Array(Box::new(DataType::Struct(vec![field("d", DataType::Date)])))
+                ),
+            ])
+        );
+    }
+
+    #[test]
     fn other_types_keep_their_text() {
         for text in [
             "interval year to month",
@@ -499,7 +555,9 @@ mod tests {
             "array<>",
             "map<int>",
             "map<int,string,int>",
-            "struct<a int>",
+            "struct<a:int not>",
+            "struct<a:int comment>",
+            "struct<a:int comment 'open>",
             "struct<a:int,>",
             "struct<`a:int>",
             "string collate",
