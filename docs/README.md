@@ -32,6 +32,8 @@ Use the remaining top-level documents by responsibility:
   conventions for implementing and testing one Connector.
 - [adapter-implementation.md](adapter-implementation.md) gives the conventions
   for implementing and testing one Query Engine adapter on the connector API.
+- [issue-workflow.md](issue-workflow.md) describes how this repository uses
+  Issues, labels, milestones, and the changelog.
 
 Read the shared pushdown model before changing the Substrait request contract,
 connector planning boundary, or a Query Engine adapter. Then use the

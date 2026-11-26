@@ -8,6 +8,11 @@
   conventions, and `docs/adapter-implementation.md` for Query Engine adapter
   conventions.
 
+## Issues, commits, and changelog
+
+- Follow `docs/issue-workflow.md` for Issues, labels, milestones, commit and
+  pull request titles, and changelog entries.
+
 ## Structure and ownership
 
 - Organize modules and files so the data model and its ownership are evident
