@@ -246,6 +246,19 @@ impl ColumnRow {
 }
 
 /// The visible columns of the requested tables, in `COLUMN_ID` order.
+///
+/// Hidden columns, invisible ones among them, are left out, and so are the
+/// constraints and unique indexes that involve one, including a foreign key
+/// that references a key on one, as [`read_constraints`] and
+/// [`read_unique_indexes`] read them. Invisible columns are mostly used to add
+/// a column without breaking `SELECT *` or an `INSERT` without a column list,
+/// and their constraints appear once the column is made visible. A key kept on
+/// an invisible column, such as a surrogate key, is lost, though: the table
+/// looks as if it had no primary key, and the foreign keys that reference it
+/// disappear. This is a deliberate choice for now. If such keys are needed,
+/// the invisible columns, those with `USER_GENERATED = 'YES'`, can be listed
+/// with their constraints, leaving out only the hidden columns Oracle
+/// generates.
 fn read_columns(
     catalog: Catalog<'_, '_>,
     requested: &str,
@@ -388,6 +401,7 @@ impl ConstraintRow {
 /// over them. This covers a key or CHECK constraint with any of its columns
 /// hidden, among them the NOT NULL constraint of a hidden column, and a
 /// foreign key that references a key on a hidden column of its table.
+/// [`read_columns`] says why hidden columns are left out.
 fn read_constraints(
     catalog: Catalog<'_, '_>,
     requested: &str,
@@ -485,6 +499,7 @@ fn read_constraints(
 /// them, whose index Oracle calls function-based. An index on expressions,
 /// including a descending one, keys on hidden columns Oracle creates for
 /// them and is not read, nor is one on an invisible column.
+/// [`read_columns`] says why hidden columns are left out.
 fn read_unique_indexes(
     catalog: Catalog<'_, '_>,
     requested: &str,
