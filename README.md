@@ -147,8 +147,11 @@ bin/fetch-dependencies fetch <name> --accept-license     # accept it and fetch t
 CI builds and checks the package of every platform for each pull request and
 `main` push and keeps it as a workflow artifact
 (`.github/workflows/package.yml`). Pushing a tag `v<version>` that equals the
-workspace version publishes the packages as a GitHub Release. The library
-ships the connectors that `connector-api` has features for, and the
+workspace version publishes the packages as a GitHub Release, whose notes
+are that version's section of `CHANGELOG.md`. After the release, roll over
+the `Next release` milestone as described in
+[Issue workflow](docs/issue-workflow.md#at-each-release). The library ships
+the connectors that `connector-api` has features for, and the
 dependencies they ship are declared in `packaging/dependencies.json`
 ([Packaging](packaging/README.md)). The packages are built with
 `packaging/package.sh`: on macOS in the flake's `package` shell, which holds
@@ -176,7 +179,10 @@ The repository has one [semantic version](https://semver.org), held by
 `[workspace.package]` in `Cargo.toml`. Every crate, the connector API library,
 and the DuckDB adapter release under it, because the connectors are built into
 one library and ship together. Before 1.0, a breaking change increases the
-minor version.
+minor version. Why the version follows semantic rather than calendar
+versioning is in
+[Version the repository with semantic versioning](docs/design/versioning.md).
+The changes in each version are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License and dependency policy
 
