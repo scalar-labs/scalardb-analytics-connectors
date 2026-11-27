@@ -29,7 +29,10 @@ use connector_sdk::{
     Session, TableEntry, TableKind, TableMetadata, TableRecord, TableReference,
 };
 
-use crate::{DynamoDbConnector, DynamoDbSession, Error};
+use crate::{
+    DynamoDbConnector, DynamoDbSession, Error,
+    error_handler::{ACCESS_DENIED, RESOURCE_NOT_FOUND},
+};
 
 /// The one namespace that holds every table of the account's Region.
 pub const NAMESPACE: &str = "default";
@@ -37,9 +40,6 @@ pub const NAMESPACE: &str = "default";
 /// The name and the Data Source type of the column that holds each whole
 /// item, after the key columns.
 pub const ITEM: &str = "item";
-
-const ACCESS_DENIED: &str = "AccessDeniedException";
-const RESOURCE_NOT_FOUND: &str = "ResourceNotFoundException";
 
 /// The DynamoDB catalog.
 pub struct DynamoDbCatalog;
@@ -87,7 +87,7 @@ impl Catalog<DynamoDbConnector> for DynamoDbCatalog {
             }
             let names = match list_tables(&client).await {
                 Ok(names) => names,
-                Err(error) if code(&error) == Some(ACCESS_DENIED) => {
+                Err(error) if error.code() == Some(ACCESS_DENIED) => {
                     return Ok(vec![Listed::Unreadable {
                         scope: namespace(),
                         reason: "the credentials may not list DynamoDB tables".to_owned(),
@@ -146,7 +146,7 @@ async fn describe(
         }
         Err(error) => Error::from(error),
     };
-    match code(&error) {
+    match error.code() {
         Some(RESOURCE_NOT_FOUND) => Ok(TableRecord::DoesNotExist { table }),
         Some(ACCESS_DENIED) => Ok(TableRecord::NotFound {
             table,
@@ -182,14 +182,6 @@ fn valid_table_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-}
-
-/// The DynamoDB error code of a failed request.
-fn code(error: &Error) -> Option<&str> {
-    match error {
-        Error::Service { code, .. } => code.as_deref(),
-        _ => None,
-    }
 }
 
 fn namespace() -> NamespacePath {

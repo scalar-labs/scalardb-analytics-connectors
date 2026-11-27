@@ -22,7 +22,11 @@ use tokio::{
     sync::watch,
 };
 
-use crate::{DynamoDbConnector, Error, error_handler, options};
+use crate::{
+    DynamoDbConnector, Error,
+    error_handler::{self, ACCESS_DENIED},
+    options,
+};
 
 /// How many worker threads drive the SDK's I/O and timers. Every pull runs
 /// its future on the pulling thread, so the workers only serve the drivers
@@ -88,9 +92,7 @@ impl Access<DynamoDbConnector> for DynamoDbAccess {
             match client.list_tables().limit(1).send().await {
                 Ok(_) => Ok(client),
                 Err(error) => match Error::from(error) {
-                    Error::Service {
-                        code: Some(code), ..
-                    } if code == "AccessDeniedException" => Ok(client),
+                    error if error.code() == Some(ACCESS_DENIED) => Ok(client),
                     error => Err(DynamoDbConnector::classify(error)),
                 },
             }

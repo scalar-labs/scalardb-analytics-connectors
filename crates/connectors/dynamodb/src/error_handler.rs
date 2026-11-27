@@ -40,6 +40,21 @@ pub enum Error {
     Request,
 }
 
+/// The code of a request the credentials may not make.
+pub(crate) const ACCESS_DENIED: &str = "AccessDeniedException";
+/// The code of a request whose table does not exist.
+pub(crate) const RESOURCE_NOT_FOUND: &str = "ResourceNotFoundException";
+
+impl Error {
+    /// The DynamoDB error code, if DynamoDB answered with one.
+    pub(crate) fn code(&self) -> Option<&str> {
+        match self {
+            Self::Service { code, .. } => code.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 /// How a request failed to reach DynamoDB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportKind {
@@ -132,7 +147,7 @@ const ERROR_TABLE: [(&str, ErrorClass); 10] = [
         ),
     ),
     (
-        "AccessDeniedException",
+        ACCESS_DENIED,
         class(
             ErrorKind::PermissionDenied,
             false,
@@ -140,7 +155,7 @@ const ERROR_TABLE: [(&str, ErrorClass); 10] = [
         ),
     ),
     (
-        "ResourceNotFoundException",
+        RESOURCE_NOT_FOUND,
         class(
             ErrorKind::DoesNotExist,
             false,
@@ -171,8 +186,8 @@ const MESSAGE_KEPT: [&str; 9] = [
     "UnrecognizedClientException",
     "InvalidSignatureException",
     "ExpiredTokenException",
-    "AccessDeniedException",
-    "ResourceNotFoundException",
+    ACCESS_DENIED,
+    RESOURCE_NOT_FOUND,
     "ProvisionedThroughputExceededException",
     "ThrottlingException",
     "RequestLimitExceeded",
@@ -183,15 +198,10 @@ impl ErrorHandler for DynamoDbErrorHandler {
     type Diagnostic = Error;
 
     fn classify(diagnostic: &Error) -> Option<ErrorClass> {
-        let Error::Service {
-            code: Some(code), ..
-        } = diagnostic
-        else {
-            return None;
-        };
+        let code = diagnostic.code()?;
         ERROR_TABLE
             .iter()
-            .find(|(known, _)| known == code)
+            .find(|(known, _)| *known == code)
             .map(|(_, class)| *class)
     }
 }
