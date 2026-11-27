@@ -60,6 +60,19 @@ fn active_queries(marker: &str) -> usize {
 }
 
 #[test]
+fn a_session_runs_the_connectors_session_statements_when_it_opens() {
+    let session = session("");
+    let batches =
+        run(&session, "SELECT current_setting('application_name')").expect("the read succeeds");
+    let names = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("the setting is text");
+    assert_eq!(names.value(0), "connector-odbc-test");
+}
+
+#[test]
 fn planned_reads_return_values_as_arrow() {
     server().psql(
         "DROP TABLE IF EXISTS connector_odbc_values; \

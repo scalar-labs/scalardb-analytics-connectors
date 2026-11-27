@@ -10,6 +10,7 @@ description = "C API implementation and connector assembly"
 [features]
 default = []
 mysql = ["dep:connector-mysql"]
+oracle = ["dep:connector-oracle"]
 postgresql = ["dep:connector-postgresql"]
 salesforce = ["dep:connector-salesforce"]
 sqlserver-odbc = ["dep:connector-sqlserver-odbc"]
@@ -24,6 +25,7 @@ arrow-array = { workspace = true, features = ["ffi"] }
 arrow-schema.workspace = true
 connector-sdk.workspace = true
 connector-mysql = { workspace = true, optional = true }
+connector-oracle = { workspace = true, optional = true }
 connector-postgresql = { workspace = true, optional = true }
 connector-salesforce = { workspace = true, optional = true }
 connector-sqlserver-odbc = { workspace = true, optional = true }

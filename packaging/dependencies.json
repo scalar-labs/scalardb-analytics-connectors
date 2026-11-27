@@ -6,6 +6,9 @@
     "postgresql": {
       "dependencies": ["adbc_driver_postgresql"]
     },
+    "oracle": {
+      "platforms": []
+    },
     "sqlserver-odbc": {
       "platforms": ["linux_amd64", "linux_arm64"],
       "dependencies": ["unixodbc", "kerberos", "msodbcsql18"]

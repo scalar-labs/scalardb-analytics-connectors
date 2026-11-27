@@ -548,6 +548,7 @@ dependencies = [
  "cbindgen",
  "connector-api",
  "connector-mysql",
+ "connector-oracle",
  "connector-postgresql",
  "connector-salesforce",
  "connector-sdk",
@@ -587,6 +588,22 @@ dependencies = [
  "connector-sql",
  "futures-core",
  "libloading",
+]
+
+[[package]]
+name = "connector-oracle"
+version = "0.1.0"
+dependencies = [
+ "analytics-types",
+ "arrow-array",
+ "arrow-schema",
+ "connector-odbc",
+ "connector-sdk",
+ "connector-sql",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "substrait",
 ]
 
 [[package]]

@@ -1,0 +1,26 @@
+[package]
+name = "connector-oracle"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Oracle connector for ScalarDB Analytics"
+
+[dependencies]
+analytics-types.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+connector-odbc.workspace = true
+connector-sdk.workspace = true
+connector-sql.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+connector-sdk = { workspace = true, features = ["conformance"] }
+serde_json.workspace = true
+substrait.workspace = true
+
+[lib]
+path = "src/lib.rs"

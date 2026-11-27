@@ -52,6 +52,21 @@ pub trait OdbcConnector: Connector<Access = Odbc<Self>> {
     /// attributes. The driver is not part of it.
     fn connection_string(options: ConnectionOptions) -> Result<ConnectionString, ConnectorError>;
 
+    /// Statements run on each connection right after it connects, before any
+    /// request: the Connector's fixed session settings, for a driver whose
+    /// connection string cannot state them. A failure fails opening the
+    /// session.
+    const SESSION_STATEMENTS: &'static [&'static str] = &[];
+
+    /// Writes a connection string attribute value, the user and password
+    /// among them, so that the Connector's driver takes it literally. The
+    /// default encloses a value in braces where the connection string grammar
+    /// needs it ([`attribute_value`]); a Connector whose driver reads the
+    /// braces as part of the value writes it as its driver expects.
+    fn attribute_value(value: &str) -> String {
+        attribute_value(value)
+    }
+
     /// The Arrow type a result column of `data_type`, as the ODBC driver
     /// describes it, is read as, or `None` to read it as `arrow-odbc` derives
     /// from the description.
@@ -81,8 +96,9 @@ pub struct ConnectionString {
 impl ConnectionString {
     /// The complete connection string: the driver at `driver`, the
     /// attributes, and the credentials, each value written so that it is taken
-    /// literally.
-    fn complete(&self, driver: &str) -> SecretString {
+    /// literally: the driver path for the driver manager, and the credentials
+    /// for Connector `C`'s driver.
+    fn complete<C: OdbcConnector>(&self, driver: &str) -> SecretString {
         let mut complete = format!("Driver={}", attribute_value(driver));
         let attributes = self.attributes.trim_end_matches(';');
         if !attributes.is_empty() {
@@ -94,7 +110,7 @@ impl ConnectionString {
                 complete.push(';');
                 complete.push_str(attribute);
                 complete.push('=');
-                complete.push_str(&attribute_value(value.expose()));
+                complete.push_str(&C::attribute_value(value.expose()));
             }
         }
         SecretString::new(complete)
@@ -106,8 +122,9 @@ impl ConnectionString {
 /// A value with a character that the connection string grammar gives meaning
 /// is enclosed in braces, with closing braces doubled. Other values are
 /// written as they are, because some ODBC drivers, such as the PostgreSQL ODBC
-/// driver for `UID`, keep the braces as part of the value. A Connector writes
-/// the option values it puts in [`ConnectionString::attributes`] with it.
+/// driver for `UID`, keep the braces as part of the value. It is the default
+/// of [`OdbcConnector::attribute_value`], with which a Connector writes the
+/// option values it puts in [`ConnectionString::attributes`].
 pub fn attribute_value(value: &str) -> String {
     let needs_braces = value.contains([';', '{', '}', '='])
         || value.starts_with(char::is_whitespace)
@@ -155,14 +172,14 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
         library.load_driver_libraries::<C>()?;
         let driver = library.driver::<C>()?;
         Ok(OdbcDataSource {
-            connection_string: C::connection_string(options)?.complete(&driver),
+            connection_string: C::connection_string(options)?.complete::<C>(&driver),
             connection_timeout,
         })
     }
 
     /// Connects with the Data Source's connection timeout as the ODBC login
     /// timeout, rounded up to whole seconds and at least one, because ODBC
-    /// reads zero as no limit.
+    /// reads zero as no limit, and runs the Connector's session statements.
     fn open_session(data_source: &OdbcDataSource) -> Result<OdbcConnection<C>, ConnectorError> {
         let options = OdbcConnectionOptions {
             login_timeout_sec: data_source.connection_timeout.map(|timeout| {
@@ -174,6 +191,12 @@ impl<C: OdbcConnector> Access<C> for Odbc<C> {
         let connection = environment()?
             .connect_with_connection_string(data_source.connection_string.expose(), options)
             .map_err(|error| odbc_error::<C>(&error, None))?;
+        for statement in C::SESSION_STATEMENTS {
+            connection
+                .execute(statement, (), None)
+                .map(drop)
+                .map_err(|error| odbc_error::<C>(&error, Some(&connection)))?;
+        }
         Ok(OdbcConnection::new(Shared::new(connection)))
     }
 

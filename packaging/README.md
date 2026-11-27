@@ -30,8 +30,9 @@ and what the DuckDB extension is built with, in three parts:
 - `connectors`: each key is a connector feature, which lists the entries it
   ships under `dependencies`, and, under `platforms`, the platforms it is
   built for when it is not built for all of them, as `sqlserver-odbc` is
-  built for Linux only. A connector that ships nothing beyond the library
-  and is built for every platform has no key.
+  built for Linux only and `oracle` for none yet, until a package test checks
+  it with the user-installed Instant Client. A connector that ships nothing
+  beyond the library and is built for every platform has no key.
 - `extension`: the entries the DuckDB extension is built with, under
   `dependencies`, such as the static protobuf and abseil it links.
 - `dependencies`: each entry has a `kind` and the fields that kind needs.
