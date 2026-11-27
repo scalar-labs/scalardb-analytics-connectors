@@ -64,8 +64,9 @@ pub struct Session<C: Connector> {
     access: AccessSession<C>,
     context: <C::Catalog as Catalog<C>>::Context,
     /// The settings of the Data Source this session belongs to, with which
-    /// its table metadata is derived.
-    pub(crate) settings: C::Settings,
+    /// its table metadata is derived and, for a Connector whose settings
+    /// narrow listing, its lists are read.
+    pub settings: C::Settings,
     rules: RewriteRuleSet<<C::Planner as Planner<C>>::Facts>,
 }
 

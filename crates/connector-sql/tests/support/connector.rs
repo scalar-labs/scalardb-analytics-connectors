@@ -109,6 +109,7 @@ macro_rules! sql_test_connector {
 
             fn namespace_list(
                 _catalog: &mut connector_sql::catalog::CatalogReads<'_, Self>,
+                _settings: &Self::Settings,
                 _filter: &connector_sdk::NameFilter,
             ) -> std::result::Result<
                 Vec<connector_sdk::Listed<connector_sdk::NamespacePath>>,
@@ -119,6 +120,7 @@ macro_rules! sql_test_connector {
 
             fn table_list(
                 _catalog: &mut connector_sql::catalog::CatalogReads<'_, Self>,
+                _settings: &Self::Settings,
                 _namespaces: &connector_sdk::NameFilter,
                 _tables: &connector_sdk::NameFilter,
             ) -> std::result::Result<

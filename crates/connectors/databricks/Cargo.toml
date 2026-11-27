@@ -1,0 +1,29 @@
+[package]
+name = "connector-databricks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Databricks connector for ScalarDB Analytics"
+
+[dependencies]
+adbc_core.workspace = true
+analytics-types.workspace = true
+arrow-array.workspace = true
+connector-adbc.workspace = true
+connector-sdk.workspace = true
+connector-sql.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+arrow-buffer.workspace = true
+connector-sdk = { workspace = true, features = ["conformance"] }
+reqwest.workspace = true
+serde_json.workspace = true
+substrait.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "time"] }
+
+[lib]
+path = "src/lib.rs"

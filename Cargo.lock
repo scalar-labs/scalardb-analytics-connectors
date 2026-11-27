@@ -547,6 +547,7 @@ dependencies = [
  "arrow-schema",
  "cbindgen",
  "connector-api",
+ "connector-databricks",
  "connector-mysql",
  "connector-postgresql",
  "connector-salesforce",
@@ -556,6 +557,25 @@ dependencies = [
  "prost",
  "serde_json",
  "substrait",
+]
+
+[[package]]
+name = "connector-databricks"
+version = "0.1.0"
+dependencies = [
+ "adbc_core",
+ "analytics-types",
+ "arrow-array",
+ "arrow-buffer",
+ "connector-adbc",
+ "connector-sdk",
+ "connector-sql",
+ "reqwest",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "substrait",
+ "tokio",
 ]
 
 [[package]]

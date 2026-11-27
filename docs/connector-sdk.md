@@ -429,7 +429,9 @@ connector-sql    SqlConnector: SqlDialect
                          started on it
                      session_context, namespace_list, table_list, table_metadata:
                          each a function that runs its statements on
-                         CatalogReads and uses each result where it is fetched
+                         CatalogReads and uses each result where it is fetched;
+                         the two lists also receive the Data Source's settings,
+                         which may narrow what is listed
                      derive_table_metadata(table, settings)
                      planning_facts, runs_remotely
                  SqlCatalog<C>, SqlPlanner<C>, and SqlExecutor<C> implement

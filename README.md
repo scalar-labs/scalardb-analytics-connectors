@@ -11,7 +11,9 @@ the Salesforce connector
 ([crates/connectors/salesforce](crates/connectors/salesforce/README.md)), and
 the SQL Server through ODBC connector
 ([crates/connectors/sqlserver-odbc](crates/connectors/sqlserver-odbc/README.md))
-are implemented on them.
+are implemented on them. The Databricks connector
+([crates/connectors/databricks](crates/connectors/databricks/README.md)) is
+implemented on them too, but has not yet run against a Databricks workspace.
 The C API library includes a Connector when it is built with that Connector's
 feature, such as `cargo build -p connector-api --features postgresql`. The
 DuckDB adapter attaches Data Sources to DuckDB through that library
@@ -37,6 +39,7 @@ Dependencies point inward in this order:
 connector-api -> connector-postgresql -> connector-sql --> connector-sdk -> analytics-types
              |                       +-> connector-adbc -> connector-sdk
              +-> connector-mysql ------> connector-sql
+             +-> connector-databricks -> connector-sql
              +-> connector-salesforce -> connector-salesforce-client
              |                        +------------------> connector-sdk
              +-> connector-sqlserver-odbc -> connector-sql
@@ -78,7 +81,10 @@ supplies exactly Rust 1.88.0. Run the same checks as CI through the flake. The
 PostgreSQL and MySQL connectors' tests, the library's tests with their
 `postgresql` and `mysql` features, and `connector-odbc`'s tests also need
 Docker, which they use to start a PostgreSQL or MySQL server, and the SQL
-Server through ODBC connector's tests use it to start a SQL Server:
+Server through ODBC connector's tests use it to start a SQL Server. The
+Databricks connector's conformance suite needs a Databricks workspace and is
+skipped without one
+([Tests](crates/connectors/databricks/README.md#tests)):
 
 ```sh
 nix develop --command cargo fmt --all -- --check
