@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Oracle connector, through ODBC and the Oracle Instant Client ODBC driver,
+  which the user installs. The packages do not contain the connector yet.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added
