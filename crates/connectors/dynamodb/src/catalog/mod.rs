@@ -6,10 +6,10 @@
 //! [`ITEM`] column holding each whole item.
 //!
 //! IAM checks a request before DynamoDB looks the table up, so a table the
-//! credentials may not describe cannot be told from one that does not exist
-//! unless `ListTables` lists it; `ResourceNotFoundException` is returned only
-//! to credentials that may describe the table, so it proves the table does
-//! not exist.
+//! credentials may not describe cannot be told from one that does not exist,
+//! and is "not found"; `ResourceNotFoundException` is returned only to
+//! credentials that may describe the table, so it proves the table does not
+//! exist.
 
 mod source_metadata;
 mod type_mapping;
@@ -148,26 +148,10 @@ async fn describe(
     };
     match code(&error) {
         Some(RESOURCE_NOT_FOUND) => Ok(TableRecord::DoesNotExist { table }),
-        Some(ACCESS_DENIED) => {
-            let listed = match list_tables(client).await {
-                Ok(names) => names.contains(&name),
-                Err(error) if code(&error) == Some(ACCESS_DENIED) => false,
-                Err(error) => return Err(DynamoDbConnector::classify(error)),
-            };
-            Ok(if listed {
-                TableRecord::PermissionDenied {
-                    table,
-                    reason: "the credentials may not describe the table".to_owned(),
-                }
-            } else {
-                TableRecord::NotFound {
-                    table,
-                    reason: "the credentials may not describe a table of this name, and \
-                             ListTables does not list it"
-                        .to_owned(),
-                }
-            })
-        }
+        Some(ACCESS_DENIED) => Ok(TableRecord::NotFound {
+            table,
+            reason: "the credentials may not describe a table of this name".to_owned(),
+        }),
         _ => Err(DynamoDbConnector::classify(error)),
     }
 }

@@ -354,13 +354,6 @@ fn source_metadata_holds_the_definition_and_not_the_volatile_figures() {
 #[test]
 fn tables_that_cannot_be_described_have_the_records_iam_allows() {
     let mock = MockDynamoDb::start();
-    let denied = || {
-        error(
-            400,
-            "AccessDeniedException",
-            "not authorized: dynamodb:DescribeTable",
-        )
-    };
     mock.on(
         "DescribeTable",
         Some(json!({ "TableName": "missing" })),
@@ -372,29 +365,27 @@ fn tables_that_cannot_be_described_have_the_records_iam_allows() {
     );
     mock.on(
         "DescribeTable",
-        Some(json!({ "TableName": "listed" })),
-        denied(),
-    );
-    mock.on(
-        "DescribeTable",
-        Some(json!({ "TableName": "unlisted" })),
-        denied(),
+        Some(json!({ "TableName": "denied" })),
+        error(
+            400,
+            "AccessDeniedException",
+            "not authorized: dynamodb:DescribeTable",
+        ),
     );
     let session = session(&mock);
     mock.on(
         "ListTables",
         Some(json!({})),
-        ok(json!({ "TableNames": ["listed"] })),
+        ok(json!({ "TableNames": ["denied"] })),
     );
     let tables = [
         reference("missing"),
-        reference("listed"),
-        reference("unlisted"),
+        reference("denied"),
         // Names that cannot name a table are not sent.
         reference("a b"),
-        reference("arn:aws:dynamodb:us-east-1:123456789012:table/listed"),
-        TableReference::new(vec!["other".to_owned(), "listed".to_owned()]).unwrap(),
-        TableReference::new(vec!["listed".to_owned()]).unwrap(),
+        reference("arn:aws:dynamodb:us-east-1:123456789012:table/denied"),
+        TableReference::new(vec!["other".to_owned(), "denied".to_owned()]).unwrap(),
+        TableReference::new(vec!["denied".to_owned()]).unwrap(),
     ];
     let result = session.table_metadata(&tables, None, None).unwrap();
     let states: Vec<_> = result
@@ -411,7 +402,6 @@ fn tables_that_cannot_be_described_have_the_records_iam_allows() {
         states,
         [
             "does not exist",
-            "permission denied",
             "not found",
             "does not exist",
             "does not exist",
@@ -424,35 +414,10 @@ fn tables_that_cannot_be_described_have_the_records_iam_allows() {
         .into_iter()
         .map(|body| body["TableName"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(described, ["missing", "listed", "unlisted"]);
-}
-
-#[test]
-fn a_table_iam_hides_from_every_list_is_not_found() {
-    let mock = MockDynamoDb::start();
-    mock.on(
-        "DescribeTable",
-        None,
-        error(
-            400,
-            "AccessDeniedException",
-            "not authorized: dynamodb:DescribeTable",
-        ),
-    );
-    let session = session(&mock);
-    mock.on(
-        "ListTables",
-        Some(json!({})),
-        error(
-            400,
-            "AccessDeniedException",
-            "not authorized: dynamodb:ListTables",
-        ),
-    );
-    let result = session
-        .table_metadata(&[reference("orders")], None, None)
-        .unwrap();
-    assert!(matches!(result.records[0], TableRecord::NotFound { .. }));
+    assert_eq!(described, ["missing", "denied"]);
+    // A denied table is not looked up in `ListTables`, even where it is
+    // listed: the only `ListTables` is the one the Data Source opened with.
+    assert_eq!(mock.bodies("ListTables"), [json!({ "Limit": 1 })]);
 }
 
 #[test]

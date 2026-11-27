@@ -164,7 +164,7 @@ pub fn error_cases(fixture: &DynamoDbFixture) -> Vec<ErrorCase> {
             name: "reading a table the credentials may not describe",
             options: fixture.options(Policy::Outsider),
             request: literal_read("locked"),
-            expected: failing(ErrorKind::PermissionDenied, false),
+            expected: failing(ErrorKind::NotFound, false),
         },
         ErrorCase {
             name: "querying a table the credentials may describe but not read",

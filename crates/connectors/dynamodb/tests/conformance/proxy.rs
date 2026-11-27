@@ -87,7 +87,7 @@ impl Policy {
                 "The security token included in the request is invalid.".to_owned(),
             )),
             (Self::Unlister, "ListTables", _) => denied(operation),
-            (Self::Outsider, "DescribeTable", Some("locked" | "unlisted"))
+            (Self::Outsider, "DescribeTable", Some("locked" | "absent"))
             | (Self::Outsider, "Scan" | "Query", Some("texts")) => denied(operation),
             _ => None,
         }

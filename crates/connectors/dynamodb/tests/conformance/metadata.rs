@@ -96,8 +96,9 @@ pub fn cases(fixture: &DynamoDbFixture) -> Vec<MetadataCase> {
             "tables the credentials may not describe",
             Policy::Outsider,
             MetadataRequest::TableMetadata {
-                tables: vec![reference("locked"), reference("unlisted")],
-                expected: vec![ExpectedRecord::PermissionDenied, ExpectedRecord::NotFound],
+                // `locked` exists and `absent` does not; IAM refuses both alike.
+                tables: vec![reference("locked"), reference("absent")],
+                expected: vec![ExpectedRecord::NotFound, ExpectedRecord::NotFound],
             },
         ),
         case(

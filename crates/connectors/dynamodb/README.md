@@ -139,8 +139,8 @@ it:
   identifier.
 - `DescribeTable` hides no key attribute, so table metadata is complete.
 - IAM checks a request before DynamoDB looks up its table, so a table that
-  `DescribeTable` refuses with `AccessDeniedException` is "permission denied"
-  when `ListTables` lists it, and "not found" otherwise.
+  `DescribeTable` refuses with `AccessDeniedException` may or may not exist,
+  and is "not found".
   `ResourceNotFoundException`, returned only to credentials that may describe
   the table, is "does not exist", and so is a reference outside `default` or a
   name that cannot name a table.
