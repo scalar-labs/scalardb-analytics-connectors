@@ -19,8 +19,8 @@ DynamoDB JSON.
 
 `region` is required: requests are signed for it even when `endpoint` sends
 them elsewhere, such as to a VPC endpoint or DynamoDB Local. `region` must be
-a Region name of letters, digits, and `-`, and `endpoint` an HTTP(S) URL with
-a host. Without `endpoint`, requests go to the Region's DynamoDB endpoint: an
+a Region name of letters, digits, and `-` that neither starts nor ends with
+`-`, and `endpoint` an HTTP(S) URL with a host. Without `endpoint`, requests go to the Region's DynamoDB endpoint: an
 endpoint URL that the environment (`AWS_ENDPOINT_URL`,
 `AWS_ENDPOINT_URL_DYNAMODB`) or a shared config profile sets is not followed,
 so the options alone name the Data Source.

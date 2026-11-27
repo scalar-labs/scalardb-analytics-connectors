@@ -137,11 +137,13 @@ impl ClientConfig {
     }
 }
 
-/// Whether `region` can name a Region: a DNS label of letters, digits, and
-/// `-`, as the SDK requires to build the Region's endpoint and to sign.
+/// Whether `region` can name a Region: a DNS label of 1 to 63 letters,
+/// digits, and `-`, neither starting nor ending with `-`, as the SDK requires
+/// to build the Region's endpoint and to sign.
 fn valid_region(region: &str) -> bool {
     (1..=63).contains(&region.len())
         && !region.starts_with('-')
+        && !region.ends_with('-')
         && region
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')

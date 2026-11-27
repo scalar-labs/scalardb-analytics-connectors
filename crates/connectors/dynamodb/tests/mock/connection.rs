@@ -131,6 +131,8 @@ fn a_malformed_endpoint_or_region_is_invalid_settings() {
         with("endpoint", "http://[::1"),
         with("region", "us east 1"),
         with("region", ""),
+        with("region", "us-east-1-"),
+        with("region", "-us-east-1"),
     ];
     for options in cases {
         let error = open(options, None).err().unwrap();
